@@ -47,7 +47,8 @@ object DataHolder {
             }
             data = data :+ valueVec
           }
-
+          // TODO remove again, this is just for faster debugging
+          data = data.slice(0, 1000)
           replyTo ! DataRef(data)
       }
       Behaviors.same
