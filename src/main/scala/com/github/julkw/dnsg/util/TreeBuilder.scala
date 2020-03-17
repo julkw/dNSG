@@ -5,10 +5,10 @@ import scala.collection.mutable.Queue
 
 case class TreeBuilder (data: Seq[Seq[Float]], k: Int) {
 
-  def constructIteratively(indices:Seq[Int]): TreeNode[Seq[Int]] = {
+  def construct(indices:Seq[Int]): IndexTree = {
     val node: LeafNode[Seq[Int]] = LeafNode(indices)
     if (indices.length <= k) {
-      node
+      IndexTree(node)
     } else {
       val toSplit: mutable.Queue[SplitNode[Seq[Int]]] = Queue.empty
       val root = oneLevelSplit(indices)
@@ -23,21 +23,8 @@ case class TreeBuilder (data: Seq[Seq[Float]], k: Int) {
           toSplit += newLeft
         if (newRight.data.length > k)
           toSplit += newRight
-        // TODO Check references etc. I do not believe this works
       }
-      root
-    }
-  }
-
-  def constructRecursively(indices: Seq[Int]): TreeNode[Seq[Int]] = {
-    val node: LeafNode[Seq[Int]] = LeafNode(indices)
-    if (indices.length <= k) {
-      node
-    } else {
-      val sNode: SplitNode[Seq[Int]] = oneLevelSplit(indices)
-      sNode.left = constructRecursively(sNode.left.data)
-      sNode.right = constructRecursively(sNode.right.data)
-      sNode
+      IndexTree(root)
     }
   }
 
@@ -47,8 +34,8 @@ case class TreeBuilder (data: Seq[Seq[Float]], k: Int) {
     val splittingDimension = r.nextInt(maxDimension)
     // TODO replace with better median implementation
     // https://stackoverflow.com/questions/4662292/scala-median-implementation
-    // TODO this breaks the program right now!!!
-    val median = indices.map(index => data(index)(splittingDimension)).sorted.drop(data.length / 2).head
+    val median = indices.map(index => data(index)(splittingDimension)).sorted.drop(indices.length / 2).head
+
     val leftIndices = indices.filter(index => data(index)(splittingDimension) < median)
     val rightIndices = indices.filter(index => data(index)(splittingDimension) >= median)
 

@@ -23,6 +23,7 @@ object Coordinator {
   val numWorkers = 2
   var data: Seq[Seq[Float]] = Seq.empty
   var knngWorkers: Set[ActorRef[BuildGraphEvent]] = Set.empty
+  var distributionTree: Option[PositionTree] = None
 
   def apply(): Behavior[CoordinationEvent] = Behaviors.setup { ctx =>
     val filename: String = "/home/juliane/code/dNSG/data/siftsmall/siftsmall_base.fvecs"
@@ -48,23 +49,32 @@ object Coordinator {
           kw ! ResponsibleFor(allIndices)
           Behaviors.same
 
-        case wrapped: WrappedBuildGraphEvent =>
+        case wrappedListing: ListingResponse =>
+          wrappedListing.listing match {
+            case KnngWorker.knngServiceKey.Listing(listings) =>
+              // if there already is a distributionTree, the new actors need to be told
+              ctx.log.info("Received new listing. Number of dataholding actors {}", listings.size)
+              if (distributionTree.isDefined) {
+                (listings -- knngWorkers).foreach(actor => actor ! DistributionTree(distributionTree.get))
+              }
+              knngWorkers = listings
+          }
+          Behaviors.same
+
+        case wrappedGraphEvent: WrappedBuildGraphEvent =>
           // handle the response from Configuration, which we understand since it was wrapped in a message that is part of
           // the protocol of this actor
-          wrapped.event match {
+          wrappedGraphEvent.event match {
             case DistributionInfo(distInfoRoot, _) =>
               ctx.log.info("Tell all dataholding workers where other data is placed so they can start building the approximate graph")
               val positionTree: PositionTree = PositionTree(distInfoRoot)
+              distributionTree = Option(positionTree)
               knngWorkers.foreach(worker => worker ! DistributionTree(positionTree))
               Behaviors.same
 
             case FinishedApproximateGraph =>
               // TODO start NNDescent Phase
               // is this needed or do the workers just switch by themselves?
-              Behaviors.same
-
-            case KnngWorker.knngServiceKey.Listing(listings) =>
-              knngWorkers = listings
               Behaviors.same
           }
       }

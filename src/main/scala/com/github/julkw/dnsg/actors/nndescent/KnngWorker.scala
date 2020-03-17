@@ -44,12 +44,11 @@ object KnngWorker {
         if(responsibility.length > maxResponsibility) {
           // further split the data
           val splitNode: SplitNode[Seq[Int]] = treeBuilder.oneLevelSplit(responsibility)
-          val left = ctx.spawn(KnngWorker(data, maxResponsibility, k, ctx.self), name="KnngWorker1")
-          val right = ctx.spawn(KnngWorker(data, maxResponsibility, k, ctx.self), name="KnngWorker2")
+          val left = ctx.spawn(KnngWorker(data, maxResponsibility, k, ctx.self), name="KnngWorkerLeft")
+          val right = ctx.spawn(KnngWorker(data, maxResponsibility, k, ctx.self), name="KnngWorkerRight")
           left ! ResponsibleFor(splitNode.left.data)
           right ! ResponsibleFor(splitNode.right.data)
           combineDistributionTree(left, right, None, None, splitNode.dimension, splitNode.border)
-
         } else {
           // this is a leaf node for data distribution
           ctx.system.receptionist ! Receptionist.Register(knngServiceKey, ctx.self)
@@ -63,8 +62,7 @@ object KnngWorker {
                                 right: ActorRef[BuildGraphEvent],
                                 leftNode: Option[TreeNode[ActorRef[BuildGraphEvent]]],
                                 rightNode: Option[TreeNode[ActorRef[BuildGraphEvent]]],
-                                dimension: Int, border: Float): Behavior[BuildGraphEvent] =  {
-      ctx.log.info("waiting for child actors to finish distributing the data")
+                                dimension: Int, border: Float): Behavior[BuildGraphEvent] =
       Behaviors.receiveMessagePartial {
           case DistributionInfo(treeNode, sender) =>
             sender match {
@@ -88,7 +86,7 @@ object KnngWorker {
                 }
             }
       }
-    }
+
 
     def waitForApproximateGraphs(finishedGraphs: Int): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
       case FinishedApproximateGraph =>
@@ -105,11 +103,12 @@ object KnngWorker {
       // build the rest of the kdTree for candidate generation
       // can be done here since this function should only be called once
       val treeBuilder: TreeBuilder = TreeBuilder(data, k)
-      val kdTree: IndexTree = IndexTree(treeBuilder.constructIteratively(responsibility))
+      val kdTree: IndexTree = treeBuilder.construct(responsibility)
       val candidates: Map[Int, Seq[Int]] = Map.empty
       val awaitingAnswer: Array[Int] = Array.fill(responsibility.length){0}
       Behaviors.receiveMessagePartial {
           case DistributionTree(distributionTree) =>
+            ctx.log.info("Received Distribution Tree. Start building approximate graph")
             ctx.self ! FindCandidates(0)
             buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, distributionTree)
       }
