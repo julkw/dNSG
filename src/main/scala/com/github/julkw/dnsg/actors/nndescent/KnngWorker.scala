@@ -28,9 +28,7 @@ object KnngWorker {
 
   final case class ListingResponse(listing: Receptionist.Listing) extends BuildGraphEvent
 
-  val subGraph: mutable.Map[Int, Seq[Int]] = mutable.Map[Int, Seq[Int]]()
   val knngServiceKey: ServiceKey[BuildGraphEvent] = ServiceKey[BuildGraphEvent]("knngWorker")
-
 
   def apply(data: Seq[Seq[Float]],
             maxResponsibility: Int,
@@ -54,7 +52,12 @@ object KnngWorker {
           ctx.system.receptionist ! Receptionist.Register(knngServiceKey, ctx.self)
           val locationNode: LeafNode[ActorRef[BuildGraphEvent]] = LeafNode(ctx.self)
           supervisor ! DistributionInfo(locationNode, ctx.self)
-          waitForDistributionInfo(responsibility)
+
+          // Build local tree while waiting on DistributionTree message
+          val treeBuilder: TreeBuilder = TreeBuilder(data, k)
+          val kdTree: IndexTree = treeBuilder.construct(responsibility)
+
+          waitForDistributionInfo(kdTree, responsibility)
         }
     }
 
@@ -88,51 +91,57 @@ object KnngWorker {
       }
 
 
-    def waitForApproximateGraphs(finishedGraphs: Int): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
-      case FinishedApproximateGraph =>
-        if (finishedGraphs > 0) {
-          supervisor ! FinishedApproximateGraph
-        } else {
+    def waitForApproximateGraphs(finishedGraphs: Int): Behavior[BuildGraphEvent] =
+      Behaviors.receiveMessagePartial {
+        case FinishedApproximateGraph =>
+          if (finishedGraphs > 0) {
+            supervisor ! FinishedApproximateGraph
+          }
           waitForApproximateGraphs(finishedGraphs + 1)
-        }
-      // this node has nothing more to do for now
-      Behaviors.empty
-    }
+      }
 
-    def waitForDistributionInfo(responsibility: Seq[Int]): Behavior[BuildGraphEvent] = {
-      // build the rest of the kdTree for candidate generation
-      // can be done here since this function should only be called once
-      val treeBuilder: TreeBuilder = TreeBuilder(data, k)
-      val kdTree: IndexTree = treeBuilder.construct(responsibility)
-      val candidates: Map[Int, Seq[Int]] = Map.empty
-      val awaitingAnswer: Array[Int] = Array.fill(responsibility.length){0}
+    def waitForDistributionInfo(kdTree: IndexTree,
+                                responsibility: Seq[Int]): Behavior[BuildGraphEvent] =
       Behaviors.receiveMessagePartial {
           case DistributionTree(distributionTree) =>
             ctx.log.info("Received Distribution Tree. Start building approximate graph")
             ctx.self ! FindCandidates(0)
-            buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, distributionTree)
+            val candidates: Map[Int, Seq[Int]] = Map.empty
+            val awaitingAnswer: Array[Int] = Array.fill(responsibility.length){0}
+            val graph: Map[Int, Seq[Int]] = Map.empty
+            buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, distributionTree, graph)
+          case GetCandidates(query, index, sender) =>
+            // TODO forward to self with timer
+            ctx.log.info("Part of the problem seems to be getting the GetCandidates Message too early")
+            waitForDistributionInfo(kdTree, responsibility)
       }
-    }
+
 
     def buildApproximateGraph(kdTree: IndexTree,
                               responsibility: Seq[Int],
                               candidates: Map [Int, Seq[Int]],
                               awaitingAnswer: Array[Int],
-                              distributionTree: PositionTree): Behavior[BuildGraphEvent] =
+                              distributionTree: PositionTree,
+                              graph: Map[Int, Seq[Int]]): Behavior[BuildGraphEvent] =
       Behaviors.receiveMessagePartial {
-        case FindCandidates(index) =>
+        case DistributionTree(distributionTree) =>
+          ctx.log.info("Received Distribution Tree. Start building approximate graph")
+          ctx.self ! FindCandidates(0)
+          buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, distributionTree, graph)
+
+        case FindCandidates(responsibilityIndex) =>
           // Also look for the closest neighbors of the other g_nodes
-          if (index < responsibility.length - 1) {
-            ctx.self ! FindCandidates(index + 1)
+          if (responsibilityIndex < responsibility.length - 1) {
+            ctx.self ! FindCandidates(responsibilityIndex + 1)
           }
           // find candidates for current node
-          val query: Seq[Float] = data(responsibility(index))
+          val query: Seq[Float] = data(responsibility(responsibilityIndex))
           var currentActorNode = distributionTree.root
           // Find actors to ask for candidates
           while (currentActorNode.inverseQueryChild(query) != currentActorNode) {
             val actorToAsk: ActorRef[BuildGraphEvent] = currentActorNode.inverseQueryChild(query).queryLeaf(query).data
-            actorToAsk ! GetCandidates(query, index, ctx.self)
-            awaitingAnswer(index) += 1
+            actorToAsk ! GetCandidates(query, responsibilityIndex, ctx.self)
+            awaitingAnswer(responsibilityIndex) += 1
             currentActorNode = currentActorNode.queryChild(query)
           }
           // Find candidates on own tree
@@ -143,41 +152,42 @@ object KnngWorker {
             currentDataNode = currentDataNode.queryChild(query)
           }
           localCandidates = localCandidates ++ currentDataNode.data
-          val updatedCandidates = candidates + (index -> localCandidates)
-          buildApproximateGraph(kdTree, responsibility, updatedCandidates, awaitingAnswer, distributionTree)
+          ctx.self ! Candidates(localCandidates, responsibilityIndex)
+          awaitingAnswer(responsibilityIndex) += 1
+          buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, distributionTree, graph)
 
         case GetCandidates(query, index, sender) =>
-          sender ! Candidates(kdTree.root.queryLeaf(query).data, index)
-          Behaviors.same
+          val localCandidates: Seq[Int] = kdTree.root.queryLeaf(query).data
+          sender ! Candidates(localCandidates, index)
+          buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, distributionTree, graph)
 
-        case Candidates(remoteCandidates, index) =>
-          val updatedCandidates = candidates + (index -> remoteCandidates)
-          awaitingAnswer(index) -= 1
-          if (awaitingAnswer(index) == 0) {
-            val graphIndex: Int = responsibility(index)
-            val neighbors: Seq[Int] = candidates(index).sortBy(candidateIndex => euclideanDist(data(candidateIndex), data(graphIndex))).slice(0, k)
-            subGraph += (graphIndex -> neighbors)
-            if (subGraph.size == responsibility.length) {
-              // TODO approximate graph seems to be done
-              // TODO tell supervisor and switch to nnDescent to improve on graph
-              nnDescent(k, supervisor)
+        case Candidates(remoteCandidates, responsibilityIndex) =>
+          val oldCandidates = candidates.getOrElse(responsibilityIndex, Seq.empty)
+          val updatedCandidates = candidates + (responsibilityIndex -> (oldCandidates ++ remoteCandidates))
+          awaitingAnswer(responsibilityIndex) -= 1
+          if (awaitingAnswer(responsibilityIndex) == 0) {
+            val graphIndex: Int = responsibility(responsibilityIndex)
+            val neighbors: Seq[Int] = updatedCandidates(responsibilityIndex).sortBy(candidateIndex => euclideanDist(data(candidateIndex), data(graphIndex))).slice(0, k)
+            val updatedGraph = graph + (graphIndex -> neighbors)
+            if (updatedGraph.size == responsibility.length) {
+              ctx.log.info("Should be able to switch to nnDescent now")
+              supervisor ! FinishedApproximateGraph
+              // TODO: Protocol for when to switch to nnDescent
             }
+            buildApproximateGraph(kdTree, responsibility, updatedCandidates, awaitingAnswer, distributionTree, updatedGraph)
+          } else {
+            buildApproximateGraph(kdTree, responsibility, updatedCandidates, awaitingAnswer, distributionTree, graph)
           }
-          buildApproximateGraph(kdTree, responsibility, updatedCandidates, awaitingAnswer, distributionTree)
-        case PotentialNeighbors(potentialNeighbors) =>
-          // TODO: forward to self with timer?
-          Behaviors.unhandled
-    }
+      }
 
     def nnDescent(k: Int,
-                  supervisor: ActorRef[BuildGraphEvent]): Behavior[BuildGraphEvent] = {
-      ctx.log.info("Entered into NNDescent stage")
+                  supervisor: ActorRef[BuildGraphEvent]): Behavior[BuildGraphEvent] =
       Behaviors.receiveMessage {
         case PotentialNeighbors(potentialNeighbors) =>
           // TODO check them for viability and react accordingly
-          Behaviors.same
+          nnDescent(k, supervisor)
       }
-    }
+
 
     // Start the graph building process
     buildDistributionTree()

@@ -20,7 +20,7 @@ object Coordinator {
 
   // TODO turn into input through configurations
   val k = 10
-  val numWorkers = 2
+  val numWorkers = 4
   var data: Seq[Seq[Float]] = Seq.empty
   var knngWorkers: Set[ActorRef[BuildGraphEvent]] = Set.empty
   var distributionTree: Option[PositionTree] = None
@@ -35,15 +35,14 @@ object Coordinator {
     val listingResponseAdapter = ctx.messageAdapter[Receptionist.Listing](ListingResponse)
     ctx.system.receptionist ! Receptionist.Subscribe(KnngWorker.knngServiceKey, listingResponseAdapter)
 
-    def buildApproximateGraph(): Behavior[CoordinationEvent] = {
-      ctx.log.info("start building the approximate graph")
+    def buildApproximateGraph(): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial {
         case DataRef(dataRef) =>
           data = dataRef
           ctx.log.info("Successfully loaded data")
           // TODO start KnngWorkers
           // create Actor to start distribution of data
-          val maxResponsibilityPerNode: Int = data.length / numWorkers
+          val maxResponsibilityPerNode: Int = data.length / numWorkers + data.length / 10
           val kw = ctx.spawn(KnngWorker(data, maxResponsibilityPerNode, k, buildGraphEventAdapter), name = "KnngWorker")
           val allIndices: Seq[Int] = 0 until data.length
           kw ! ResponsibleFor(allIndices)
@@ -73,17 +72,19 @@ object Coordinator {
               Behaviors.same
 
             case FinishedApproximateGraph =>
+              ctx.log.info("Approximate graph has been build")
               // TODO start NNDescent Phase
               // is this needed or do the workers just switch by themselves?
               Behaviors.same
           }
       }
-    }
+
 
     val dh = ctx.spawn(DataHolder(), name = "DataHolder")
     // TODO specify file and type through configurations
     dh ! LoadSiftDataFromFile(filename, ctx.self)
 
+    ctx.log.info("start building the approximate graph")
     buildApproximateGraph()
   }
 
