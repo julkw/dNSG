@@ -11,7 +11,7 @@ trait KdTree[T] {
 
 case class PositionTree (root: TreeNode[ActorRef[BuildGraphEvent]]) extends KdTree[ActorRef[BuildGraphEvent]] {
 
-  def findResponsibleActor (query: Seq[Float]): ActorRef[_] = {
+  def findResponsibleActor (query: Seq[Float]): ActorRef[BuildGraphEvent] = {
     root.queryLeaf(query).data
   }
 }

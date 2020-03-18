@@ -73,8 +73,7 @@ object Coordinator {
 
             case FinishedApproximateGraph =>
               ctx.log.info("Approximate graph has been build")
-              // TODO start NNDescent Phase
-              // is this needed or do the workers just switch by themselves?
+              knngWorkers.foreach(worker => worker ! StartNNDescent)
               Behaviors.same
           }
       }

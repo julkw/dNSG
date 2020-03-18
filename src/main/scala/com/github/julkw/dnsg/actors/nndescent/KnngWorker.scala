@@ -5,7 +5,7 @@ import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import math._
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.Behaviors
-import com.github.julkw.dnsg.util.{IndexTree, KdTree, LeafNode, PositionTree, SplitNode, TreeBuilder, TreeNode}
+import com.github.julkw.dnsg.util.{IndexTree, LeafNode, PositionTree, SplitNode, TreeBuilder, TreeNode}
 
 import scala.collection.mutable
 
@@ -24,7 +24,11 @@ object KnngWorker {
   final case class Candidates(candidates: Seq[Int], index: Int) extends BuildGraphEvent
   final case object FinishedApproximateGraph extends BuildGraphEvent
   // improve approximate graph
-  final case class PotentialNeighbors(potentialNeighbors: Seq[Int]) extends BuildGraphEvent
+  final case object StartNNDescent extends BuildGraphEvent
+  // TODO rename nodes to something more clear like start and endNode
+  final case class PotentialNeighbors(g_node: Int, potentialNeighbors: Seq[(Int, Double)]) extends BuildGraphEvent
+  final case class RemoveReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int) extends BuildGraphEvent
+  final case class AddReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int) extends BuildGraphEvent
 
   final case class ListingResponse(listing: Receptionist.Listing) extends BuildGraphEvent
 
@@ -122,7 +126,7 @@ object KnngWorker {
                               candidates: Map [Int, Seq[Int]],
                               awaitingAnswer: Array[Int],
                               distributionTree: PositionTree,
-                              graph: Map[Int, Seq[Int]]): Behavior[BuildGraphEvent] =
+                              graph:Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] =
       Behaviors.receiveMessagePartial {
         case DistributionTree(distributionTree) =>
           ctx.log.info("Received Distribution Tree. Start building approximate graph")
@@ -167,7 +171,8 @@ object KnngWorker {
           awaitingAnswer(responsibilityIndex) -= 1
           if (awaitingAnswer(responsibilityIndex) == 0) {
             val graphIndex: Int = responsibility(responsibilityIndex)
-            val neighbors: Seq[Int] = updatedCandidates(responsibilityIndex).sortBy(candidateIndex => euclideanDist(data(candidateIndex), data(graphIndex))).slice(0, k)
+            val neighbors: Seq[(Int, Double)] = updatedCandidates(responsibilityIndex).map(candidateIndex =>
+              (candidateIndex, euclideanDist(data(candidateIndex), data(graphIndex)))).sortBy(_._2).slice(0, k)
             val updatedGraph = graph + (graphIndex -> neighbors)
             if (updatedGraph.size == responsibility.length) {
               ctx.log.info("Should be able to switch to nnDescent now")
@@ -178,16 +183,97 @@ object KnngWorker {
           } else {
             buildApproximateGraph(kdTree, responsibility, updatedCandidates, awaitingAnswer, distributionTree, graph)
           }
+
+        case StartNNDescent =>
+          startNNDescent(distributionTree, graph)
+
+          // in case one of the other actors got the message slightly earlier and has already started sending me nnDescent messages
+        case AddReverseNeighbor(g_nodeIndex, neighborIndex) =>
+          ctx.self ! AddReverseNeighbor(g_nodeIndex, neighborIndex)
+          startNNDescent(distributionTree, graph)
+
+        case RemoveReverseNeighbor(g_nodeIndex, neighborIndex) =>
+          ctx.self ! RemoveReverseNeighbor(g_nodeIndex, neighborIndex)
+          startNNDescent(distributionTree, graph)
+
+        case PotentialNeighbors(g_node, potentialNeighbors) =>
+          ctx.self ! PotentialNeighbors(g_node, potentialNeighbors)
+          startNNDescent(distributionTree, graph)
       }
 
-    def nnDescent(k: Int,
-                  supervisor: ActorRef[BuildGraphEvent]): Behavior[BuildGraphEvent] =
+    def startNNDescent(distributionTree: PositionTree,
+                       graph: Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] = {
+
+      ctx.log.info("Starting nnDescent")
+      graph.foreach{ case (index, neighbors) =>
+        // send all reverse neighbors to the correct actors
+        neighbors.foreach{case (neighborIndex, _) =>
+          distributionTree.findResponsibleActor(data(neighborIndex)) ! AddReverseNeighbor(neighborIndex, index)
+        }
+        // send all PotentialNeighbors to the correct actors
+        val distances: Seq[(Int, Int, Double)] = neighbors.map(_._1).combinations(2).map(combination =>
+          (combination(0), combination(1), euclideanDist(data(combination(0)), data(combination(1))))).toSeq
+        neighbors.foreach{case (neighbor, _) =>
+          val potentialNeighbors = distances.collect{ case(n1, n2, dist) if n1 == neighbor || n2 == neighbor =>
+            if (n1 == neighbor) {
+              (n2, dist)
+            } else {
+              (n1, dist)
+            }
+          }
+          distributionTree.findResponsibleActor(data(neighbor)) ! PotentialNeighbors(neighbor, potentialNeighbors)
+          }
+      }
+
+      val reverseNeighbors: Map[Int, Seq[Int]] = graph.map{case (index, _) => index -> Seq.empty}
+      nnDescent(distributionTree, graph, reverseNeighbors)
+    }
+
+    def nnDescent(distributionTree: PositionTree,
+                  graph: Map[Int, Seq[(Int, Double)]],
+                  reverseNeighbors: Map[Int, Seq[Int]]): Behavior[BuildGraphEvent] =
       Behaviors.receiveMessage {
-        case PotentialNeighbors(potentialNeighbors) =>
-          // TODO check them for viability and react accordingly
-          nnDescent(k, supervisor)
-      }
+        case PotentialNeighbors(g_node, potentialNeighbors) =>
+          // update neighbors
+          val currentNeighbors: Seq[(Int, Double)] = graph(g_node)
+          val currentMaxDist: Double = currentNeighbors(currentNeighbors.length - 1)._2
+          // preliminary filtering of obviously bad candidates
+          val probableNeighbors = potentialNeighbors.filter(_._2 < currentMaxDist)
+          val mergedNeighbors = (currentNeighbors ++: probableNeighbors).sortBy(_._2)
+          val updatedNeighbors = mergedNeighbors.slice(0, k)
+          val newNeighbors = updatedNeighbors.intersect(probableNeighbors)
+          val removedNeighbors = mergedNeighbors.slice(k, mergedNeighbors.length).intersect(currentNeighbors)
+          // update the reverse neighbors of changed neighbors
+          newNeighbors.foreach{case (index, _) =>
+            distributionTree.findResponsibleActor(data(index)) ! AddReverseNeighbor(index, g_node)
+          }
+          removedNeighbors.foreach{case (index, _) =>
+              distributionTree.findResponsibleActor(data(index)) ! RemoveReverseNeighbor(index, g_node)
+          }
+          // send new neighbors to all neighbors (but not to themselves)
+          val allNeighbors = updatedNeighbors.map(_._1) ++: reverseNeighbors(g_node)
+          allNeighbors.foreach{neighborIndex =>
+            val potentials = newNeighbors.map(_._1).diff(Seq(neighborIndex)).map{ newNeighborIndex =>
+              (newNeighborIndex, euclideanDist(data(neighborIndex), data(newNeighborIndex)))
+            }
+            distributionTree.findResponsibleActor(data(neighborIndex)) ! PotentialNeighbors(neighborIndex, potentials)
+          }
+          val updatedGraph = graph + (g_node -> updatedNeighbors)
+          nnDescent(distributionTree, updatedGraph, reverseNeighbors)
 
+        case AddReverseNeighbor(g_nodeIndex, neighborIndex) =>
+          val allNeighbors = graph(g_nodeIndex).map(_._1) ++: reverseNeighbors(g_nodeIndex)
+          allNeighbors.foreach{index =>
+            distributionTree.findResponsibleActor(data(index)) ! PotentialNeighbors(index, Seq((neighborIndex, euclideanDist(data(index), data(neighborIndex)))))
+          }
+          // TODO also send all neighbors to the new neighbor
+          // TODO update reverse neighbors
+          nnDescent(distributionTree, graph, reverseNeighbors)
+
+        case RemoveReverseNeighbor(g_nodeIndex, neighborIndex) =>
+          // TODO: update reverse neighbors and create new potentialNeighbor
+          nnDescent(distributionTree, graph, reverseNeighbors)
+      }
 
     // Start the graph building process
     buildDistributionTree()
