@@ -276,11 +276,13 @@ object KnngWorker {
         case AddReverseNeighbor(g_nodeIndex, neighborIndex) =>
           val allNeighbors = graph(g_nodeIndex).map(_._1) ++: reverseNeighbors(g_nodeIndex)
           // introduce the new neighbor to all other neighbors
-          allNeighbors.foreach{index =>
-            val distance = euclideanDist(data(index), data(neighborIndex))
+          val potentialNeighbors = allNeighbors.map(index => (index, euclideanDist(data(index), data(neighborIndex))))
+          distributionTree.findResponsibleActor(data(neighborIndex)) ! PotentialNeighbors(neighborIndex, potentialNeighbors)
+          // introduce all other neighbors to the new neighbor
+          potentialNeighbors.foreach { case(index, distance) =>
             distributionTree.findResponsibleActor(data(index)) ! PotentialNeighbors(index, Seq((neighborIndex, distance)))
-            distributionTree.findResponsibleActor(data(neighborIndex)) ! PotentialNeighbors(neighborIndex, Seq((index, distance)))
           }
+          // update reverse neighbors
           val updatedReverseNeighbors = reverseNeighbors(g_nodeIndex) :+ neighborIndex
           nnDescent(distributionTree, graph, reverseNeighbors + (g_nodeIndex -> updatedReverseNeighbors))
 
