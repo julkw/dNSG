@@ -25,8 +25,7 @@ object KnngWorker {
   final case object FinishedApproximateGraph extends BuildGraphEvent
   // improve approximate graph
   final case object StartNNDescent extends BuildGraphEvent
-  // TODO rename nodes to something more clear like start and endNode
-  final case class PotentialNeighbors(g_node: Int, potentialNeighbors: Seq[(Int, Double)]) extends BuildGraphEvent
+  final case class PotentialNeighbors(g_node: Int, potentialNeighbors: Seq[(Int, Double)], senderIndex: Int) extends BuildGraphEvent
   final case class RemoveReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int) extends BuildGraphEvent
   final case class AddReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int) extends BuildGraphEvent
 
@@ -112,7 +111,7 @@ object KnngWorker {
             ctx.self ! FindCandidates(0)
             val candidates: Map[Int, Seq[Int]] = Map.empty
             val awaitingAnswer: Array[Int] = Array.fill(responsibility.length){0}
-            val graph: Map[Int, Seq[Int]] = Map.empty
+            val graph: Map[Int, Seq[(Int, Double)]] = Map.empty
             buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, distributionTree, graph)
           case GetCandidates(query, index, sender) =>
             // TODO forward to self with timer
@@ -177,7 +176,6 @@ object KnngWorker {
             if (updatedGraph.size == responsibility.length) {
               ctx.log.info("Should be able to switch to nnDescent now")
               supervisor ! FinishedApproximateGraph
-              // TODO: Protocol for when to switch to nnDescent
             }
             buildApproximateGraph(kdTree, responsibility, updatedCandidates, awaitingAnswer, distributionTree, updatedGraph)
           } else {
@@ -196,8 +194,8 @@ object KnngWorker {
           ctx.self ! RemoveReverseNeighbor(g_nodeIndex, neighborIndex)
           startNNDescent(distributionTree, graph)
 
-        case PotentialNeighbors(g_node, potentialNeighbors) =>
-          ctx.self ! PotentialNeighbors(g_node, potentialNeighbors)
+        case PotentialNeighbors(g_node, potentialNeighbors, senderIndex) =>
+          ctx.self ! PotentialNeighbors(g_node, potentialNeighbors, senderIndex)
           startNNDescent(distributionTree, graph)
       }
 
@@ -221,10 +219,9 @@ object KnngWorker {
               (n1, dist)
             }
           }
-          distributionTree.findResponsibleActor(data(neighbor)) ! PotentialNeighbors(neighbor, potentialNeighbors)
+          distributionTree.findResponsibleActor(data(neighbor)) ! PotentialNeighbors(neighbor, potentialNeighbors, index)
           }
       }
-
       val reverseNeighbors: Map[Int, Seq[Int]] = graph.map{case (index, _) => index -> Seq.empty}
       nnDescent(distributionTree, graph, reverseNeighbors)
     }
@@ -233,25 +230,30 @@ object KnngWorker {
                   graph: Map[Int, Seq[(Int, Double)]],
                   reverseNeighbors: Map[Int, Seq[Int]]): Behavior[BuildGraphEvent] =
       Behaviors.receiveMessage {
-        case PotentialNeighbors(g_node, potentialNeighbors) =>
-          // update neighbors
+        case StartNNDescent =>
+          // already done, so do nothing
+          nnDescent(distributionTree, graph, reverseNeighbors)
+        case PotentialNeighbors(g_node, potentialNeighbors, senderIndex) =>
           val currentNeighbors: Seq[(Int, Double)] = graph(g_node)
           val currentMaxDist: Double = currentNeighbors(currentNeighbors.length - 1)._2
           val probableNeighbors = potentialNeighbors.filter(_._2 < currentMaxDist)
+          if (probableNeighbors.isEmpty) {
+            // nothing changes
+            nnDescent(distributionTree, graph, reverseNeighbors)
+          } // else update neighbors
           val mergedNeighbors = (currentNeighbors ++: probableNeighbors).sortBy(_._2)
           val updatedNeighbors = mergedNeighbors.slice(0, k)
-          // helpful lists for next operations
-          val newNeighbors = updatedNeighbors.intersect(probableNeighbors).map(_._1)
-          val keptNeighbors = updatedNeighbors.intersect(currentNeighbors).map(_._1)
-          val removedNeighbors = mergedNeighbors.slice(k, mergedNeighbors.length).intersect(currentNeighbors).map(_._1)
           // update the reverse neighbors of changed neighbors
+          val newNeighbors = updatedNeighbors.intersect(probableNeighbors).map(_._1)
           newNeighbors.foreach {index =>
             distributionTree.findResponsibleActor(data(index)) ! AddReverseNeighbor(index, g_node)
           }
+          val removedNeighbors = mergedNeighbors.slice(k, mergedNeighbors.length).intersect(currentNeighbors).map(_._1)
           removedNeighbors.foreach {index =>
               distributionTree.findResponsibleActor(data(index)) ! RemoveReverseNeighbor(index, g_node)
           }
-          // send out new potential neighbors
+          // send out new potential neighbors (join the remaining old neighbors with the new ones)
+          val keptNeighbors = updatedNeighbors.intersect(currentNeighbors.diff(Seq(senderIndex))).map(_._1) ++: reverseNeighbors(g_node)
           // first calculate distances to prevent double calculation
           val potentialPairs = for {
             n1 <- newNeighbors
@@ -262,12 +264,12 @@ object KnngWorker {
           // (the new neighbors do not have to be joined, as that will already have happened at the g_node the message originated from)
           newNeighbors.foreach { index =>
             val thisNodesPotentialNeighbors = potentialPairs.collect{case (n1, n2, dist) if n1== index => (n2, dist)}
-            distributionTree.findResponsibleActor(data(index)) ! PotentialNeighbors(index, thisNodesPotentialNeighbors)
+            distributionTree.findResponsibleActor(data(index)) ! PotentialNeighbors(index, thisNodesPotentialNeighbors, g_node)
           }
           // introduce old neighbors to new neighbors
           keptNeighbors.foreach {index =>
             val thisNodesPotentialNeighbors = potentialPairs.collect{case (n1, n2, dist) if n2 == index => (n1, dist)}
-            distributionTree.findResponsibleActor(data(index)) ! PotentialNeighbors(index, thisNodesPotentialNeighbors)
+            distributionTree.findResponsibleActor(data(index)) ! PotentialNeighbors(index, thisNodesPotentialNeighbors, g_node)
           }
           // update graph
           val updatedGraph = graph + (g_node -> updatedNeighbors)
@@ -277,10 +279,10 @@ object KnngWorker {
           val allNeighbors = graph(g_nodeIndex).map(_._1) ++: reverseNeighbors(g_nodeIndex)
           // introduce the new neighbor to all other neighbors
           val potentialNeighbors = allNeighbors.map(index => (index, euclideanDist(data(index), data(neighborIndex))))
-          distributionTree.findResponsibleActor(data(neighborIndex)) ! PotentialNeighbors(neighborIndex, potentialNeighbors)
+          distributionTree.findResponsibleActor(data(neighborIndex)) ! PotentialNeighbors(neighborIndex, potentialNeighbors, g_nodeIndex)
           // introduce all other neighbors to the new neighbor
           potentialNeighbors.foreach { case(index, distance) =>
-            distributionTree.findResponsibleActor(data(index)) ! PotentialNeighbors(index, Seq((neighborIndex, distance)))
+            distributionTree.findResponsibleActor(data(index)) ! PotentialNeighbors(index, Seq((neighborIndex, distance)), g_nodeIndex)
           }
           // update reverse neighbors
           val updatedReverseNeighbors = reverseNeighbors(g_nodeIndex) :+ neighborIndex
