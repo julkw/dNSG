@@ -47,6 +47,8 @@ object KnngWorker {
 
   final case object FinishedNNDescent extends BuildGraphEvent
 
+  final case object CorrectFinishedNNDescent extends BuildGraphEvent
+
   private case object NNDescentTimeout extends  BuildGraphEvent
 
   private case object NNDescentTimerKey
@@ -110,7 +112,7 @@ class KnngWorker(data: Seq[Seq[Float]],
               case Some(node) =>
                 val combinedNode: SplitNode[ActorRef[BuildGraphEvent]] = SplitNode(treeNode, node, dimension, border)
                 supervisor ! DistributionInfo(combinedNode, ctx.self)
-                waitForApproximateGraphs(0)
+                waitForApproximateGraphs(0, 0)
             }
           case `right` =>
             leftNode match {
@@ -119,19 +121,32 @@ class KnngWorker(data: Seq[Seq[Float]],
               case Some(node) =>
                 val combineNode: SplitNode[ActorRef[BuildGraphEvent]] = SplitNode(node, treeNode, dimension, border)
                 supervisor ! DistributionInfo(combineNode, ctx.self)
-                waitForApproximateGraphs(0)
+                waitForApproximateGraphs(0, 0)
             }
         }
     }
 
 
-  def waitForApproximateGraphs(finishedGraphs: Int): Behavior[BuildGraphEvent] =
+  def waitForApproximateGraphs(finishedGraphs: Int, finishedNNDescent: Int): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
       case FinishedApproximateGraph =>
         if (finishedGraphs > 0) {
           supervisor ! FinishedApproximateGraph
         }
-        waitForApproximateGraphs(finishedGraphs + 1)
+        waitForApproximateGraphs(finishedGraphs + 1, 0)
+
+      case FinishedNNDescent =>
+        if (finishedNNDescent > 0) {
+          supervisor ! FinishedNNDescent
+        }
+        waitForApproximateGraphs(finishedGraphs, finishedNNDescent + 1)
+
+      case CorrectFinishedNNDescent =>
+        if (finishedNNDescent == 2) {
+          // if the wrong information has already been sent up, correct it
+          supervisor ! CorrectFinishedNNDescent
+        }
+        waitForApproximateGraphs(finishedGraphs, finishedNNDescent - 1)
     }
 
   def waitForDistributionInfo(kdTree: IndexTree,
@@ -278,7 +293,12 @@ class KnngWorker(data: Seq[Seq[Float]],
           // nothing changes
           nnDescent(distributionTree, graph, reverseNeighbors)
         } else {
-          timers.cancel(NNDescentTimerKey)
+          if (timers.isTimerActive(NNDescentTimerKey)) {
+            timers.cancel(NNDescentTimerKey)
+          } else {
+            // if the timer is inactive, it has already run out and the actor has mistakenly told its supervisor that it is done
+            supervisor ! CorrectFinishedNNDescent
+          }
           // update neighbors
           val mergedNeighbors = (currentNeighbors ++: probableNeighbors).sortBy(_._2)
           val updatedNeighbors = mergedNeighbors.slice(0, k)
@@ -315,8 +335,7 @@ class KnngWorker(data: Seq[Seq[Float]],
           val updatedGraph = graph + (g_node -> updatedNeighbors)
           ctx.log.info("Updating graph")
           // something changed so reset the NNDescent Timer
-          // TODO this could really be wrapped in a function, also timoutAfter through input
-          // TODO also check if Timeout has been sent before wrongly
+          // TODO timoutAfter through input
           val timeoutAfter = 3.second
           timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
           nnDescent(distributionTree, updatedGraph, reverseNeighbors)

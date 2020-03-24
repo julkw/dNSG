@@ -77,13 +77,15 @@ object Coordinator {
               Behaviors.same
 
             case FinishedNNDescent =>
-              // TODO for some reason I get dead letters here
-              // TODO: save which workers have told me. If all make them switch states
-              ctx.log.info("One of the workers thinks nndescent is done")
+              ctx.log.info("NNDescent seems to be done")
+              // TODO make workers change states to whatever is to be done after NNDEscent
+              Behaviors.same
+
+            case CorrectFinishedNNDescent =>
+              // In case of cluster tell Cluster Coordinator, else this hopefully shouldn't happen
               Behaviors.same
           }
       }
-
 
     val dh = ctx.spawn(DataHolder(), name = "DataHolder")
     // TODO specify file and type through configurations
