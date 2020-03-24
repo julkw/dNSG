@@ -78,7 +78,14 @@ object Coordinator {
 
             case FinishedNNDescent =>
               ctx.log.info("NNDescent seems to be done")
-              // TODO make workers change states to whatever is to be done after NNDEscent
+              knngWorkers.foreach(worker => worker ! StartSearchOnGraph)
+              // test if a query returns a result
+              val query: Seq[Float] = Seq.fill(data(0).length){0}
+              knngWorkers.head ! Query(query, buildGraphEventAdapter)
+              Behaviors.same
+
+            case KNearestNeighbors(query, neighbors) =>
+              ctx.log.info("Received an answer to my query")
               Behaviors.same
 
             case CorrectFinishedNNDescent =>
