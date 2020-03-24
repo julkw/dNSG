@@ -77,7 +77,9 @@ object Coordinator {
               Behaviors.same
 
             case FinishedNNDescent =>
+              // TODO for some reason I get dead letters here
               // TODO: save which workers have told me. If all make them switch states
+              ctx.log.info("One of the workers thinks nndescent is done")
               Behaviors.same
           }
       }
