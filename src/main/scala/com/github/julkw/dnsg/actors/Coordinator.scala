@@ -75,6 +75,10 @@ object Coordinator {
               ctx.log.info("Approximate graph has been build")
               knngWorkers.foreach(worker => worker ! StartNNDescent)
               Behaviors.same
+
+            case FinishedNNDescent =>
+              // TODO: save which workers have told me. If all make them switch states
+              Behaviors.same
           }
       }
 
