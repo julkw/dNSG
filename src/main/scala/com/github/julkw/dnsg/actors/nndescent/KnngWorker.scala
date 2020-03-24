@@ -53,6 +53,24 @@ object KnngWorker {
 
   private case object NNDescentTimerKey
 
+  // test final graph / find NavigatingNode
+  // TODO rename BuildGraphEvent to KnngEvent as this is not part of building the graph anymore?
+  final case object StartSearchOnGraph extends BuildGraphEvent
+
+  final case class Query(query: Seq[Float], asker: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
+
+  final case class GetNeighbors(index: Int, query: Seq[Float], sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
+
+  final case class Neighbors(query: Seq[Float], index: Int, neighbors: Seq[Int]) extends BuildGraphEvent
+
+  final case class KNearestNeighbors(query: Seq[Float], neighbors: Seq[Int]) extends BuildGraphEvent
+
+  // safe knng to file
+  final case class GetGraph(sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
+
+  final case class Graph(graph: Map[Int, Seq[Int]]) extends BuildGraphEvent
+
+
   val knngServiceKey: ServiceKey[BuildGraphEvent] = ServiceKey[BuildGraphEvent]("knngWorker")
 
   def apply(data: Seq[Seq[Float]],
@@ -288,7 +306,7 @@ class KnngWorker(data: Seq[Seq[Float]],
       case PotentialNeighbors(g_node, potentialNeighbors, senderIndex) =>
         val currentNeighbors: Seq[(Int, Double)] = graph(g_node)
         val currentMaxDist: Double = currentNeighbors(currentNeighbors.length - 1)._2
-        val probableNeighbors = potentialNeighbors.filter(_._2 < currentMaxDist).diff(currentNeighbors)
+        val probableNeighbors: Set[(Int, Double)] = potentialNeighbors.filter(_._2 < currentMaxDist).toSet -- currentNeighbors - ((g_node, 0.0))
         if (probableNeighbors.isEmpty) {
           // nothing changes
           nnDescent(distributionTree, graph, reverseNeighbors)
@@ -300,10 +318,11 @@ class KnngWorker(data: Seq[Seq[Float]],
             supervisor ! CorrectFinishedNNDescent
           }
           // update neighbors
-          val mergedNeighbors = (currentNeighbors ++: probableNeighbors).sortBy(_._2)
+          val mergedNeighbors = (currentNeighbors ++: probableNeighbors.toSeq).sortBy(_._2)
           val updatedNeighbors = mergedNeighbors.slice(0, k)
           // update the reverse neighbors of changed neighbors
-          val newNeighbors = updatedNeighbors.intersect(probableNeighbors).map(_._1)
+          val newNeighbors: Set[Int] = probableNeighbors.intersect(updatedNeighbors.toSet).map(_._1)
+
           newNeighbors.foreach {index =>
             distributionTree.findResponsibleActor(data(index)) ! AddReverseNeighbor(index, g_node)
           }
@@ -314,7 +333,7 @@ class KnngWorker(data: Seq[Seq[Float]],
           // send out new potential neighbors (join the remaining old neighbors with the new ones)
           val keptNeighbors = updatedNeighbors.intersect(currentNeighbors.diff(Seq(senderIndex))).map(_._1) ++: reverseNeighbors(g_node)
           // first calculate distances to prevent double calculation
-          val newNeighborsToPair = newNeighbors.diff(reverseNeighbors(g_node)) // those would need to be joined with the kept neighbors
+          val newNeighborsToPair = newNeighbors -- reverseNeighbors(g_node) // those who need to be joined with the kept neighbors
           val potentialPairs = for {
             n1 <- newNeighborsToPair
             n2 <- keptNeighbors
@@ -323,12 +342,12 @@ class KnngWorker(data: Seq[Seq[Float]],
           // introduce old neighbors to new neighbors
           // (the new neighbors do not have to be joined, as that will already have happened at the g_node the message originated from)
           newNeighborsToPair.foreach { index =>
-            val thisNodesPotentialNeighbors = potentialPairs.collect{case (n1, n2, dist) if n1== index => (n2, dist)}
+            val thisNodesPotentialNeighbors = potentialPairs.collect{case (n1, n2, dist) if n1== index => (n2, dist)}.toSeq
             distributionTree.findResponsibleActor(data(index)) ! PotentialNeighbors(index, thisNodesPotentialNeighbors, g_node)
           }
           // introduce old neighbors to new neighbors
           keptNeighbors.foreach {index =>
-            val thisNodesPotentialNeighbors = potentialPairs.collect{case (n1, n2, dist) if n2 == index => (n1, dist)}
+            val thisNodesPotentialNeighbors = potentialPairs.collect{case (n1, n2, dist) if n2 == index => (n1, dist)}.toSeq
             distributionTree.findResponsibleActor(data(index)) ! PotentialNeighbors(index, thisNodesPotentialNeighbors, g_node)
           }
           // update graph
@@ -342,9 +361,10 @@ class KnngWorker(data: Seq[Seq[Float]],
         }
 
       case AddReverseNeighbor(g_nodeIndex, neighborIndex) =>
-        val allNeighbors = graph(g_nodeIndex).map(_._1) ++: reverseNeighbors(g_nodeIndex)
+        // all neighbors without duplicates and without the new neighbor being introduced
+        val allNeighbors = graph(g_nodeIndex).map(_._1).toSet ++ reverseNeighbors(g_nodeIndex).toSet - neighborIndex
         // introduce the new neighbor to all other neighbors
-        val potentialNeighbors = allNeighbors.map(index => (index, euclideanDist(data(index), data(neighborIndex))))
+        val potentialNeighbors = allNeighbors.map(index => (index, euclideanDist(data(index), data(neighborIndex)))).toSeq
         distributionTree.findResponsibleActor(data(neighborIndex)) ! PotentialNeighbors(neighborIndex, potentialNeighbors, g_nodeIndex)
         // introduce all other neighbors to the new neighbor
         potentialNeighbors.foreach { case(index, distance) =>
@@ -362,6 +382,58 @@ class KnngWorker(data: Seq[Seq[Float]],
         ctx.log.info("Looks like I'm done with NNDescent")
         supervisor ! FinishedNNDescent
         nnDescent(distributionTree, graph, reverseNeighbors)
+
+      case StartSearchOnGraph =>
+        val cleanedGraph: Map[Int, Seq[Int]] = graph.map{case (index, neighbors) => index -> neighbors.map(_._1)}
+        val queries: Map[Seq[Float], (ActorRef[BuildGraphEvent], Seq[(Int, Double, Boolean)])] = Map.empty
+        searchOnGraph(distributionTree, cleanedGraph, queries)
+    }
+
+  def searchOnGraph(distributionTree: PositionTree,
+                    graph: Map[Int, Seq[Int]],
+                    queries: Map[Seq[Float], (ActorRef[BuildGraphEvent], Seq[(Int, Double, Boolean)])]): Behavior[BuildGraphEvent] =
+    Behaviors.receiveMessage {
+      case Query(query, asker) =>
+        ctx.log.info("Received a query")
+        // choose node to start search from local nodes
+        val startingNodeIndex: Int = graph.keys.head
+        val candidateList = Seq((startingNodeIndex, euclideanDist(data(startingNodeIndex), query), false))
+        // since this node is located locally, just ask self
+        ctx.self ! GetNeighbors(startingNodeIndex, query, ctx.self)
+        val updatedQueries = queries + (query -> (asker, candidateList))
+        searchOnGraph(distributionTree, graph, updatedQueries)
+
+      case GetNeighbors(index, query, sender) =>
+        sender ! Neighbors(query, index, graph(index))
+        searchOnGraph(distributionTree, graph, queries)
+
+      case Neighbors(query, index, neighbors) =>
+        // update candidates
+        val currentCandidates: Seq[(Int, Double, Boolean)] = queries(query)._2
+        val currentCandidateIndices = currentCandidates.map(_._1)
+        // only add candidates that are not already in the candidateList
+        val newCandidates = neighbors.diff(currentCandidateIndices).map(
+          index => (index, euclideanDist(query, data(index)), false))
+        val mergedCandidates = (currentCandidates ++: newCandidates).sortBy(_._2)
+        // set flag for the now processed index to true
+        val indexToUpdate = mergedCandidates.map(_._1).indexOf(index)
+        val updatedCandidate = (mergedCandidates(indexToUpdate)._1, mergedCandidates(indexToUpdate)._2, true)
+        val updatedCandidates = mergedCandidates.patch(indexToUpdate, Seq(updatedCandidate), 1).slice(0, k)
+        // check if enough candidates have been processed
+        val nextCandidateToProcess = updatedCandidates.find{case (_, _, flag) => flag}
+        nextCandidateToProcess match {
+          case Some(nextCandidate) =>
+            // find the neighbors of the next candidate to be processed and update queries
+            distributionTree.findResponsibleActor(data(nextCandidate._1)) ! GetNeighbors(nextCandidate._1, query, ctx.self)
+            val updatedQueries = queries + (query -> (queries(query)._1 ,updatedCandidates))
+            searchOnGraph(distributionTree, graph, updatedQueries)
+          case None =>
+            // all candidates have been processed
+            val nearestNeighbors: Seq[Int] = updatedCandidates.map(_._1)
+            queries(query)._1 ! KNearestNeighbors(query, nearestNeighbors)
+            val updatedQueries = queries - query
+            searchOnGraph(distributionTree, graph, updatedQueries)
+        }
     }
 
   def euclideanDist(pointX: Seq[Float], pointY: Seq[Float]): Double = {
