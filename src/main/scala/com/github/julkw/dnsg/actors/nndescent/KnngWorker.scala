@@ -6,8 +6,8 @@ import math._
 import scala.concurrent.duration._
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{AbstractBehavior, ActorContext, Behaviors, TimerScheduler}
+import com.github.julkw.dnsg.actors.DataHolder.{GraphData, LoadDataEvent}
 import com.github.julkw.dnsg.util.{IndexTree, LeafNode, PositionTree, SplitNode, TreeBuilder, TreeNode}
-
 
 import scala.language.postfixOps
 import scala.collection.mutable
@@ -68,9 +68,7 @@ object KnngWorker {
   final case class KNearestNeighbors(query: Seq[Float], neighbors: Seq[Int]) extends BuildGraphEvent
 
   // safe knng to file
-  final case class GetGraph(sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
-
-  final case class Graph(graph: Map[Int, Seq[Int]]) extends BuildGraphEvent
+  final case class GetGraph(sender: ActorRef[LoadDataEvent]) extends BuildGraphEvent
 
 
   val knngServiceKey: ServiceKey[BuildGraphEvent] = ServiceKey[BuildGraphEvent]("knngWorker")
@@ -448,6 +446,11 @@ class KnngWorker(data: Seq[Seq[Float]],
             val updatedQueries = queries - query
             searchOnGraph(distributionTree, graph, updatedQueries)
         }
+
+      case GetGraph(sender) =>
+        // send graph to dataHolder
+        sender ! GraphData(graph, ctx.self)
+        searchOnGraph(distributionTree, graph, queries)
     }
 
   def euclideanDist(pointX: Seq[Float], pointY: Seq[Float]): Double = {
