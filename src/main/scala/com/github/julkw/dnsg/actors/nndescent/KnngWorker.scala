@@ -37,6 +37,8 @@ object KnngWorker {
   // improve approximate graph
   final case object StartNNDescent extends BuildGraphEvent
 
+  final case class CompleteLocalJoin(g_node: Int) extends BuildGraphEvent
+
   final case class PotentialNeighbors(g_node: Int, potentialNeighbors: Seq[(Int, Double)], senderIndex: Int) extends BuildGraphEvent
 
   final case class RemoveReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int) extends BuildGraphEvent
@@ -72,6 +74,8 @@ object KnngWorker {
 
 
   val knngServiceKey: ServiceKey[BuildGraphEvent] = ServiceKey[BuildGraphEvent]("knngWorker")
+  // TODO do over input
+  val timeoutAfter = 3.second
 
   def apply(data: Seq[Seq[Float]],
             maxResponsibility: Int,
@@ -235,6 +239,7 @@ class KnngWorker(data: Seq[Seq[Float]],
         val updatedCandidates = candidates + (responsibilityIndex -> (oldCandidates ++ remoteCandidates))
         awaitingAnswer(responsibilityIndex) -= 1
         if (awaitingAnswer(responsibilityIndex) == 0) {
+          ctx.log.info("updating approximate graph")
           val graphIndex: Int = responsibility(responsibilityIndex)
           val neighbors: Seq[(Int, Double)] = updatedCandidates(responsibilityIndex).map(candidateIndex =>
             // 1 and k+1 so the g_node itself is not added to its own neighbors
@@ -270,29 +275,17 @@ class KnngWorker(data: Seq[Seq[Float]],
                      graph: Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] = {
     ctx.log.info("Starting nnDescent")
     graph.foreach{ case (index, neighbors) =>
+      // do the initial local joins through messages to self to prevent Heartbeat problems
+      ctx.self ! CompleteLocalJoin(index)
       // send all reverse neighbors to the correct actors
       neighbors.foreach{case (neighborIndex, _) =>
         distributionTree.findResponsibleActor(data(neighborIndex)) ! AddReverseNeighbor(neighborIndex, index)
       }
-      // send all PotentialNeighbors to the correct actors
-      val distances: Seq[(Int, Int, Double)] = neighbors.map(_._1).combinations(2).map(combination =>
-        (combination(0), combination(1), euclideanDist(data(combination(0)), data(combination(1))))).toSeq
-      neighbors.foreach{case (neighbor, _) =>
-        val potentialNeighbors = distances.collect{ case(n1, n2, dist) if n1 == neighbor || n2 == neighbor =>
-          if (n1 == neighbor) {
-            (n2, dist)
-          } else {
-            (n1, dist)
-          }
-        }
-        distributionTree.findResponsibleActor(data(neighbor)) ! PotentialNeighbors(neighbor, potentialNeighbors, index)
-      }
     }
-    val reverseNeighbors: Map[Int, Seq[Int]] = graph.map{case (index, _) => index -> Seq.empty}
     // setup timer used to determine when the graph is done
-    // TODO determine over input
-    val timeoutAfter = 3.second
     timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
+    // start nnDescent
+    val reverseNeighbors: Map[Int, Seq[Int]] = graph.map{case (index, _) => index -> Seq.empty}
     nnDescent(distributionTree, graph, reverseNeighbors)
   }
 
@@ -303,6 +296,29 @@ class KnngWorker(data: Seq[Seq[Float]],
       case StartNNDescent =>
         // already done, so do nothing
         nnDescent(distributionTree, graph, reverseNeighbors)
+
+      case CompleteLocalJoin(g_node) =>
+        // prevent timeouts in the initial phase of graph nnDescent
+        timers.cancel(NNDescentTimerKey)
+        //ctx.log.info("Still working on initial local joins")
+        val neighbors = graph(g_node)
+        // send all PotentialNeighbors to the correct actors
+        val distances: Seq[(Int, Int, Double)] = neighbors.map(_._1).combinations(2).map(combination =>
+          (combination(0), combination(1), euclideanDist(data(combination(0)), data(combination(1))))).toSeq
+        neighbors.foreach{case (neighbor, _) =>
+          val potentialNeighbors = distances.collect{ case(n1, n2, dist) if n1 == neighbor || n2 == neighbor =>
+            if (n1 == neighbor) {
+              (n2, dist)
+            } else {
+              (n1, dist)
+            }
+          }
+          distributionTree.findResponsibleActor(data(neighbor)) ! PotentialNeighbors(neighbor, potentialNeighbors, g_node)
+        }
+        // if this is the last inital join, the timer is needed from now on
+        timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
+        nnDescent(distributionTree, graph, reverseNeighbors)
+
       case PotentialNeighbors(g_node, potentialNeighbors, senderIndex) =>
         val currentNeighbors: Seq[(Int, Double)] = graph(g_node)
         val currentMaxDist: Double = currentNeighbors(currentNeighbors.length - 1)._2
@@ -354,8 +370,6 @@ class KnngWorker(data: Seq[Seq[Float]],
           val updatedGraph = graph + (g_node -> updatedNeighbors)
           ctx.log.info("Updating graph")
           // something changed so reset the NNDescent Timer
-          // TODO timoutAfter through input
-          val timeoutAfter = 3.second
           timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
           nnDescent(distributionTree, updatedGraph, reverseNeighbors)
         }

@@ -8,7 +8,7 @@ import java.nio.ByteOrder
 import akka.actor.typed.ActorRef
 import akka.actor.typed.Behavior
 import akka.actor.typed.scaladsl.Behaviors
-import com.github.julkw.dnsg.actors.Coordinator.{CoordinationEvent, DataRef}
+import com.github.julkw.dnsg.actors.Coordinator.{AverageValue, CoordinationEvent, DataRef}
 
 import scala.language.postfixOps
 
@@ -16,6 +16,7 @@ object DataHolder {
 
   sealed trait LoadDataEvent
   final case class LoadSiftDataFromFile(filename: String, replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
+  final case class GetAverageValue(replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
   var data : Seq[Seq[Float]] = Seq.empty[Seq[Float]]
 
@@ -50,6 +51,13 @@ object DataHolder {
           // TODO remove again, this is just for faster debugging
           data = data.slice(0, 1000)
           replyTo ! DataRef(data)
+
+        case GetAverageValue(replyTo) =>
+          // TODO calculate average while loading data (as when in the cluster not all the data will be held here)
+          val averageValue: Seq[Float] = (0 until data(0).length).map{ index =>
+            data.map(value => value(index)).sum / data.length
+          }
+          replyTo ! AverageValue(averageValue)
       }
       Behaviors.same
     }

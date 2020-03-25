@@ -3,7 +3,7 @@ package com.github.julkw.dnsg.actors
 import akka.actor.typed.receptionist.Receptionist
 import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.DataHolder.LoadSiftDataFromFile
+import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, LoadSiftDataFromFile}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
 import com.github.julkw.dnsg.util.PositionTree
@@ -13,6 +13,8 @@ object Coordinator {
   sealed trait CoordinationEvent
 
   final case class DataRef(dataRef: Seq[Seq[Float]]) extends CoordinationEvent
+
+  final case class AverageValue(average: Seq[Float]) extends CoordinationEvent
 
   final case class WrappedBuildGraphEvent(event: KnngWorker.BuildGraphEvent) extends CoordinationEvent
 
@@ -35,7 +37,7 @@ object Coordinator {
     val listingResponseAdapter = ctx.messageAdapter[Receptionist.Listing](ListingResponse)
     ctx.system.receptionist ! Receptionist.Subscribe(KnngWorker.knngServiceKey, listingResponseAdapter)
 
-    def buildApproximateGraph(): Behavior[CoordinationEvent] =
+    def buildApproximateGraph(dh: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial {
         case DataRef(dataRef) =>
           data = dataRef
@@ -46,7 +48,12 @@ object Coordinator {
           val kw = ctx.spawn(KnngWorker(data, maxResponsibilityPerNode, k, buildGraphEventAdapter), name = "KnngWorker")
           val allIndices: Seq[Int] = 0 until data.length
           kw ! ResponsibleFor(allIndices)
-          Behaviors.same
+          buildApproximateGraph(dh)
+
+        case AverageValue(value) =>
+          // TODO safe distribution tree and actually use it to send query to the most suited worker
+          knngWorkers.head ! Query(value, buildGraphEventAdapter)
+          buildApproximateGraph(dh)
 
         case wrappedListing: ListingResponse =>
           wrappedListing.listing match {
@@ -58,7 +65,7 @@ object Coordinator {
               }
               knngWorkers = listings
           }
-          Behaviors.same
+          buildApproximateGraph(dh)
 
         case wrappedGraphEvent: WrappedBuildGraphEvent =>
           // handle the response from Configuration, which we understand since it was wrapped in a message that is part of
@@ -69,29 +76,27 @@ object Coordinator {
               val positionTree: PositionTree = PositionTree(distInfoRoot)
               distributionTree = Option(positionTree)
               knngWorkers.foreach(worker => worker ! DistributionTree(positionTree))
-              Behaviors.same
 
             case FinishedApproximateGraph =>
               ctx.log.info("Approximate graph has been build")
               knngWorkers.foreach(worker => worker ! StartNNDescent)
-              Behaviors.same
 
             case FinishedNNDescent =>
               ctx.log.info("NNDescent seems to be done")
               knngWorkers.foreach(worker => worker ! StartSearchOnGraph)
-              // test if a query returns a result
-              val query: Seq[Float] = Seq.fill(data(0).length){0}
-              knngWorkers.head ! Query(query, buildGraphEventAdapter)
-              Behaviors.same
+              dh ! GetAverageValue(ctx.self)
 
             case KNearestNeighbors(query, neighbors) =>
               ctx.log.info("Received an answer to my query")
-              Behaviors.same
+              // Right now the only query being asked for is the NavigationNode, so that has been found
+              val navigatingNode = neighbors.head
+              // TODO safe graph to file with information of navigating Node included
 
             case CorrectFinishedNNDescent =>
               // In case of cluster tell Cluster Coordinator, else this hopefully shouldn't happen
-              Behaviors.same
+
           }
+          buildApproximateGraph(dh)
       }
 
     val dh = ctx.spawn(DataHolder(), name = "DataHolder")
@@ -99,7 +104,7 @@ object Coordinator {
     dh ! LoadSiftDataFromFile(filename, ctx.self)
 
     ctx.log.info("start building the approximate graph")
-    buildApproximateGraph()
+    buildApproximateGraph(dh)
   }
 
 }
