@@ -420,7 +420,7 @@ class KnngWorker(data: Seq[Seq[Float]],
         val updatedCandidate = (mergedCandidates(indexToUpdate)._1, mergedCandidates(indexToUpdate)._2, true)
         val updatedCandidates = mergedCandidates.patch(indexToUpdate, Seq(updatedCandidate), 1).slice(0, k)
         // check if enough candidates have been processed
-        val nextCandidateToProcess = updatedCandidates.find{case (_, _, flag) => flag == false}
+        val nextCandidateToProcess = updatedCandidates.find{case (_, _, flag) => !flag}
         nextCandidateToProcess match {
           case Some(nextCandidate) =>
             // find the neighbors of the next candidate to be processed and update queries
