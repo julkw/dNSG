@@ -5,12 +5,12 @@ import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import math._
 import scala.concurrent.duration._
 import akka.actor.typed.{ActorRef, Behavior}
-import akka.actor.typed.scaladsl.{AbstractBehavior, ActorContext, Behaviors, TimerScheduler}
-import com.github.julkw.dnsg.actors.DataHolder.{GraphData, LoadDataEvent}
-import com.github.julkw.dnsg.util.{IndexTree, LeafNode, PositionTree, SplitNode, TreeBuilder, TreeNode}
+import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
+import com.github.julkw.dnsg.actors.SearchOnGraph
+import com.github.julkw.dnsg.actors.SearchOnGraph.{Graph, GraphReceived, SearchOnGraphEvent}
+import com.github.julkw.dnsg.util.{IndexTree, LeafNode, NodeLocator, SplitNode, TreeBuilder, TreeNode}
 
 import scala.language.postfixOps
-import scala.collection.mutable
 
 
 object KnngWorker {
@@ -23,7 +23,7 @@ object KnngWorker {
   // data distribution
   final case class DistributionInfo(treeNode: TreeNode[ActorRef[BuildGraphEvent]], sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
 
-  final case class DistributionTree(distributionTree: PositionTree) extends BuildGraphEvent
+  final case class BuildApproximateGraph(nodeLocator: NodeLocator[BuildGraphEvent]) extends BuildGraphEvent
 
   // build approximate graph
   final case class FindCandidates(index: Int) extends BuildGraphEvent
@@ -55,20 +55,12 @@ object KnngWorker {
 
   private case object NNDescentTimerKey
 
-  // test final graph / find NavigatingNode
-  // TODO rename BuildGraphEvent to KnngEvent as this is not part of building the graph anymore?
-  final case object StartSearchOnGraph extends BuildGraphEvent
+  // give final graph to SearchOnGraph Actor
+  final case class StartSearchOnGraph(graphHolder: ActorRef[SearchOnGraphEvent]) extends BuildGraphEvent
 
-  final case class Query(query: Seq[Float], asker: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
+  final case class WrappedSearchOnGraphEvent(event: SearchOnGraph.SearchOnGraphEvent) extends BuildGraphEvent
 
-  final case class GetNeighbors(index: Int, query: Seq[Float], sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
-
-  final case class Neighbors(query: Seq[Float], index: Int, neighbors: Seq[Int]) extends BuildGraphEvent
-
-  final case class KNearestNeighbors(query: Seq[Float], neighbors: Seq[Int]) extends BuildGraphEvent
-
-  // safe knng to file
-  final case class GetGraph(sender: ActorRef[LoadDataEvent]) extends BuildGraphEvent
+  final case class SOGDistributionInfo(treeNode: TreeNode[ActorRef[SearchOnGraphEvent]], sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
 
 
   val knngServiceKey: ServiceKey[BuildGraphEvent] = ServiceKey[BuildGraphEvent]("knngWorker")
@@ -121,7 +113,8 @@ class KnngWorker(data: Seq[Seq[Float]],
                               right: ActorRef[BuildGraphEvent],
                               leftNode: Option[TreeNode[ActorRef[BuildGraphEvent]]],
                               rightNode: Option[TreeNode[ActorRef[BuildGraphEvent]]],
-                              dimension: Int, border: Float): Behavior[BuildGraphEvent] =
+                              dimension: Int,
+                              border: Float): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
       case DistributionInfo(treeNode, sender) =>
         sender match {
@@ -132,53 +125,62 @@ class KnngWorker(data: Seq[Seq[Float]],
               case Some(node) =>
                 val combinedNode: SplitNode[ActorRef[BuildGraphEvent]] = SplitNode(treeNode, node, dimension, border)
                 supervisor ! DistributionInfo(combinedNode, ctx.self)
-                waitForApproximateGraphs(0, 0)
+                waitForApproximateGraphs(0, 0, left, right, combinedNode)
             }
           case `right` =>
             leftNode match {
               case None =>
                 combineDistributionTree(left, right, leftNode, Option(treeNode), dimension, border)
               case Some(node) =>
-                val combineNode: SplitNode[ActorRef[BuildGraphEvent]] = SplitNode(node, treeNode, dimension, border)
-                supervisor ! DistributionInfo(combineNode, ctx.self)
-                waitForApproximateGraphs(0, 0)
+                val combinedNode: SplitNode[ActorRef[BuildGraphEvent]] = SplitNode(node, treeNode, dimension, border)
+                supervisor ! DistributionInfo(combinedNode, ctx.self)
+                waitForApproximateGraphs(0, 0, left, right, combinedNode)
             }
         }
     }
 
 
-  def waitForApproximateGraphs(finishedGraphs: Int, finishedNNDescent: Int): Behavior[BuildGraphEvent] =
+  def waitForApproximateGraphs(finishedGraphs: Int,
+                               finishedNNDescent: Int,
+                               leftChild: ActorRef[BuildGraphEvent],
+                               rightChild: ActorRef[BuildGraphEvent],
+                               splitNode: SplitNode[ActorRef[BuildGraphEvent]]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
       case FinishedApproximateGraph =>
         if (finishedGraphs > 0) {
           supervisor ! FinishedApproximateGraph
         }
-        waitForApproximateGraphs(finishedGraphs + 1, 0)
+        waitForApproximateGraphs(finishedGraphs + 1, 0, leftChild, rightChild, splitNode)
 
       case FinishedNNDescent =>
         if (finishedNNDescent > 0) {
           supervisor ! FinishedNNDescent
         }
-        waitForApproximateGraphs(finishedGraphs, finishedNNDescent + 1)
+        waitForApproximateGraphs(finishedGraphs, finishedNNDescent + 1, leftChild, rightChild, splitNode)
 
       case CorrectFinishedNNDescent =>
         if (finishedNNDescent == 2) {
           // if the wrong information has already been sent up, correct it
           supervisor ! CorrectFinishedNNDescent
         }
-        waitForApproximateGraphs(finishedGraphs, finishedNNDescent - 1)
+        waitForApproximateGraphs(finishedGraphs, finishedNNDescent - 1, leftChild, rightChild, splitNode)
+
+      case SOGDistributionInfo(treeNode, sender) =>
+        // only switch states here, where it is relatively certain, that nndescent is globally done
+        ctx.self ! SOGDistributionInfo(treeNode, sender)
+        combineSOGDistributionTree(leftChild, rightChild, None, None, splitNode)
     }
 
   def waitForDistributionInfo(kdTree: IndexTree,
                               responsibility: Seq[Int]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
-      case DistributionTree(distributionTree) =>
+      case BuildApproximateGraph(nodeLocator) =>
         ctx.log.info("Received Distribution Tree. Start building approximate graph")
         ctx.self ! FindCandidates(0)
         val candidates: Map[Int, Seq[Int]] = Map.empty
         val awaitingAnswer: Array[Int] = Array.fill(responsibility.length){0}
         val graph: Map[Int, Seq[(Int, Double)]] = Map.empty
-        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, distributionTree, graph)
+        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
       case GetCandidates(query, index, sender) =>
         // TODO forward to self with timer
         val getCandidateKey = "GetCandidates"
@@ -192,10 +194,10 @@ class KnngWorker(data: Seq[Seq[Float]],
                             responsibility: Seq[Int],
                             candidates: Map [Int, Seq[Int]],
                             awaitingAnswer: Array[Int],
-                            distributionTree: PositionTree,
+                            nodeLocator: NodeLocator[BuildGraphEvent],
                             graph:Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
-      case DistributionTree(distributionTree) =>
+      case BuildApproximateGraph(distributionTree) =>
         ctx.log.info("Received Distribution Tree. Start building approximate graph")
         ctx.self ! FindCandidates(0)
         buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, distributionTree, graph)
@@ -207,7 +209,7 @@ class KnngWorker(data: Seq[Seq[Float]],
         }
         // find candidates for current node
         val query: Seq[Float] = data(responsibility(responsibilityIndex))
-        var currentActorNode = distributionTree.root
+        var currentActorNode = nodeLocator.positionTree.root
         // Find actors to ask for candidates
         while (currentActorNode.inverseQueryChild(query) != currentActorNode) {
           val actorToAsk: ActorRef[BuildGraphEvent] = currentActorNode.inverseQueryChild(query).queryLeaf(query).data
@@ -225,12 +227,12 @@ class KnngWorker(data: Seq[Seq[Float]],
         localCandidates = localCandidates ++ currentDataNode.data
         ctx.self ! Candidates(localCandidates, responsibilityIndex)
         awaitingAnswer(responsibilityIndex) += 1
-        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, distributionTree, graph)
+        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
 
       case GetCandidates(query, index, sender) =>
         val localCandidates: Seq[Int] = kdTree.root.queryLeaf(query).data
         sender ! Candidates(localCandidates, index)
-        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, distributionTree, graph)
+        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
 
       case Candidates(remoteCandidates, responsibilityIndex) =>
         val oldCandidates = candidates.getOrElse(responsibilityIndex, Seq.empty)
@@ -247,29 +249,29 @@ class KnngWorker(data: Seq[Seq[Float]],
             ctx.log.info("Should be able to switch to nnDescent now")
             supervisor ! FinishedApproximateGraph
           }
-          buildApproximateGraph(kdTree, responsibility, updatedCandidates, awaitingAnswer, distributionTree, updatedGraph)
+          buildApproximateGraph(kdTree, responsibility, updatedCandidates, awaitingAnswer, nodeLocator, updatedGraph)
         } else {
-          buildApproximateGraph(kdTree, responsibility, updatedCandidates, awaitingAnswer, distributionTree, graph)
+          buildApproximateGraph(kdTree, responsibility, updatedCandidates, awaitingAnswer, nodeLocator, graph)
         }
 
       case StartNNDescent =>
-        startNNDescent(distributionTree, graph)
+        startNNDescent(nodeLocator, graph)
 
       // in case one of the other actors got the message slightly earlier and has already started sending me nnDescent messages
       case AddReverseNeighbor(g_nodeIndex, neighborIndex) =>
         ctx.self ! AddReverseNeighbor(g_nodeIndex, neighborIndex)
-        startNNDescent(distributionTree, graph)
+        startNNDescent(nodeLocator, graph)
 
       case RemoveReverseNeighbor(g_nodeIndex, neighborIndex) =>
         ctx.self ! RemoveReverseNeighbor(g_nodeIndex, neighborIndex)
-        startNNDescent(distributionTree, graph)
+        startNNDescent(nodeLocator, graph)
 
       case PotentialNeighbors(g_node, potentialNeighbors, senderIndex) =>
         ctx.self ! PotentialNeighbors(g_node, potentialNeighbors, senderIndex)
-        startNNDescent(distributionTree, graph)
+        startNNDescent(nodeLocator, graph)
     }
 
-  def startNNDescent(distributionTree: PositionTree,
+  def startNNDescent(nodeLocator: NodeLocator[BuildGraphEvent],
                      graph: Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] = {
     ctx.log.info("Starting nnDescent")
     graph.foreach{ case (index, neighbors) =>
@@ -277,23 +279,23 @@ class KnngWorker(data: Seq[Seq[Float]],
       ctx.self ! CompleteLocalJoin(index)
       // send all reverse neighbors to the correct actors
       neighbors.foreach{case (neighborIndex, _) =>
-        distributionTree.findResponsibleActor(data(neighborIndex)) ! AddReverseNeighbor(neighborIndex, index)
+        nodeLocator.findResponsibleActor(data(neighborIndex)) ! AddReverseNeighbor(neighborIndex, index)
       }
     }
     // setup timer used to determine when the graph is done
     timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
     // start nnDescent
     val reverseNeighbors: Map[Int, Seq[Int]] = graph.map{case (index, _) => index -> Seq.empty}
-    nnDescent(distributionTree, graph, reverseNeighbors)
+    nnDescent(nodeLocator, graph, reverseNeighbors)
   }
 
-  def nnDescent(distributionTree: PositionTree,
+  def nnDescent(nodeLocator: NodeLocator[BuildGraphEvent],
                 graph: Map[Int, Seq[(Int, Double)]],
                 reverseNeighbors: Map[Int, Seq[Int]]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessage {
       case StartNNDescent =>
         // already done, so do nothing
-        nnDescent(distributionTree, graph, reverseNeighbors)
+        nnDescent(nodeLocator, graph, reverseNeighbors)
 
       case CompleteLocalJoin(g_node) =>
         // prevent timeouts in the initial phase of graph nnDescent
@@ -311,11 +313,11 @@ class KnngWorker(data: Seq[Seq[Float]],
               (n1, dist)
             }
           }
-          distributionTree.findResponsibleActor(data(neighbor)) ! PotentialNeighbors(neighbor, potentialNeighbors, g_node)
+          nodeLocator.findResponsibleActor(data(neighbor)) ! PotentialNeighbors(neighbor, potentialNeighbors, g_node)
         }
         // if this is the last inital join, the timer is needed from now on
         timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
-        nnDescent(distributionTree, graph, reverseNeighbors)
+        nnDescent(nodeLocator, graph, reverseNeighbors)
 
       case PotentialNeighbors(g_node, potentialNeighbors, senderIndex) =>
         val currentNeighbors: Seq[(Int, Double)] = graph(g_node)
@@ -323,7 +325,7 @@ class KnngWorker(data: Seq[Seq[Float]],
         val probableNeighbors: Set[(Int, Double)] = potentialNeighbors.filter(_._2 < currentMaxDist).toSet -- currentNeighbors - ((g_node, 0.0))
         if (probableNeighbors.isEmpty) {
           // nothing changes
-          nnDescent(distributionTree, graph, reverseNeighbors)
+          nnDescent(nodeLocator, graph, reverseNeighbors)
         } else {
           if (timers.isTimerActive(NNDescentTimerKey)) {
             timers.cancel(NNDescentTimerKey)
@@ -338,11 +340,11 @@ class KnngWorker(data: Seq[Seq[Float]],
           val newNeighbors: Set[Int] = probableNeighbors.intersect(updatedNeighbors.toSet).map(_._1)
 
           newNeighbors.foreach {index =>
-            distributionTree.findResponsibleActor(data(index)) ! AddReverseNeighbor(index, g_node)
+            nodeLocator.findResponsibleActor(data(index)) ! AddReverseNeighbor(index, g_node)
           }
           val removedNeighbors = mergedNeighbors.slice(k, mergedNeighbors.length).intersect(currentNeighbors).map(_._1)
           removedNeighbors.foreach {index =>
-            distributionTree.findResponsibleActor(data(index)) ! RemoveReverseNeighbor(index, g_node)
+            nodeLocator.findResponsibleActor(data(index)) ! RemoveReverseNeighbor(index, g_node)
           }
           // send out new potential neighbors (join the remaining old neighbors with the new ones)
           val keptNeighbors = updatedNeighbors.intersect(currentNeighbors.diff(Seq(senderIndex))).map(_._1) ++: reverseNeighbors(g_node)
@@ -357,19 +359,19 @@ class KnngWorker(data: Seq[Seq[Float]],
           // (the new neighbors do not have to be joined, as that will already have happened at the g_node the message originated from)
           newNeighborsToPair.foreach { index =>
             val thisNodesPotentialNeighbors = potentialPairs.collect{case (n1, n2, dist) if n1== index => (n2, dist)}.toSeq
-            distributionTree.findResponsibleActor(data(index)) ! PotentialNeighbors(index, thisNodesPotentialNeighbors, g_node)
+            nodeLocator.findResponsibleActor(data(index)) ! PotentialNeighbors(index, thisNodesPotentialNeighbors, g_node)
           }
           // introduce old neighbors to new neighbors
           keptNeighbors.foreach {index =>
             val thisNodesPotentialNeighbors = potentialPairs.collect{case (n1, n2, dist) if n2 == index => (n1, dist)}.toSeq
-            distributionTree.findResponsibleActor(data(index)) ! PotentialNeighbors(index, thisNodesPotentialNeighbors, g_node)
+            nodeLocator.findResponsibleActor(data(index)) ! PotentialNeighbors(index, thisNodesPotentialNeighbors, g_node)
           }
           // update graph
           val updatedGraph = graph + (g_node -> updatedNeighbors)
           ctx.log.info("Updating graph")
           // something changed so reset the NNDescent Timer
           timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
-          nnDescent(distributionTree, updatedGraph, reverseNeighbors)
+          nnDescent(nodeLocator, updatedGraph, reverseNeighbors)
         }
 
       case AddReverseNeighbor(g_nodeIndex, neighborIndex) =>
@@ -377,81 +379,75 @@ class KnngWorker(data: Seq[Seq[Float]],
         val allNeighbors = graph(g_nodeIndex).map(_._1).toSet ++ reverseNeighbors(g_nodeIndex).toSet - neighborIndex
         // introduce the new neighbor to all other neighbors
         val potentialNeighbors = allNeighbors.map(index => (index, euclideanDist(data(index), data(neighborIndex)))).toSeq
-        distributionTree.findResponsibleActor(data(neighborIndex)) ! PotentialNeighbors(neighborIndex, potentialNeighbors, g_nodeIndex)
+        nodeLocator.findResponsibleActor(data(neighborIndex)) ! PotentialNeighbors(neighborIndex, potentialNeighbors, g_nodeIndex)
         // introduce all other neighbors to the new neighbor
         potentialNeighbors.foreach { case(index, distance) =>
-          distributionTree.findResponsibleActor(data(index)) ! PotentialNeighbors(index, Seq((neighborIndex, distance)), g_nodeIndex)
+          nodeLocator.findResponsibleActor(data(index)) ! PotentialNeighbors(index, Seq((neighborIndex, distance)), g_nodeIndex)
         }
         // update reverse neighbors
         val updatedReverseNeighbors = reverseNeighbors(g_nodeIndex) :+ neighborIndex
-        nnDescent(distributionTree, graph, reverseNeighbors + (g_nodeIndex -> updatedReverseNeighbors))
+        nnDescent(nodeLocator, graph, reverseNeighbors + (g_nodeIndex -> updatedReverseNeighbors))
 
       case RemoveReverseNeighbor(g_nodeIndex, neighborIndex) =>
         val updatedReverseNeighbors = reverseNeighbors(g_nodeIndex).diff(Seq(neighborIndex))
-        nnDescent(distributionTree, graph, reverseNeighbors + (g_nodeIndex -> updatedReverseNeighbors))
+        nnDescent(nodeLocator, graph, reverseNeighbors + (g_nodeIndex -> updatedReverseNeighbors))
 
       case NNDescentTimeout =>
         ctx.log.info("Looks like I'm done with NNDescent")
         supervisor ! FinishedNNDescent
-        nnDescent(distributionTree, graph, reverseNeighbors)
+        nnDescent(nodeLocator, graph, reverseNeighbors)
 
-      case StartSearchOnGraph =>
+      case StartSearchOnGraph(graphHolder) =>
+        // all nodes are done with NNDescent, nothing will change with the graph anymore, so it is moved to SearchOnGraph actors
         val cleanedGraph: Map[Int, Seq[Int]] = graph.map{case (index, neighbors) => index -> neighbors.map(_._1)}
-        val queries: Map[Seq[Float], (ActorRef[BuildGraphEvent], Seq[(Int, Double, Boolean)])] = Map.empty
-        searchOnGraph(distributionTree, cleanedGraph, queries)
+        val searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent] =
+          ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
+        graphHolder ! Graph(cleanedGraph, searchOnGraphEventAdapter)
+        initializeSearchOnGraph(searchOnGraphEventAdapter, cleanedGraph)
     }
 
-  def searchOnGraph(distributionTree: PositionTree,
-                    graph: Map[Int, Seq[Int]],
-                    queries: Map[Seq[Float], (ActorRef[BuildGraphEvent], Seq[(Int, Double, Boolean)])]): Behavior[BuildGraphEvent] =
-    Behaviors.receiveMessage {
-      case Query(query, asker) =>
-        ctx.log.info("Received a query")
-        // choose node to start search from local nodes
-        val startingNodeIndex: Int = graph.keys.head
-        val candidateList = Seq((startingNodeIndex, euclideanDist(data(startingNodeIndex), query), false))
-        // since this node is located locally, just ask self
-        ctx.self ! GetNeighbors(startingNodeIndex, query, ctx.self)
-        val updatedQueries = queries + (query -> (asker, candidateList))
-        searchOnGraph(distributionTree, graph, updatedQueries)
-
-      case GetNeighbors(index, query, sender) =>
-        sender ! Neighbors(query, index, graph(index))
-        searchOnGraph(distributionTree, graph, queries)
-
-      case Neighbors(query, index, neighbors) =>
-        // update candidates
-        val currentCandidates: Seq[(Int, Double, Boolean)] = queries(query)._2
-        val currentCandidateIndices = currentCandidates.map(_._1)
-        // only add candidates that are not already in the candidateList
-        val newCandidates = neighbors.diff(currentCandidateIndices).map(
-          index => (index, euclideanDist(query, data(index)), false))
-        val mergedCandidates = (currentCandidates ++: newCandidates).sortBy(_._2)
-        // set flag for the now processed index to true
-        val indexToUpdate = mergedCandidates.map(_._1).indexOf(index)
-        val updatedCandidate = (mergedCandidates(indexToUpdate)._1, mergedCandidates(indexToUpdate)._2, true)
-        val updatedCandidates = mergedCandidates.patch(indexToUpdate, Seq(updatedCandidate), 1).slice(0, k)
-        // check if enough candidates have been processed
-        val nextCandidateToProcess = updatedCandidates.find{case (_, _, flag) => !flag}
-        nextCandidateToProcess match {
-          case Some(nextCandidate) =>
-            // find the neighbors of the next candidate to be processed and update queries
-            distributionTree.findResponsibleActor(data(nextCandidate._1)) ! GetNeighbors(nextCandidate._1, query, ctx.self)
-            val updatedQueries = queries + (query -> (queries(query)._1 ,updatedCandidates))
-            searchOnGraph(distributionTree, graph, updatedQueries)
-          case None =>
-            // all candidates have been processed
-            val nearestNeighbors: Seq[Int] = updatedCandidates.map(_._1)
-            queries(query)._1 ! KNearestNeighbors(query, nearestNeighbors)
-            val updatedQueries = queries - query
-            searchOnGraph(distributionTree, graph, updatedQueries)
+  def initializeSearchOnGraph(searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent],
+                              graph: Map[Int, Seq[Int]]): Behavior[BuildGraphEvent] =
+    Behaviors.receiveMessagePartial{
+      case WrappedSearchOnGraphEvent(event) =>
+        event match {
+            // TODO add some kind of check/timer to make sure the graph arrived safely
+          case GraphReceived(graphHolder) =>
+            supervisor ! SOGDistributionInfo(LeafNode(graphHolder), ctx.self)
+            Behaviors.empty
         }
-
-      case GetGraph(sender) =>
-        // send graph to dataHolder
-        sender ! GraphData(graph, ctx.self)
-        searchOnGraph(distributionTree, graph, queries)
     }
+
+  def combineSOGDistributionTree(leftChild: ActorRef[BuildGraphEvent],
+                                 rightChild: ActorRef[BuildGraphEvent],
+                                 leftNode: Option[TreeNode[ActorRef[SearchOnGraphEvent]]],
+                                 rightNode: Option[TreeNode[ActorRef[SearchOnGraphEvent]]],
+                                 oldNode: SplitNode[ActorRef[BuildGraphEvent]]): Behavior[BuildGraphEvent] =
+    Behaviors.receiveMessagePartial {
+      case SOGDistributionInfo(treeNode, sender) =>
+        // TODO oldNode is a splitNode, not a data node, this comparison breaks
+        sender match {
+          case `leftChild` =>
+            rightNode match {
+              case None =>
+                combineSOGDistributionTree(leftChild, rightChild, Option(treeNode), rightNode, oldNode)
+              case Some(node) =>
+                val combinedNode = SplitNode(treeNode, node, oldNode.dimension, oldNode.border)
+                supervisor ! SOGDistributionInfo(combinedNode, ctx.self)
+                Behaviors.empty
+            }
+          case `rightChild` =>
+            leftNode match {
+              case None =>
+                combineSOGDistributionTree(leftChild, rightChild, leftNode, Option(treeNode), oldNode)
+              case Some(node) =>
+                val combinedNode = SplitNode(node, treeNode, oldNode.dimension, oldNode.border)
+                supervisor ! SOGDistributionInfo(combinedNode, ctx.self)
+                Behaviors.empty
+            }
+        }
+  }
+
 
   def euclideanDist(pointX: Seq[Float], pointY: Seq[Float]): Double = {
     sqrt((pointX zip pointY).map { case (x,y) => pow(y - x, 2) }.sum)

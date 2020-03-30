@@ -9,19 +9,23 @@ import akka.actor.typed.ActorRef
 import akka.actor.typed.Behavior
 import akka.actor.typed.scaladsl.Behaviors
 import com.github.julkw.dnsg.actors.Coordinator.{AverageValue, CoordinationEvent, DataRef}
-import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildGraphEvent, GetGraph}
+import com.github.julkw.dnsg.actors.SearchOnGraph.{GetGraph, Graph, SearchOnGraphEvent}
 
 import scala.language.postfixOps
 
 object DataHolder {
 
   sealed trait LoadDataEvent
+
   final case class LoadSiftDataFromFile(filename: String, replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
+
   final case class GetAverageValue(replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
-  final case class SaveGraphToFile(filename: String, graphHolders: Set[ActorRef[BuildGraphEvent]], k: Int) extends LoadDataEvent
+
+  final case class SaveGraphToFile(filename: String, graphHolders: Set[ActorRef[SearchOnGraphEvent]], k: Int) extends LoadDataEvent
   // TODO in a cluster the indices would not be enough, so maybe one message per node including its location
   // unless the graph and the data remain in two different files
-  final case class GraphData(graph: Map[Int, Seq[Int]], sender: ActorRef[BuildGraphEvent]) extends LoadDataEvent
+
+  final case class WrappedSearchOnGraphEvent(event: SearchOnGraph.SearchOnGraphEvent) extends LoadDataEvent
 
   var data : Seq[Seq[Float]] = Seq.empty[Seq[Float]]
 
@@ -65,22 +69,29 @@ object DataHolder {
         replyTo ! AverageValue(averageValue)
         Behaviors.same
 
-      case SaveGraphToFile(filename,graphHolders, k) =>
-        graphHolders.foreach(gh => gh ! GetGraph(ctx.self))
+      case SaveGraphToFile(filename, graphHolders, k) =>
         // TODO create file so it can be appended with the graph
-        saveToFile(filename, graphHolders, k)
+        val searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent] =
+          ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
+        graphHolders.foreach(gh => gh ! GetGraph(searchOnGraphEventAdapter))
+        saveToFile(filename, graphHolders, k, searchOnGraphEventAdapter)
     }
   }
 
   def saveToFile(filename: String,
-                 remainingGraphHolders: Set[ActorRef[BuildGraphEvent]],
-                 k: Int): Behavior[LoadDataEvent] = Behaviors.receiveMessage {
-    case GraphData(graph, sender) =>
-      // TODO open and append file with graph
-      // Each g_node one line
-      val updatedGraphHolders = remainingGraphHolders - sender
-      saveToFile(filename, updatedGraphHolders, k)
-  }
+                 remainingGraphHolders: Set[ActorRef[SearchOnGraphEvent]],
+                 k: Int,
+                 searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent]): Behavior[LoadDataEvent] =
+    Behaviors.receiveMessage {
+      case WrappedSearchOnGraphEvent(event) =>
+        event match {
+          case Graph(graph, sender) =>
+            // TODO open and append file with graph
+            // Each g_node one line
+            val updatedGraphHolders = remainingGraphHolders - sender
+            saveToFile(filename, updatedGraphHolders, k, searchOnGraphEventAdapter)
+        }
+    }
 
   def byteArrayToLittleEndianInt(bArray: Array[Byte]) : Int = {
     val bb: nio.ByteBuffer = ByteBuffer.wrap(bArray)
