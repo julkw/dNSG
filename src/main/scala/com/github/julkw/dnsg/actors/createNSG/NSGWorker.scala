@@ -6,6 +6,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinator.CoordinationEvent
 import com.github.julkw.dnsg.actors.SearchOnGraph
 import com.github.julkw.dnsg.actors.SearchOnGraph.{CheckedNodesOnSearch, SearchOnGraphEvent, SortedCheckedNodes}
+import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, ReverseNeighbors}
 import com.github.julkw.dnsg.util.NodeLocator
 
 import scala.language.postfixOps
@@ -24,9 +25,10 @@ object NSGWorker {
   def apply(supervisor: ActorRef[CoordinationEvent],
             data: Seq[Seq[Float]],
             navigatingNode: Int,
-            nodeLocator: NodeLocator[SearchOnGraphEvent]): Behavior[BuildNSGEvent] = Behaviors.setup { ctx =>
+            nodeLocator: NodeLocator[SearchOnGraphEvent],
+            nsgMerger: ActorRef[MergeNSGEvent]): Behavior[BuildNSGEvent] = Behaviors.setup { ctx =>
     ctx.log.info("Started NSGWorker")
-    Behaviors.setup(ctx => new NSGWorker(supervisor, data, navigatingNode, nodeLocator, ctx).setup())
+    Behaviors.setup(ctx => new NSGWorker(supervisor, data, navigatingNode, nodeLocator, nsgMerger, ctx).setup())
   }
 }
 
@@ -34,6 +36,7 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
                 data: Seq[Seq[Float]],
                 navigatingNode: Int,
                 nodeLocator: NodeLocator[SearchOnGraphEvent],
+                nsgMerger: ActorRef[MergeNSGEvent],
                 ctx: ActorContext[NSGWorker.BuildNSGEvent]) {
   import NSGWorker._
 
@@ -80,9 +83,9 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
                 neighbors = neighbors :+ nodeIndex
               }
             }
-            // TODO update graph with neighbors (but reverse, every neighbor gets queryIndex added as neighbor)
-            // TODO this should be done in mergeNSG actor, because this actor does not hold all the nodes that will get a new edge
+            // TODO only send up to p (some constant) neighbors to keep graph small
             ctx.log.info("Found {} neighbors for node {}", neighbors.length, queryIndex)
+            nsgMerger ! ReverseNeighbors(queryIndex, neighbors)
         }
         buildNSG(responsibility, searchOnGraphEventAdapter)
     }

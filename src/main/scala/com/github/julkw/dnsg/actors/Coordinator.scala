@@ -4,7 +4,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, LoadSiftDataFromFile}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{FindNearestNeighbors, GraphDistribution, KNearestNeighbors, SearchOnGraphEvent, SendResponsibleIndicesTo}
-import com.github.julkw.dnsg.actors.createNSG.NSGWorker
+import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.BuildNSGEvent
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
@@ -142,10 +142,12 @@ class Coordinator(k: Int,
   def startBuildingNSG(data: Seq[Seq[Float]],
                        nodeLocator: NodeLocator[SearchOnGraphEvent],
                        navigatingNode: Int): Behavior[CoordinationEvent] = {
-      val graphHolders = nodeLocator.positionTree.allLeafs().map(leaf => leaf.data)
+    val nsgMerger = ctx.spawn(NSGMerger(ctx.self, 0 until data.length), name = "NSGMerger")
+
+    val graphHolders = nodeLocator.positionTree.allLeafs().map(leaf => leaf.data)
       graphHolders.foreach{ graphHolder =>
         val i = graphHolders.indexOf(graphHolder)
-        val nsgWorker = ctx.spawn(NSGWorker(ctx.self, data, navigatingNode, nodeLocator), name = "NSGWorker" + i.toString)
+        val nsgWorker = ctx.spawn(NSGWorker(ctx.self, data, navigatingNode, nodeLocator, nsgMerger), name = "NSGWorker" + i.toString)
         // for now this is the easiest way to distribute responsibility
         graphHolder ! SendResponsibleIndicesTo(nsgWorker)
       }
