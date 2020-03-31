@@ -3,7 +3,7 @@ package com.github.julkw.dnsg.actors
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, LoadSiftDataFromFile}
-import com.github.julkw.dnsg.actors.SearchOnGraph.{FindNearestNeighbors, GraphDistribution, KNearestNeighbors, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.SearchOnGraph.{FindNearestNeighbors, GraphDistribution, KNearestNeighbors, SearchOnGraphEvent, SendResponsibleIndicesTo}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.BuildNSGEvent
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker
@@ -102,7 +102,7 @@ class Coordinator(k: Int,
             // tell workers that the graph is finished and they can move it to the searchOnGraph actors
             knngWorkers.foreach { worker =>
               val i = knngWorkers.indexOf(worker)
-              val nsgw = ctx.spawn(SearchOnGraph(ctx.self, data), name = "SearchOnGraph" + i.toString)
+              val nsgw = ctx.spawn(SearchOnGraph(ctx.self, data, k), name = "SearchOnGraph" + i.toString)
               worker ! StartSearchOnGraph(nsgw)
             }
             buildKnng(data, knngWorkers, nodeLocator)
@@ -125,7 +125,7 @@ class Coordinator(k: Int,
     Behaviors.receiveMessagePartial {
       case AverageValue(value) =>
         // find navigating Node
-        nodeLocator.findResponsibleActor(value) ! FindNearestNeighbors(value, 1, searchOnGraphEventAdapter)
+        nodeLocator.findResponsibleActor(value) ! FindNearestNeighbors(value, searchOnGraphEventAdapter)
         searchOnKnng(data, nodeLocator)
 
       case wrappedSearchOnGraphEvent: WrappedSearchOnGraphEvent =>
@@ -135,8 +135,21 @@ class Coordinator(k: Int,
             val navigatingNode = neighbors.head
             ctx.log.info("The navigating node has the index: {}", navigatingNode)
             // TODO do some kind of data redistribution with the knowledge of the navigating node, updating the nodeLocator in the process
-            buildNSG(navigatingNode)
+            startBuildingNSG(data, nodeLocator, navigatingNode)
         }
+    }
+
+  def startBuildingNSG(data: Seq[Seq[Float]],
+                       nodeLocator: NodeLocator[SearchOnGraphEvent],
+                       navigatingNode: Int): Behavior[CoordinationEvent] = {
+      val graphHolders = nodeLocator.positionTree.allLeafs().map(leaf => leaf.data)
+      graphHolders.foreach{ graphHolder =>
+        val i = graphHolders.indexOf(graphHolder)
+        val nsgWorker = ctx.spawn(NSGWorker(ctx.self, data, navigatingNode, nodeLocator), name = "NSGWorker" + i.toString)
+        // for now this is the easiest way to distribute responsibility
+        graphHolder ! SendResponsibleIndicesTo(nsgWorker)
+      }
+      buildNSG(navigatingNode)
     }
 
   def buildNSG(navigatingNodeIndex: Int) : Behavior[CoordinationEvent] = Behaviors.receiveMessagePartial{
