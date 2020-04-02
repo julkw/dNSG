@@ -25,16 +25,19 @@ object NSGWorker {
   def apply(supervisor: ActorRef[CoordinationEvent],
             data: Seq[Seq[Float]],
             navigatingNode: Int,
+            maxReverseNeighbors: Int,
             nodeLocator: NodeLocator[SearchOnGraphEvent],
             nsgMerger: ActorRef[MergeNSGEvent]): Behavior[BuildNSGEvent] = Behaviors.setup { ctx =>
     ctx.log.info("Started NSGWorker")
-    Behaviors.setup(ctx => new NSGWorker(supervisor, data, navigatingNode, nodeLocator, nsgMerger, ctx).setup())
+    Behaviors.setup(ctx =>
+      new NSGWorker(supervisor, data, navigatingNode, maxReverseNeighbors, nodeLocator, nsgMerger, ctx).setup())
   }
 }
 
 class NSGWorker(supervisor: ActorRef[CoordinationEvent],
                 data: Seq[Seq[Float]],
                 navigatingNode: Int,
+                maxReverseNeighbors: Int,
                 nodeLocator: NodeLocator[SearchOnGraphEvent],
                 nsgMerger: ActorRef[MergeNSGEvent],
                 ctx: ActorContext[NSGWorker.BuildNSGEvent]) {
@@ -68,27 +71,35 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
             // check neighbor candidates for conflicts
             var neighbors: Seq[Int] = Seq.empty
             val query = data(queryIndex)
-            checkedNodes.foreach { nodeIndex =>
-              // decide whether to add the edge (node->query) to the NSG
-              var conflictFound = false
-              var neighborIndex = 0
-              val potentialEdgeDist = euclideanDist(query, data(nodeIndex))
-              // check for conflicts (conflict exists if potential Edge is the longest edge in triangle of query, node and neighbor)
-              while (!conflictFound && neighborIndex < neighbors.length) {
-                conflictFound = (potentialEdgeDist >= euclideanDist(query, data(neighborIndex))) &&
-                  (potentialEdgeDist >= euclideanDist(data(nodeIndex), data(neighborIndex)))
-                neighborIndex += 1
+            // choose up to maxReverseNeighbors neighbors from checked nodes by checking for conflicts
+            var nodeIndex = 0
+            // don't make a node its own neighbor
+            if (checkedNodes.head == queryIndex) nodeIndex = 1
+            while (neighbors.length < maxReverseNeighbors && nodeIndex < checkedNodes.length) {
+              val node = data(checkedNodes(nodeIndex))
+              if (!conflictFound(query, node, neighbors)) {
+                neighbors = neighbors :+ checkedNodes(nodeIndex)
               }
-              if (!conflictFound) {
-                neighbors = neighbors :+ nodeIndex
-              }
+              nodeIndex += 1
             }
-            // TODO only send up to p (some constant) neighbors to keep graph small
-            ctx.log.info("Found {} neighbors for node {}", neighbors.length, queryIndex)
             nsgMerger ! ReverseNeighbors(queryIndex, neighbors)
         }
         buildNSG(responsibility, searchOnGraphEventAdapter)
     }
+
+  def conflictFound(query: Seq[Float], nodeToTest: Seq[Float], neighborsSoFar: Seq[Int]): Boolean = {
+    var conflictFound = false
+    val potentialEdgeDist = euclideanDist(query, nodeToTest)
+    // check for conflicts (conflict exists if potential Edge is the longest edge in triangle of query, node and neighbor)
+    var neighborIndex = 0
+    while (!conflictFound && neighborIndex < neighborsSoFar.length) {
+      val setNeighbor = data(neighborsSoFar(neighborIndex))
+      conflictFound = (potentialEdgeDist >= euclideanDist(query, setNeighbor)) &&
+        (potentialEdgeDist >= euclideanDist(nodeToTest, setNeighbor))
+      neighborIndex += 1
+    }
+    conflictFound
+  }
 
   // TODO move to util
   def euclideanDist(pointX: Seq[Float], pointY: Seq[Float]): Double = {

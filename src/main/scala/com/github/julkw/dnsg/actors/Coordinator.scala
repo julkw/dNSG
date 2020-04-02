@@ -37,8 +37,9 @@ object Coordinator {
   def apply(): Behavior[CoordinationEvent] = Behaviors.setup { ctx =>
     // TODO turn into input through configuration
     val filename: String = "/home/juliane/code/dNSG/data/siftsmall/siftsmall_base.fvecs"
-    val k = 10
-    val numWorkers = 4
+    val k: Int = 10
+    val maxReverseNeighbors: Int = 10
+    val numWorkers: Int = 4
 
     val buildGraphEventAdapter: ActorRef[KnngWorker.BuildGraphEvent] =
       ctx.messageAdapter { event => WrappedBuildGraphEvent(event) }
@@ -51,7 +52,7 @@ object Coordinator {
 
     ctx.log.info("start building the approximate graph")
     Behaviors.setup(
-      ctx => new Coordinator(k, numWorkers, filename, dh, buildGraphEventAdapter, searchOnGraphEventAdapter, ctx).setUp()
+      ctx => new Coordinator(k, numWorkers, maxReverseNeighbors, filename, dh, buildGraphEventAdapter, searchOnGraphEventAdapter, ctx).setUp()
     )
   }
 
@@ -59,6 +60,7 @@ object Coordinator {
 
 class Coordinator(k: Int,
                   numWorkers: Int,
+                  maxReverseNeighbors: Int,
                   filename: String,
                   dataHolder: ActorRef[LoadDataEvent],
                   buildGraphEventAdapter: ActorRef[KnngWorker.BuildGraphEvent],
@@ -157,7 +159,7 @@ class Coordinator(k: Int,
     val graphHolders = nodeLocator.positionTree.allLeafs().map(leaf => leaf.data)
       graphHolders.foreach{ graphHolder =>
         val i = graphHolders.indexOf(graphHolder)
-        val nsgWorker = ctx.spawn(NSGWorker(ctx.self, data, navigatingNode, nodeLocator, nsgMerger), name = "NSGWorker" + i.toString)
+        val nsgWorker = ctx.spawn(NSGWorker(ctx.self, data, navigatingNode, maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + i.toString)
         // for now this is the easiest way to distribute responsibility
         graphHolder ! SendResponsibleIndicesTo(nsgWorker)
       }

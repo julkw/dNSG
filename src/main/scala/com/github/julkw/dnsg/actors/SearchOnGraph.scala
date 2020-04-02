@@ -3,7 +3,7 @@ package com.github.julkw.dnsg.actors
 import math._
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import com.github.julkw.dnsg.actors.Coordinator.{CoordinationEvent, FinishedUpdatingConnectivity, UnconnectedNode, UpdatedToNSG}
+import com.github.julkw.dnsg.actors.Coordinator.{AllConnected, CoordinationEvent, FinishedUpdatingConnectivity, UnconnectedNode, UpdatedToNSG}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, Responsibility}
 import com.github.julkw.dnsg.util.NodeLocator
@@ -183,34 +183,31 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
         connectivityInfo match {
           case Some(cInfo) =>
             cInfo.connectedNodes.add(root)
-            val messageCounter = updateNeighbors(root, root, cInfo, graph, nodeLocator)
-            cInfo.messageTracker += (root -> messageCounter)
+            updateNeighbors(root, root, cInfo, graph, nodeLocator)
             searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
 
           case None =>
             val cInfo = ConnectivityInfo(mutable.Set(root), mutable.Map.empty)
-            val messageCounter = updateNeighbors(root, root, cInfo, graph, nodeLocator)
-            cInfo.messageTracker += (root -> messageCounter)
+            updateNeighbors(root, root, cInfo, graph, nodeLocator)
             searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, Some(cInfo))
         }
 
       case IsConnected(connectedNode, parent) =>
         connectivityInfo match {
           case Some(cInfo) =>
+            // in case the parent is placed on another node this might not be known here
             cInfo.connectedNodes.add(parent)
             if (cInfo.connectedNodes.contains(connectedNode)) {
               nodeLocator.findResponsibleActor(data(parent)) ! DoneConnectingChildren(parent)
             } else {
               cInfo.connectedNodes.add(connectedNode)
-              val messageCounter = updateNeighbors(connectedNode, parent, cInfo, graph, nodeLocator)
-              cInfo.messageTracker += (connectedNode -> messageCounter)
+              updateNeighbors(connectedNode, parent, cInfo, graph, nodeLocator)
             }
             searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
 
           case None =>
             val cInfo = ConnectivityInfo(mutable.Set(connectedNode, parent), mutable.Map.empty)
-            val messageCounter = updateNeighbors(connectedNode, parent, cInfo, graph, nodeLocator)
-            cInfo.messageTracker += (connectedNode -> messageCounter)
+            updateNeighbors(connectedNode, parent, cInfo, graph, nodeLocator)
             searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, Some(cInfo))
         }
 
@@ -226,6 +223,7 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
               } else {
                 nodeLocator.findResponsibleActor(data(messageCounter.parentNode)) !
                   DoneConnectingChildren(messageCounter.parentNode)
+                cInfo.messageTracker -= nodeAwaitingAnswer
               }
             }
         }
@@ -240,7 +238,12 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
             val unconnectedNodes = graph.keys.toSet -- cInfo.connectedNodes
             if (unconnectedNodes.isEmpty) {
               // no unconnected nodes in this actor, ask others
-              notAskedYet.head ! FindUnconnectedNode(sendTo, notAskedYet - ctx.self)
+              if (notAskedYet.nonEmpty) {
+                notAskedYet.head ! FindUnconnectedNode(sendTo, notAskedYet - ctx.self)
+              } else {
+                // there are no unconnected nodes
+                supervisor ! AllConnected
+              }
             } else {
               // send one of the unconnected nodes
               sendTo ! UnconnectedNode(unconnectedNodes.head)
@@ -280,17 +283,23 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
                       parent: Int,
                       connectivityInfo: ConnectivityInfo,
                       graph: Map[Int, Seq[Int]],
-                      nodeLocator: NodeLocator[SearchOnGraphEvent]): MessageCounter = {
+                      nodeLocator: NodeLocator[SearchOnGraphEvent]): Unit = {
     var sendMessages = 0
-    // mark all neighbors as connected
+    // tell all neighbors they are connected
     graph(node).foreach { neighborIndex =>
       if (!connectivityInfo.connectedNodes.contains(neighborIndex)) {
-        connectivityInfo.connectedNodes.add(neighborIndex)
         nodeLocator.findResponsibleActor(data(neighborIndex)) ! IsConnected(neighborIndex, node)
         sendMessages += 1
       }
     }
-    MessageCounter(sendMessages, parent)
+    if (sendMessages > 0) {
+      connectivityInfo.messageTracker += (node -> MessageCounter(sendMessages, parent))
+    } else if (node != parent) {
+      nodeLocator.findResponsibleActor(data(parent)) ! DoneConnectingChildren(parent)
+    } else { // no neighbors updated and this is the root
+      supervisor ! FinishedUpdatingConnectivity
+      ctx.log.info("None of the previously unconnected nodes are connected to the root")
+    }
   }
 
 
