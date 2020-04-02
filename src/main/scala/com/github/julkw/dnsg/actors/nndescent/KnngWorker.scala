@@ -425,7 +425,6 @@ class KnngWorker(data: Seq[Seq[Float]],
                                  oldNode: SplitNode[ActorRef[BuildGraphEvent]]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
       case SOGDistributionInfo(treeNode, sender) =>
-        // TODO oldNode is a splitNode, not a data node, this comparison breaks
         sender match {
           case `leftChild` =>
             rightNode match {

@@ -3,9 +3,9 @@ package com.github.julkw.dnsg.actors
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, LoadSiftDataFromFile}
-import com.github.julkw.dnsg.actors.SearchOnGraph.{FindNearestNeighbors, GraphDistribution, KNearestNeighbors, SearchOnGraphEvent, SendResponsibleIndicesTo}
+import com.github.julkw.dnsg.actors.SearchOnGraph.{AddToGraph, FindNearestNeighbors, FindNearestNeighborsStartingFrom, FindUnconnectedNode, GetNSGFrom, GraphDistribution, KNearestNeighbors, SearchOnGraphEvent, SendResponsibleIndicesTo, UpdateConnectivity}
+import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, NSGDistributed}
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
-import com.github.julkw.dnsg.actors.createNSG.NSGWorker.BuildNSGEvent
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
 import com.github.julkw.dnsg.util.{NodeLocator, PositionTree}
@@ -22,7 +22,17 @@ object Coordinator {
 
   final case class WrappedSearchOnGraphEvent(event: SearchOnGraph.SearchOnGraphEvent) extends CoordinationEvent
 
-  final case class GraphReceived(nsgWorker: ActorRef[BuildNSGEvent], knngWorker: ActorRef[BuildGraphEvent]) extends CoordinationEvent
+  // building the NSG
+  final case class InitialNSGDone(nsgHolder: ActorRef[MergeNSGEvent]) extends CoordinationEvent
+
+  final case object UpdatedToNSG extends CoordinationEvent
+
+  final case object FinishedUpdatingConnectivity extends CoordinationEvent
+
+  final case class UnconnectedNode(nodeIndex: Int) extends CoordinationEvent
+
+  final case object AllConnected extends CoordinationEvent
+
 
   def apply(): Behavior[CoordinationEvent] = Behaviors.setup { ctx =>
     // TODO turn into input through configuration
@@ -151,15 +161,64 @@ class Coordinator(k: Int,
         // for now this is the easiest way to distribute responsibility
         graphHolder ! SendResponsibleIndicesTo(nsgWorker)
       }
-      buildNSG(navigatingNode)
+      buildNSG(data, navigatingNode, nsgMerger, nodeLocator, 0)
     }
 
-  def buildNSG(navigatingNodeIndex: Int) : Behavior[CoordinationEvent] = Behaviors.receiveMessagePartial{
-    // TODO Create NSGWorkers (or let them be created by SearchOnGraph Actors?
-    // each nsgWorker is responsible for finding the NSG edges for each of the g_nodes held by the accompanying SearchOnGraph actor
-    // for this we need a modified SearchOnGraph that returns all looked at nodes (does not cut off the returned neighbors)
-    // how do I do this with little code duplication?
-    case _ =>
-      Behaviors.same
+  def buildNSG(data: Seq[Seq[Float]],
+               navigatingNodeIndex: Int,
+               nsgMerger: ActorRef[MergeNSGEvent],
+               nodeLocator: NodeLocator[SearchOnGraphEvent],
+               awaitingUpdates: Int) : Behavior[CoordinationEvent] = Behaviors.receiveMessagePartial{
+    case InitialNSGDone(nsgHolder) =>
+      // tell the searchOnGraph Actors to upgrade their knng to NSG
+      val graphHolders = nodeLocator.positionTree.allLeafs().map(leaf => leaf.data)
+      graphHolders.foreach(graphHolder => graphHolder ! GetNSGFrom(nsgHolder))
+      buildNSG(data, navigatingNodeIndex, nsgMerger, nodeLocator, graphHolders.length)
+
+    case UpdatedToNSG =>
+      if (awaitingUpdates == 1) {
+        // nsg is fully distributed, merger can be shutdown
+        nsgMerger ! NSGDistributed
+        // check NSG for connectivity
+        nodeLocator.findResponsibleActor(data(navigatingNodeIndex)) ! UpdateConnectivity(navigatingNodeIndex)
+        connectNSG(data, navigatingNodeIndex, nodeLocator, navigatingNodeIndex)
+      } else {
+        buildNSG(data, navigatingNodeIndex, nsgMerger, nodeLocator, awaitingUpdates - 1)
+      }
   }
+
+  def connectNSG(data: Seq[Seq[Float]],
+                 navigatingNodeIndex: Int,
+                 nodeLocator: NodeLocator[SearchOnGraphEvent],
+                 latestUnconnectedNode: Int) : Behavior[CoordinationEvent] =
+    Behaviors.receiveMessagePartial{
+      case FinishedUpdatingConnectivity =>
+        // find out if there is still an unconnected node and connect it
+        val graphHolders = nodeLocator.positionTree.allLeafs().map(leaf => leaf.data)
+        graphHolders.head ! FindUnconnectedNode(ctx.self, graphHolders.slice(1, graphHolders.length).toSet)
+        connectNSG(data, navigatingNodeIndex, nodeLocator, latestUnconnectedNode)
+
+      case UnconnectedNode(nodeIndex) =>
+        ctx.log.info("found an unconnected node")
+        nodeLocator.findResponsibleActor(data(nodeIndex)) !
+          FindNearestNeighborsStartingFrom(data(nodeIndex), navigatingNodeIndex, searchOnGraphEventAdapter)
+        connectNSG(data, navigatingNodeIndex, nodeLocator, nodeIndex)
+
+      case wrappedSearchOnGraphEvent: WrappedSearchOnGraphEvent =>
+        wrappedSearchOnGraphEvent.event match {
+          case KNearestNeighbors(query, neighbors) =>
+            // Right now the only query being asked for is to connect unconnected nodes
+            assert(query == data(latestUnconnectedNode))
+            neighbors.foreach(reverseNeighbor =>
+              nodeLocator.findResponsibleActor(data(reverseNeighbor)) !
+                AddToGraph(reverseNeighbor, latestUnconnectedNode))
+            nodeLocator.findResponsibleActor(data(latestUnconnectedNode)) ! UpdateConnectivity(latestUnconnectedNode)
+            connectNSG(data, navigatingNodeIndex, nodeLocator, latestUnconnectedNode)
+        }
+
+      case AllConnected =>
+        ctx.log.info("NSG build seems to be done")
+        connectNSG(data, navigatingNodeIndex, nodeLocator, latestUnconnectedNode)
+    }
+
 }

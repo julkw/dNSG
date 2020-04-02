@@ -1,9 +1,9 @@
 package com.github.julkw.dnsg.actors.createNSG
 
-import math._
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import com.github.julkw.dnsg.actors.Coordinator.CoordinationEvent
+import com.github.julkw.dnsg.actors.Coordinator.{CoordinationEvent, InitialNSGDone}
+import com.github.julkw.dnsg.actors.SearchOnGraph.{PartialNSG, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 
 import scala.collection.mutable
@@ -15,6 +15,10 @@ object NSGMerger {
   sealed trait MergeNSGEvent
 
   final case class ReverseNeighbors(nodeIndex: Int, reverseNeighbors: Seq[Int]) extends MergeNSGEvent
+
+  final case class GetPartialGraph(nodes: Set[Int], sender: ActorRef[SearchOnGraphEvent]) extends MergeNSGEvent
+
+  final case object NSGDistributed extends MergeNSGEvent
 
   def apply(supervisor: ActorRef[CoordinationEvent], responsibility: Seq[Int]): Behavior[MergeNSGEvent] = Behaviors.setup { ctx =>
     ctx.log.info("Started NSGMerger")
@@ -29,10 +33,10 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
   def setup(responsibility: Seq[Int]): Behavior[MergeNSGEvent] = {
     val nsg: mutable.Map[Int, Seq[Int]] = mutable.Map.empty
     responsibility.foreach(index => nsg += (index -> Seq.empty[Int]))
-    updateGraph(nsg, messagesReceived = 0, responsibility.length)
+    buildGraph(nsg, messagesReceived = 0, responsibility.length)
   }
 
-  def updateGraph(graph: mutable.Map[Int, Seq[Int]],
+  def buildGraph(graph: mutable.Map[Int, Seq[Int]],
                   messagesReceived: Int,
                   messagesExpected: Int): Behavior[MergeNSGEvent] = Behaviors.receiveMessagePartial {
     case ReverseNeighbors(nodeIndex, reverseNeighbors) =>
@@ -41,11 +45,24 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       }
       if (messagesReceived + 1 == messagesExpected) {
         ctx.log.info("Building of NSG seems to be done")
-        // TODO tell supervisor
+        supervisor ! InitialNSGDone(ctx.self)
+        distributeGraph(graph.toMap)
+      } else {
+        buildGraph(graph, messagesReceived + 1, messagesExpected)
       }
-      updateGraph(graph, messagesReceived + 1, messagesExpected)
   }
 
+  def distributeGraph(graph: Map[Int, Seq[Int]]): Behavior[MergeNSGEvent] = Behaviors.receiveMessagePartial {
+    case GetPartialGraph(nodes, sender) =>
+      val partialGraph = graph.filter{case(node, _) =>
+        nodes.contains(node)
+      }
+      sender ! PartialNSG(partialGraph)
+      distributeGraph(graph)
+
+    case NSGDistributed =>
+      Behaviors.empty
+  }
 }
 
 

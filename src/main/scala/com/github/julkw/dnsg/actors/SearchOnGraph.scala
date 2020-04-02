@@ -3,10 +3,12 @@ package com.github.julkw.dnsg.actors
 import math._
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import com.github.julkw.dnsg.actors.Coordinator.CoordinationEvent
+import com.github.julkw.dnsg.actors.Coordinator.{CoordinationEvent, FinishedUpdatingConnectivity, UnconnectedNode, UpdatedToNSG}
+import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, Responsibility}
 import com.github.julkw.dnsg.util.NodeLocator
 
+import scala.collection.mutable
 import scala.language.postfixOps
 
 
@@ -38,6 +40,21 @@ object SearchOnGraph {
 
   // send responsiblities to NSG workers
   final case class SendResponsibleIndicesTo(nsgWorker: ActorRef[BuildNSGEvent]) extends SearchOnGraphEvent
+  // get NSG from NSGMerger
+  final case class GetNSGFrom(nsgMerger: ActorRef[MergeNSGEvent]) extends SearchOnGraphEvent
+
+  final case class PartialNSG(graph: Map[Int, Seq[Int]]) extends SearchOnGraphEvent
+
+  // check for Connectivity
+  final case class UpdateConnectivity(root: Int) extends SearchOnGraphEvent
+
+  final case class IsConnected(connectedNode: Int, parent: Int) extends SearchOnGraphEvent
+
+  final case class DoneConnectingChildren(nodeAwaitingAnswer: Int) extends SearchOnGraphEvent
+
+  final case class FindUnconnectedNode(sendTo: ActorRef[CoordinationEvent], notAskedYet: Set[ActorRef[SearchOnGraphEvent]]) extends SearchOnGraphEvent
+
+  final case class AddToGraph(startNode: Int, endNode: Int) extends SearchOnGraphEvent
 
   // safe knng to file
   final case class GetGraph(sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
@@ -48,6 +65,10 @@ object SearchOnGraph {
   protected case class QueryCandidate(index: Int, distance: Double, var processed: Boolean)
 
   protected case class PathQueryInfo(queryIndex: Int, var checkedCandidates: Seq[(Int, Double)])
+
+  protected case class MessageCounter(var waitingForMessages: Int, parentNode: Int)
+
+  protected case class ConnectivityInfo(connectedNodes: mutable.Set[Int], messageTracker: mutable.Map[Int, MessageCounter])
 
   def apply(supervisor: ActorRef[CoordinationEvent],
             data: Seq[Seq[Float]],
@@ -75,13 +96,14 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
     Behaviors.receiveMessagePartial{
       case GraphDistribution(nodeLocator) =>
         ctx.log.info("Received distribution info, ready for queries")
-        searchOnGraph(graph, nodeLocator, Map.empty, Map.empty)
+        searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, None)
     }
 
   def searchOnGraph(graph: Map[Int, Seq[Int]],
                     nodeLocator: NodeLocator[SearchOnGraphEvent],
                     neighborQueries: Map[Query, Seq[QueryCandidate]],
-                    pathQueries: Map[Query, PathQueryInfo]): Behavior[SearchOnGraphEvent] =
+                    pathQueries: Map[Query, PathQueryInfo],
+                    connectivityInfo: Option[ConnectivityInfo]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessage {
       case FindNearestNeighbors(query, asker) =>
         ctx.log.info("Received a query")
@@ -90,13 +112,13 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
         val candidateList = Seq(QueryCandidate(startingNodeIndex, euclideanDist(data(startingNodeIndex), query), processed=false))
         // since this node is located locally, just ask self
         ctx.self ! GetNeighbors(startingNodeIndex, Query(query, asker), ctx.self)
-        searchOnGraph(graph, nodeLocator, neighborQueries + (Query(query, asker) -> candidateList), pathQueries)
+        searchOnGraph(graph, nodeLocator, neighborQueries + (Query(query, asker) -> candidateList), pathQueries, connectivityInfo)
 
       case FindNearestNeighborsStartingFrom(query, startingPoint, asker) =>
         ctx.log.info("Received a query with starting point")
         val candidateList = Seq(QueryCandidate(startingPoint, euclideanDist(data(startingPoint), query), processed=false))
         nodeLocator.findResponsibleActor(data(startingPoint)) ! GetNeighbors(startingPoint, Query(query, asker), ctx.self)
-        searchOnGraph(graph, nodeLocator, neighborQueries + (Query(query, asker) -> candidateList), pathQueries)
+        searchOnGraph(graph, nodeLocator, neighborQueries + (Query(query, asker) -> candidateList), pathQueries, connectivityInfo)
 
       case CheckedNodesOnSearch(endPoint, startingPoint, asker) =>
         ctx.log.info("Asked for the checked nodes to use as candidates in building the NSG")
@@ -105,11 +127,12 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
         nodeLocator.findResponsibleActor(data(startingPoint)) ! GetNeighbors(startingPoint, Query(query, asker), ctx.self)
         searchOnGraph(graph, nodeLocator,
           neighborQueries + (Query(query, asker) -> candidateList),
-          pathQueries + (Query(query, asker) -> PathQueryInfo(endPoint, Seq.empty)))
+          pathQueries + (Query(query, asker) -> PathQueryInfo(endPoint, Seq.empty)),
+          connectivityInfo)
 
       case GetNeighbors(index, query, sender) =>
         sender ! Neighbors(query, index, graph(index))
-        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries)
+        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
 
       case Neighbors(query, processedIndex, neighbors) =>
         // update candidates
@@ -125,7 +148,6 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
           case Some(candidate) =>
             candidate.processed = true
             if (pathQueries.contains(query)) {
-              // TODO check this works as expected
               pathQueries(query).checkedCandidates = pathQueries(query).checkedCandidates :+ (candidate.index, candidate.distance)
             }
           case None =>
@@ -141,7 +163,7 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
             // find the neighbors of the next candidate to be processed and update queries
             nodeLocator.findResponsibleActor(data(nextCandidate.index)) ! GetNeighbors(nextCandidate.index, query, ctx.self)
             val updatedQueries = neighborQueries + (query -> updatedCandidates)
-            searchOnGraph(graph, nodeLocator, updatedQueries, pathQueries)
+            searchOnGraph(graph, nodeLocator, updatedQueries, pathQueries, connectivityInfo)
           case None =>
             // all candidates have been processed
             if (pathQueries.contains(query)) {
@@ -153,18 +175,124 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
               val nearestNeighbors: Seq[Int] = updatedCandidates.map(_.index)
               query.asker ! KNearestNeighbors(query.point, nearestNeighbors)
             }
-            searchOnGraph(graph, nodeLocator, neighborQueries - query, pathQueries - query)
+            searchOnGraph(graph, nodeLocator, neighborQueries - query, pathQueries - query, connectivityInfo)
         }
+
+      case UpdateConnectivity(root) =>
+        ctx.log.info("Updating connectivity")
+        connectivityInfo match {
+          case Some(cInfo) =>
+            cInfo.connectedNodes.add(root)
+            val messageCounter = updateNeighbors(root, root, cInfo, graph, nodeLocator)
+            cInfo.messageTracker += (root -> messageCounter)
+            searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
+
+          case None =>
+            val cInfo = ConnectivityInfo(mutable.Set(root), mutable.Map.empty)
+            val messageCounter = updateNeighbors(root, root, cInfo, graph, nodeLocator)
+            cInfo.messageTracker += (root -> messageCounter)
+            searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, Some(cInfo))
+        }
+
+      case IsConnected(connectedNode, parent) =>
+        connectivityInfo match {
+          case Some(cInfo) =>
+            cInfo.connectedNodes.add(parent)
+            if (cInfo.connectedNodes.contains(connectedNode)) {
+              nodeLocator.findResponsibleActor(data(parent)) ! DoneConnectingChildren(parent)
+            } else {
+              cInfo.connectedNodes.add(connectedNode)
+              val messageCounter = updateNeighbors(connectedNode, parent, cInfo, graph, nodeLocator)
+              cInfo.messageTracker += (connectedNode -> messageCounter)
+            }
+            searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
+
+          case None =>
+            val cInfo = ConnectivityInfo(mutable.Set(connectedNode, parent), mutable.Map.empty)
+            val messageCounter = updateNeighbors(connectedNode, parent, cInfo, graph, nodeLocator)
+            cInfo.messageTracker += (connectedNode -> messageCounter)
+            searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, Some(cInfo))
+        }
+
+      case DoneConnectingChildren(nodeAwaitingAnswer) =>
+        connectivityInfo match {
+          case Some(cInfo) =>
+            val messageCounter = cInfo.messageTracker(nodeAwaitingAnswer)
+            messageCounter.waitingForMessages -= 1
+            if (messageCounter.waitingForMessages == 0) {
+              if (messageCounter.parentNode == nodeAwaitingAnswer) {
+                supervisor ! FinishedUpdatingConnectivity
+                ctx.log.info("Done with updating connectivity")
+              } else {
+                nodeLocator.findResponsibleActor(data(messageCounter.parentNode)) !
+                  DoneConnectingChildren(messageCounter.parentNode)
+              }
+            }
+        }
+        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
+
+      case FindUnconnectedNode(sendTo, notAskedYet) =>
+        connectivityInfo match {
+          case None =>
+            ctx.log.info("Asked for unconnected nodes before updating connectivity")
+            sendTo ! UnconnectedNode(graph.head._1)
+          case Some(cInfo) =>
+            val unconnectedNodes = graph.keys.toSet -- cInfo.connectedNodes
+            if (unconnectedNodes.isEmpty) {
+              // no unconnected nodes in this actor, ask others
+              notAskedYet.head ! FindUnconnectedNode(sendTo, notAskedYet - ctx.self)
+            } else {
+              // send one of the unconnected nodes
+              sendTo ! UnconnectedNode(unconnectedNodes.head)
+            }
+        }
+        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
+
+      case AddToGraph(startNode, endNode) =>
+        ctx.log.info("Add edge to graph to ensure connectivity")
+        val updatedNeighbors = graph(startNode) :+ endNode
+        searchOnGraph(graph + (startNode -> updatedNeighbors), nodeLocator, neighborQueries, pathQueries, connectivityInfo)
+
+      case GetNSGFrom(nsgMerger) =>
+        ctx.log.info("Asking NSG Merger for my part of the NSG")
+        nsgMerger ! GetPartialGraph(graph.keys.toSet, ctx.self)
+        waitForNSG(nodeLocator)
 
       case GetGraph(sender) =>
         ctx.log.info("Asked for graph info")
         sender ! Graph(graph, ctx.self)
-        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries)
+        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
 
       case SendResponsibleIndicesTo(nsgWorker) =>
         nsgWorker ! Responsibility(graph.keys.toSeq)
-        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries)
+        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
     }
+
+  def waitForNSG(nodeLocator: NodeLocator[SearchOnGraphEvent]): Behavior[SearchOnGraphEvent] =
+    Behaviors.receiveMessagePartial{
+      case PartialNSG(graph) =>
+        ctx.log.info("Received nsg, ready for queries/establishing connectivity")
+        supervisor ! UpdatedToNSG
+        searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, None)
+    }
+
+  def updateNeighbors(node: Int,
+                      parent: Int,
+                      connectivityInfo: ConnectivityInfo,
+                      graph: Map[Int, Seq[Int]],
+                      nodeLocator: NodeLocator[SearchOnGraphEvent]): MessageCounter = {
+    var sendMessages = 0
+    // mark all neighbors as connected
+    graph(node).foreach { neighborIndex =>
+      if (!connectivityInfo.connectedNodes.contains(neighborIndex)) {
+        connectivityInfo.connectedNodes.add(neighborIndex)
+        nodeLocator.findResponsibleActor(data(neighborIndex)) ! IsConnected(neighborIndex, node)
+        sendMessages += 1
+      }
+    }
+    MessageCounter(sendMessages, parent)
+  }
+
 
   def euclideanDist(pointX: Seq[Float], pointY: Seq[Float]): Double = {
     sqrt((pointX zip pointY).map { case (x,y) => pow(y - x, 2) }.sum)
