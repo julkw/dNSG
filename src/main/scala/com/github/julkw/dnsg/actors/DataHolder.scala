@@ -8,7 +8,7 @@ import java.nio.ByteOrder
 import akka.actor.typed.ActorRef
 import akka.actor.typed.Behavior
 import akka.actor.typed.scaladsl.Behaviors
-import com.github.julkw.dnsg.actors.Coordinator.{AverageValue, CoordinationEvent, DataRef}
+import com.github.julkw.dnsg.actors.Coordinator.{AverageValue, CoordinationEvent, DataRef, TestQueries}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{GetGraph, Graph, SearchOnGraphEvent}
 
 import scala.language.postfixOps
@@ -22,6 +22,8 @@ object DataHolder {
   final case class LoadPartialDataFromFile(filename: String, lineOffset: Int, linesUsed: Int, dimensionsOffset: Int, dimensionsUsed: Int, replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
   final case class GetAverageValue(replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
+
+  final case class ReadTestQueries(filename: String, replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
   final case class SaveGraphToFile(filename: String, graphHolders: Set[ActorRef[SearchOnGraphEvent]], k: Int) extends LoadDataEvent
   // TODO in a cluster the indices would not be enough, so maybe one message per node including its location
@@ -55,6 +57,11 @@ object DataHolder {
           data.map(value => value(index)).sum / data.length
         }
         replyTo ! AverageValue(averageValue)
+        Behaviors.same
+
+      case ReadTestQueries(filename, replyTo) =>
+        val queries = readQueries(filename)
+        replyTo ! TestQueries(queries)
         Behaviors.same
 
       case SaveGraphToFile(filename, graphHolders, k) =>
@@ -96,7 +103,22 @@ object DataHolder {
     }.toSeq
     data
   }
-  
+
+  // read Queries and indices of nearest neighbors
+  def readQueries(filename: String): Seq[(Seq[Float], Seq[Int])] = {
+    val bis = new BufferedInputStream(new FileInputStream(filename))
+    val byteValues = LazyList.continually(bis.read).takeWhile(-1 !=).map(_.toByte).grouped(4).toSeq
+    val dimensions = byteArrayToLittleEndianInt(byteValues.head.toArray)
+    val k = byteArrayToLittleEndianInt(byteValues(dimensions + 1).toArray)
+    val querySize = dimensions + 1 + k + 1
+    val queries = byteValues.grouped(querySize).map{ byteQuery =>
+      val query = byteQuery.slice(1, dimensions + 1).map(byteValue => byteArrayToLittleEndianFloat(byteValue.toArray))
+      val neighbors = byteQuery.slice(dimensions + 2, byteQuery.length).map(byteValue => byteArrayToLittleEndianInt(byteValue.toArray))
+      (query, neighbors)
+    }
+    queries.toSeq
+  }
+
   def byteArrayToLittleEndianInt(bArray: Array[Byte]) : Int = {
     val bb: nio.ByteBuffer = ByteBuffer.wrap(bArray)
     bb.order(ByteOrder.LITTLE_ENDIAN)

@@ -2,7 +2,7 @@ package com.github.julkw.dnsg.actors
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, LoadPartialDataFromFile, LoadSiftDataFromFile}
+import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, LoadPartialDataFromFile, LoadSiftDataFromFile, ReadTestQueries}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{AddToGraph, FindNearestNeighbors, FindNearestNeighborsStartingFrom, FindUnconnectedNode, GetNSGFrom, GraphDistribution, KNearestNeighbors, SearchOnGraphEvent, SendResponsibleIndicesTo, UpdateConnectivity}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, NSGDistributed}
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
@@ -33,13 +33,25 @@ object Coordinator {
 
   final case object AllConnected extends CoordinationEvent
 
+  // testing the graph
+
+  final case class TestQueries(queries: Seq[(Seq[Float], Seq[Int])]) extends CoordinationEvent
+
 
   def apply(): Behavior[CoordinationEvent] = Behaviors.setup { ctx =>
     // TODO turn into input through configuration
     val filename: String = "/home/juliane/code/dNSG/data/siftsmall/siftsmall_base.fvecs"
-    val k: Int = 10
+    val k: Int = 100
     val maxReverseNeighbors: Int = 10
     val numWorkers: Int = 4
+
+    // for testing (partial data and queryFile
+    val queryFilename: String = "/home/juliane/code/dNSG/data/siftsmall_base_result_k100_l0+1000_d0+64"
+    val linesOffset = 0
+    val lines = 1000
+    val dimensionOffset = 0
+    val dimensions = 64
+
 
     val buildGraphEventAdapter: ActorRef[KnngWorker.BuildGraphEvent] =
       ctx.messageAdapter { event => WrappedBuildGraphEvent(event) }
@@ -49,7 +61,7 @@ object Coordinator {
 
     val dh = ctx.spawn(DataHolder(), name = "DataHolder")
     //dh ! LoadSiftDataFromFile(filename, ctx.self)
-    dh ! LoadPartialDataFromFile(filename, 0, 1000, 0, 64, ctx.self)
+    dh ! LoadPartialDataFromFile(filename, linesOffset, lines, dimensionOffset, dimensions, ctx.self)
 
     ctx.log.info("start building the approximate graph")
     Behaviors.setup(
@@ -221,7 +233,17 @@ class Coordinator(k: Int,
 
       case AllConnected =>
         ctx.log.info("NSG build seems to be done")
-        connectNSG(data, navigatingNodeIndex, nodeLocator, latestUnconnectedNode)
+        dataHolder ! ReadTestQueries("/home/juliane/code/dNSG/data/siftsmall_base_result_k100_l0+1000_d0+64", ctx.self)
+        testNSG(data, navigatingNodeIndex, nodeLocator)
     }
+
+    def testNSG(data: Seq[Seq[Float]],
+                navigatingNodeIndex: Int,
+                nodeLocator: NodeLocator[SearchOnGraphEvent]): Behavior[CoordinationEvent] =
+      Behaviors.receiveMessagePartial{
+        case TestQueries(queries) =>
+          // TODO run queries and compare results
+          testNSG(data, navigatingNodeIndex, nodeLocator)
+      }
 
 }
