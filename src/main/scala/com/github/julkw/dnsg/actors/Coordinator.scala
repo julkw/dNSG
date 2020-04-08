@@ -2,7 +2,7 @@ package com.github.julkw.dnsg.actors
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, LoadSiftDataFromFile}
+import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, LoadPartialDataFromFile, LoadSiftDataFromFile}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{AddToGraph, FindNearestNeighbors, FindNearestNeighborsStartingFrom, FindUnconnectedNode, GetNSGFrom, GraphDistribution, KNearestNeighbors, SearchOnGraphEvent, SendResponsibleIndicesTo, UpdateConnectivity}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, NSGDistributed}
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
@@ -48,7 +48,8 @@ object Coordinator {
       ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
 
     val dh = ctx.spawn(DataHolder(), name = "DataHolder")
-    dh ! LoadSiftDataFromFile(filename, ctx.self)
+    //dh ! LoadSiftDataFromFile(filename, ctx.self)
+    dh ! LoadPartialDataFromFile(filename, 0, 1000, 0, 64, ctx.self)
 
     ctx.log.info("start building the approximate graph")
     Behaviors.setup(

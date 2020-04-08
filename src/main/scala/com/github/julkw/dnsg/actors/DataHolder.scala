@@ -19,6 +19,8 @@ object DataHolder {
 
   final case class LoadSiftDataFromFile(filename: String, replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
+  final case class LoadPartialDataFromFile(filename: String, lineOffset: Int, linesUsed: Int, dimensionsOffset: Int, dimensionsUsed: Int, replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
+
   final case class GetAverageValue(replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
   final case class SaveGraphToFile(filename: String, graphHolders: Set[ActorRef[SearchOnGraphEvent]], k: Int) extends LoadDataEvent
@@ -35,30 +37,16 @@ object DataHolder {
     Behaviors.receiveMessage {
       case LoadSiftDataFromFile(filename, replyTo) =>
         ctx.log.info("Asked to load SIFT data from {}", filename)
-
-        val bis = new BufferedInputStream(new FileInputStream(filename))
-        val bArray = LazyList.continually(bis.read).takeWhile(-1 !=).map(_.toByte).toArray
-
-        val dimensions = byteArrayToLittleEndianInt(bArray.slice(0, 4))
-        ctx.log.info("Dimensions: {}", dimensions)
-
-        val vectorSize = (dimensions + 1) * 4
-        val vectors = bArray.length / vectorSize
-
-        ctx.log.info("The number of vectors is: {}", vectors)
-        for (vector <- 0 until vectors) {
-          val vectorStart = vector * vectorSize + 4
-          var valueVec : Seq[Float] = Seq.empty
-          for (dim <- 0 until dimensions) {
-            val valueStart = vectorStart + dim * 4
-            val value = byteArrayToLittleEndianFloat(bArray.slice(valueStart, valueStart + 4))
-            valueVec = valueVec :+ value
-          }
-          data = data :+ valueVec
-        }
-        // TODO remove again, this is just for faster debugging
-        data = data.slice(0, 1000)
+        val data = readData(filename)
         replyTo ! DataRef(data)
+        Behaviors.same
+
+      // only return part of the data for testing (number of lines and dimensions need to be known beforehand for this)
+      case LoadPartialDataFromFile(filename, lineOffset, linesUsed, dimensionsOffset, dimensionsUsed, replyTo) =>
+        val data = readData(filename)
+        val reducedData = data.slice(lineOffset, lineOffset + linesUsed).map(vector =>
+          vector.slice(dimensionsOffset, dimensionsOffset + dimensionsUsed))
+        replyTo ! DataRef(reducedData)
         Behaviors.same
 
       case GetAverageValue(replyTo) =>
@@ -93,6 +81,22 @@ object DataHolder {
         }
     }
 
+  def readData(filename: String): Seq[Seq[Float]] = {
+    // read dimensions for proper grouping
+    val bis = new BufferedInputStream(new FileInputStream(filename))
+    bis.mark(0)
+    val dimArray: Array[Byte] = Array.fill(4){0}
+    bis.read(dimArray)
+    val dimensions = byteArrayToLittleEndianInt(dimArray)
+    bis.reset()
+
+    val data = LazyList.continually(bis.read).takeWhile(-1 !=).map(_.toByte).grouped(4).grouped(dimensions + 1).map{
+      byteValues =>
+        byteValues.slice(1, byteValues.length).map(value => byteArrayToLittleEndianFloat(value.toArray))
+    }.toSeq
+    data
+  }
+  
   def byteArrayToLittleEndianInt(bArray: Array[Byte]) : Int = {
     val bb: nio.ByteBuffer = ByteBuffer.wrap(bArray)
     bb.order(ByteOrder.LITTLE_ENDIAN)
