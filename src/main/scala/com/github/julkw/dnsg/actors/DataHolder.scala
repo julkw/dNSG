@@ -39,16 +39,16 @@ object DataHolder {
     Behaviors.receiveMessage {
       case LoadSiftDataFromFile(filename, replyTo) =>
         ctx.log.info("Asked to load SIFT data from {}", filename)
-        val data = readData(filename)
+        readData(filename)
         replyTo ! DataRef(data)
         Behaviors.same
 
       // only return part of the data for testing (number of lines and dimensions need to be known beforehand for this)
       case LoadPartialDataFromFile(filename, lineOffset, linesUsed, dimensionsOffset, dimensionsUsed, replyTo) =>
-        val data = readData(filename)
-        val reducedData = data.slice(lineOffset, lineOffset + linesUsed).map(vector =>
+        readData(filename)
+        data = data.slice(lineOffset, lineOffset + linesUsed).map(vector =>
           vector.slice(dimensionsOffset, dimensionsOffset + dimensionsUsed))
-        replyTo ! DataRef(reducedData)
+        replyTo ! DataRef(data)
         Behaviors.same
 
       case GetAverageValue(replyTo) =>
@@ -88,7 +88,7 @@ object DataHolder {
         }
     }
 
-  def readData(filename: String): Seq[Seq[Float]] = {
+  def readData(filename: String): Unit = {
     // read dimensions for proper grouping
     val bis = new BufferedInputStream(new FileInputStream(filename))
     bis.mark(0)
@@ -97,11 +97,10 @@ object DataHolder {
     val dimensions = byteArrayToLittleEndianInt(dimArray)
     bis.reset()
 
-    val data = LazyList.continually(bis.read).takeWhile(-1 !=).map(_.toByte).grouped(4).grouped(dimensions + 1).map{
+    data = LazyList.continually(bis.read).takeWhile(-1 !=).map(_.toByte).grouped(4).grouped(dimensions + 1).map{
       byteValues =>
         byteValues.slice(1, byteValues.length).map(value => byteArrayToLittleEndianFloat(value.toArray))
     }.toSeq
-    data
   }
 
   // read Queries and indices of nearest neighbors

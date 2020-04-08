@@ -41,12 +41,12 @@ object Coordinator {
   def apply(): Behavior[CoordinationEvent] = Behaviors.setup { ctx =>
     // TODO turn into input through configuration
     val filename: String = "/home/juliane/code/dNSG/data/siftsmall/siftsmall_base.fvecs"
-    val k: Int = 100
+    val k: Int = 30
     val maxReverseNeighbors: Int = 10
     val numWorkers: Int = 4
 
     // for testing (partial data and queryFile
-    val queryFilename: String = "/home/juliane/code/dNSG/data/siftsmall_base_result_k100_l0+1000_d0+64"
+    val queryFilename: String = "/home/juliane/code/dNSG/data/siftsmall_base_result_k30_l0+1000_d0+64"
     val linesOffset = 0
     val lines = 1000
     val dimensionOffset = 0
@@ -233,17 +233,29 @@ class Coordinator(k: Int,
 
       case AllConnected =>
         ctx.log.info("NSG build seems to be done")
-        dataHolder ! ReadTestQueries("/home/juliane/code/dNSG/data/siftsmall_base_result_k100_l0+1000_d0+64", ctx.self)
-        testNSG(data, navigatingNodeIndex, nodeLocator)
+        dataHolder ! ReadTestQueries("/home/juliane/code/dNSG/data/siftsmall_base_result_k30_l0+1000_d0+64", ctx.self)
+        testNSG(data, navigatingNodeIndex, nodeLocator, Map.empty)
     }
 
     def testNSG(data: Seq[Seq[Float]],
                 navigatingNodeIndex: Int,
-                nodeLocator: NodeLocator[SearchOnGraphEvent]): Behavior[CoordinationEvent] =
+                nodeLocator: NodeLocator[SearchOnGraphEvent],
+                queries: Map[Seq[Float], Seq[Int]]): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial{
-        case TestQueries(queries) =>
-          // TODO run queries and compare results
-          testNSG(data, navigatingNodeIndex, nodeLocator)
+        case TestQueries(testQueries) =>
+          testQueries.foreach(query => nodeLocator.findResponsibleActor(query._1) !
+              FindNearestNeighborsStartingFrom(query._1, navigatingNodeIndex, searchOnGraphEventAdapter))
+          testNSG(data, navigatingNodeIndex, nodeLocator, testQueries.toMap)
+
+        case wrappedSearchOnGraphEvent: WrappedSearchOnGraphEvent =>
+          wrappedSearchOnGraphEvent.event match {
+            case KNearestNeighbors(query, neighbors) =>
+              val correctNeighborIndices = queries(query)
+              // TODO Debug why the nsg supposedly finds neighbors that are closer to the query than the brute force nearest neighbor
+              ctx.log.info("The correct neighbors would have been: {}", correctNeighborIndices)
+              ctx.log.info("The NSG found: {}", neighbors)
+              testNSG(data, navigatingNodeIndex, nodeLocator, queries - query)
+          }
       }
 
 }

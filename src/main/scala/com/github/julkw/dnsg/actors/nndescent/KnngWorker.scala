@@ -298,6 +298,8 @@ class KnngWorker(data: Seq[Seq[Float]],
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
       case CompleteLocalJoin(g_node) =>
+        // TODO improve efficiency by using already initialized Array for distances? (Less allocation of memory)
+        ctx.log.info("Doing local join for {}", g_node)
         // prevent timeouts in the initial phase of graph nnDescent
         timers.cancel(NNDescentTimerKey)
         //ctx.log.info("Still working on initial local joins")
