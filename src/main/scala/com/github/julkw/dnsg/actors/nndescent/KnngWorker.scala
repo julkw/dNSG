@@ -301,7 +301,6 @@ class KnngWorker(data: Seq[Seq[Float]],
         nnDescent(nodeLocator, graph, reverseNeighbors, reusableDistanceStorage)
 
       case CompleteLocalJoin(g_node) =>
-        // TODO improve efficiency by using already initialized Array for distances? (Less allocation of memory)
         ctx.log.info("Doing local join for {}", g_node)
         // prevent timeouts in the initial phase of graph nnDescent
         timers.cancel(NNDescentTimerKey)
@@ -310,13 +309,16 @@ class KnngWorker(data: Seq[Seq[Float]],
         // send all PotentialNeighbors to the correct actors
         //val distances: Seq[(Int, Int, Double)] = neighbors.map(_._1).combinations(2).map(combination =>
         //  (combination(0), combination(1), euclideanDist(data(combination(0)), data(combination(1))))).toSeq
-        var lastDistanceIndexUsed = 0
+
+        var nextDistanceIndex = 0
         for (n1 <- 0 until k) {
-          for (n2 <- n1 until k) {
-            reusableDistanceStorage(lastDistanceIndexUsed) = (n1, n2, euclideanDist(data(n1), data(n2)))
+          for (n2 <- n1 + 1 until k) {
+            reusableDistanceStorage(nextDistanceIndex) = (n1, n2, euclideanDist(data(n1), data(n2)))
+            nextDistanceIndex += 1
           }
         }
 
+        //val reusableNeighborStorage = Array.fill(k - 1){(0, 0d)}
         neighbors.foreach{case (neighbor, _) =>
           val potentialNeighbors = reusableDistanceStorage.collect{ case(n1, n2, dist) if n1 == neighbor || n2 == neighbor =>
             if (n1 == neighbor) {
@@ -351,7 +353,6 @@ class KnngWorker(data: Seq[Seq[Float]],
           val updatedNeighbors = mergedNeighbors.slice(0, k)
           // update the reverse neighbors of changed neighbors
           val newNeighbors: Set[Int] = probableNeighbors.intersect(updatedNeighbors.toSet).map(_._1)
-
           newNeighbors.foreach {index =>
             nodeLocator.findResponsibleActor(data(index)) ! AddReverseNeighbor(index, g_node)
           }

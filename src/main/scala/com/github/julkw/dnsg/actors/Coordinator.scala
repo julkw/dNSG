@@ -41,7 +41,7 @@ object Coordinator {
   def apply(): Behavior[CoordinationEvent] = Behaviors.setup { ctx =>
     // TODO turn into input through configuration
     val filename: String = "/home/juliane/code/dNSG/data/siftsmall/siftsmall_base.fvecs"
-    val k: Int = 100
+    val k: Int = 30
     val maxReverseNeighbors: Int = 10
     val numWorkers: Int = 2
 
@@ -233,7 +233,7 @@ class Coordinator(k: Int,
 
       case AllConnected =>
         ctx.log.info("NSG build seems to be done")
-        //dataHolder ! ReadTestQueries("/home/juliane/code/dNSG/data/siftsmall_base_result_k30_l0+1000_d0+64", ctx.self)
+        dataHolder ! ReadTestQueries("/home/juliane/code/dNSG/data/siftsmall_base_result_k30_l0+1000_d0+64", ctx.self)
         testNSG(data, navigatingNodeIndex, nodeLocator, Map.empty)
     }
 
@@ -251,10 +251,11 @@ class Coordinator(k: Int,
           wrappedSearchOnGraphEvent.event match {
             case KNearestNeighbors(query, neighbors) =>
               val correctNeighborIndices = queries(query)
-              val cniWithDist = correctNeighborIndices.map(index => (index, euclideanDist(data(index), query)))
-              val foundNeighborsWithDist = neighbors.map(index => (index, euclideanDist(data(index), query)))
-              ctx.log.info("The correct neighbors would have been: {}", cniWithDist)
-              ctx.log.info("The NSG found: {}", foundNeighborsWithDist)
+              //val cniWithDist = correctNeighborIndices.map(index => (index, euclideanDist(data(index), query)))
+              //val foundNeighborsWithDist = neighbors.map(index => (index, euclideanDist(data(index), query)))
+              ctx.log.info("The correct neighbors would have been: {}", correctNeighborIndices)
+              ctx.log.info("The NSG found: {}", neighbors)
+              ctx.log.info("Found {} of {} nearest neighbors", correctNeighborIndices.intersect(neighbors).length, correctNeighborIndices.length)
               testNSG(data, navigatingNodeIndex, nodeLocator, queries - query)
           }
       }
