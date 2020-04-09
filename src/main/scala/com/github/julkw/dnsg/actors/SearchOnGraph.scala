@@ -6,7 +6,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinator.{AllConnected, CoordinationEvent, FinishedUpdatingConnectivity, UnconnectedNode, UpdatedToNSG}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, Responsibility}
-import com.github.julkw.dnsg.util.NodeLocator
+import com.github.julkw.dnsg.util.{Distance, NodeLocator}
 
 import scala.collection.mutable
 import scala.language.postfixOps
@@ -81,7 +81,7 @@ object SearchOnGraph {
 class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
                     data: Seq[Seq[Float]],
                     k: Int,
-                    ctx: ActorContext[SearchOnGraph.SearchOnGraphEvent]) {
+                    ctx: ActorContext[SearchOnGraph.SearchOnGraphEvent]) extends Distance {
   import SearchOnGraph._
 
   def waitForLocalGraph(): Behavior[SearchOnGraphEvent] =
@@ -300,11 +300,6 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
       supervisor ! FinishedUpdatingConnectivity
       ctx.log.info("None of the previously unconnected nodes are connected to the root")
     }
-  }
-
-
-  def euclideanDist(pointX: Seq[Float], pointY: Seq[Float]): Double = {
-    sqrt((pointX zip pointY).map { case (x,y) => pow(y - x, 2) }.sum)
   }
 }
 

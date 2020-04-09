@@ -7,7 +7,7 @@ import com.github.julkw.dnsg.actors.Coordinator.CoordinationEvent
 import com.github.julkw.dnsg.actors.SearchOnGraph
 import com.github.julkw.dnsg.actors.SearchOnGraph.{CheckedNodesOnSearch, SearchOnGraphEvent, SortedCheckedNodes}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, ReverseNeighbors}
-import com.github.julkw.dnsg.util.NodeLocator
+import com.github.julkw.dnsg.util.{Distance, NodeLocator}
 
 import scala.language.postfixOps
 
@@ -40,7 +40,7 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
                 maxReverseNeighbors: Int,
                 nodeLocator: NodeLocator[SearchOnGraphEvent],
                 nsgMerger: ActorRef[MergeNSGEvent],
-                ctx: ActorContext[NSGWorker.BuildNSGEvent]) {
+                ctx: ActorContext[NSGWorker.BuildNSGEvent]) extends Distance {
   import NSGWorker._
 
   def setup(): Behavior[BuildNSGEvent] =
@@ -67,7 +67,6 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
       case WrappedSearchOnGraphEvent(event) =>
         event match {
           case SortedCheckedNodes(queryIndex, checkedNodes) =>
-            ctx.log.info("Received candidates for NSG")
             // check neighbor candidates for conflicts
             var neighbors: Seq[Int] = Seq.empty
             val query = data(queryIndex)
@@ -99,11 +98,6 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
       neighborIndex += 1
     }
     conflictFound
-  }
-
-  // TODO move to util
-  def euclideanDist(pointX: Seq[Float], pointY: Seq[Float]): Double = {
-    sqrt((pointX zip pointY).map { case (x,y) => pow(y - x, 2) }.sum)
   }
 }
 

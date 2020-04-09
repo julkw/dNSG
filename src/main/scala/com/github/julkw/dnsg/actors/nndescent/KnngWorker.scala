@@ -8,7 +8,7 @@ import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import com.github.julkw.dnsg.actors.SearchOnGraph
 import com.github.julkw.dnsg.actors.SearchOnGraph.{Graph, GraphReceived, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.{IndexTree, LeafNode, NodeLocator, SplitNode, TreeBuilder, TreeNode}
+import com.github.julkw.dnsg.util.{Distance, IndexTree, LeafNode, NodeLocator, SplitNode, TreeBuilder, TreeNode}
 
 import scala.language.postfixOps
 
@@ -81,7 +81,7 @@ class KnngWorker(data: Seq[Seq[Float]],
                  k: Int,
                  supervisor: ActorRef[KnngWorker.BuildGraphEvent],
                  timers: TimerScheduler[KnngWorker.BuildGraphEvent],
-                 ctx: ActorContext[KnngWorker.BuildGraphEvent]) {
+                 ctx: ActorContext[KnngWorker.BuildGraphEvent]) extends Distance {
   import KnngWorker._
 
   def buildDistributionTree(): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
@@ -239,7 +239,6 @@ class KnngWorker(data: Seq[Seq[Float]],
         val updatedCandidates = candidates + (responsibilityIndex -> (oldCandidates ++ remoteCandidates))
         awaitingAnswer(responsibilityIndex) -= 1
         if (awaitingAnswer(responsibilityIndex) == 0) {
-          ctx.log.info("updating approximate graph")
           val graphIndex: Int = responsibility(responsibilityIndex)
           val neighbors: Seq[(Int, Double)] = updatedCandidates(responsibilityIndex).map(candidateIndex =>
             // 1 and k+1 so the g_node itself is not added to its own neighbors
@@ -447,11 +446,6 @@ class KnngWorker(data: Seq[Seq[Float]],
                 Behaviors.empty
             }
         }
-  }
-
-
-  def euclideanDist(pointX: Seq[Float], pointY: Seq[Float]): Double = {
-    sqrt((pointX zip pointY).map { case (x,y) => pow(y - x, 2) }.sum)
   }
 }
 
