@@ -106,7 +106,6 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
                     connectivityInfo: Option[ConnectivityInfo]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessage {
       case FindNearestNeighbors(query, asker) =>
-        ctx.log.info("Received a query")
         // choose node to start search from local nodes
         val startingNodeIndex: Int = graph.keys.head
         val candidateList = Seq(QueryCandidate(startingNodeIndex, euclideanDist(data(startingNodeIndex), query), processed=false))
@@ -115,13 +114,11 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
         searchOnGraph(graph, nodeLocator, neighborQueries + (Query(query, asker) -> candidateList), pathQueries, connectivityInfo)
 
       case FindNearestNeighborsStartingFrom(query, startingPoint, asker) =>
-        ctx.log.info("Received a query with starting point")
         val candidateList = Seq(QueryCandidate(startingPoint, euclideanDist(data(startingPoint), query), processed=false))
         nodeLocator.findResponsibleActor(data(startingPoint)) ! GetNeighbors(startingPoint, Query(query, asker), ctx.self)
         searchOnGraph(graph, nodeLocator, neighborQueries + (Query(query, asker) -> candidateList), pathQueries, connectivityInfo)
 
       case CheckedNodesOnSearch(endPoint, startingPoint, asker) =>
-        ctx.log.info("Asked for the checked nodes to use as candidates in building the NSG")
         val query = data(endPoint)
         val candidateList = Seq(QueryCandidate(startingPoint, euclideanDist(data(startingPoint), query), processed=false))
         nodeLocator.findResponsibleActor(data(startingPoint)) ! GetNeighbors(startingPoint, Query(query, asker), ctx.self)
