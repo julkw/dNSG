@@ -8,7 +8,7 @@ import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, NSGDistr
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
-import com.github.julkw.dnsg.util.{Distance, NodeLocator, PositionTree}
+import com.github.julkw.dnsg.util.{Distance, NodeLocator, PositionTree, Settings}
 
 object Coordinator {
 
@@ -39,42 +39,27 @@ object Coordinator {
 
 
   def apply(): Behavior[CoordinationEvent] = Behaviors.setup { ctx =>
-    // TODO turn into input through configuration
-    val filename: String = "/home/juliane/code/dNSG/data/siftsmall/siftsmall_base.fvecs"
-    val k: Int = 30
-    val maxReverseNeighbors: Int = 10
-    val numWorkers: Int = 2
-
-    // for testing (partial data and queryFile
-    val queryFilename: String = "/home/juliane/code/dNSG/data/siftsmall_base_result_k30_l0+1000_d0+64"
-    val linesOffset = 0
-    val lines = 1000
-    val dimensionOffset = 0
-    val dimensions = 64
-
-
     val buildGraphEventAdapter: ActorRef[KnngWorker.BuildGraphEvent] =
       ctx.messageAdapter { event => WrappedBuildGraphEvent(event) }
 
     val searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent] =
       ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
 
+    val settings = Settings(ctx.system.settings.config)
+
     val dh = ctx.spawn(DataHolder(), name = "DataHolder")
     //dh ! LoadSiftDataFromFile(filename, ctx.self)
-    dh ! LoadPartialDataFromFile(filename, linesOffset, lines, dimensionOffset, dimensions, ctx.self)
+    dh ! LoadPartialDataFromFile(settings.inputFilePath, settings.linesOffset, settings.lines, settings.dimensionOffset, settings.dimensions, ctx.self)
 
     ctx.log.info("start building the approximate graph")
     Behaviors.setup(
-      ctx => new Coordinator(k, numWorkers, maxReverseNeighbors, filename, dh, buildGraphEventAdapter, searchOnGraphEventAdapter, ctx).setUp()
+      ctx => new Coordinator(settings, dh, buildGraphEventAdapter, searchOnGraphEventAdapter, ctx).setUp()
     )
   }
 
 }
 
-class Coordinator(k: Int,
-                  numWorkers: Int,
-                  maxReverseNeighbors: Int,
-                  filename: String,
+class Coordinator(settings: Settings,
                   dataHolder: ActorRef[LoadDataEvent],
                   buildGraphEventAdapter: ActorRef[KnngWorker.BuildGraphEvent],
                   searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent],
@@ -86,8 +71,8 @@ class Coordinator(k: Int,
       val data = dataRef
       ctx.log.info("Successfully loaded data")
       // create Actor to start distribution of data
-      val maxResponsibilityPerNode: Int = data.length / numWorkers + data.length / 10
-      val kw = ctx.spawn(KnngWorker(data, maxResponsibilityPerNode, k, buildGraphEventAdapter), name = "KnngWorker")
+      val maxResponsibilityPerNode: Int = data.length / settings.workers + data.length / 10
+      val kw = ctx.spawn(KnngWorker(data, maxResponsibilityPerNode, settings.k, buildGraphEventAdapter), name = "KnngWorker")
       val allIndices: Seq[Int] = 0 until data.length
       kw ! ResponsibleFor(allIndices)
       distributeDataForKnng(data)
@@ -127,7 +112,7 @@ class Coordinator(k: Int,
             // tell workers that the graph is finished and they can move it to the searchOnGraph actors
             knngWorkers.foreach { worker =>
               val i = knngWorkers.indexOf(worker)
-              val nsgw = ctx.spawn(SearchOnGraph(ctx.self, data, k), name = "SearchOnGraph" + i.toString)
+              val nsgw = ctx.spawn(SearchOnGraph(ctx.self, data, settings.k), name = "SearchOnGraph" + i.toString)
               worker ! StartSearchOnGraph(nsgw)
             }
             buildKnng(data, knngWorkers, nodeLocator)
@@ -172,7 +157,7 @@ class Coordinator(k: Int,
     val graphHolders = nodeLocator.positionTree.allLeafs().map(leaf => leaf.data)
       graphHolders.foreach{ graphHolder =>
         val i = graphHolders.indexOf(graphHolder)
-        val nsgWorker = ctx.spawn(NSGWorker(ctx.self, data, navigatingNode, maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + i.toString)
+        val nsgWorker = ctx.spawn(NSGWorker(ctx.self, data, navigatingNode, settings.maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + i.toString)
         // for now this is the easiest way to distribute responsibility
         graphHolder ! SendResponsibleIndicesTo(nsgWorker)
       }
@@ -233,7 +218,7 @@ class Coordinator(k: Int,
 
       case AllConnected =>
         ctx.log.info("NSG build seems to be done")
-        dataHolder ! ReadTestQueries("/home/juliane/code/dNSG/data/siftsmall_base_result_k30_l0+1000_d0+64", ctx.self)
+        dataHolder ! ReadTestQueries(settings.queryFilePath, ctx.self)
         testNSG(data, navigatingNodeIndex, nodeLocator, Map.empty)
     }
 
