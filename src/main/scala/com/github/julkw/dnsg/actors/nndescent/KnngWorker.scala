@@ -287,56 +287,37 @@ class KnngWorker(data: Seq[Seq[Float]],
     timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
     // start nnDescent
     val reverseNeighbors: Map[Int, Seq[Int]] = graph.map{case (index, _) => index -> Seq.empty}
-    val allNeighborCombinations = k * (k - 1) / 2
-    val reusableDistanceStorage = Array.fill(allNeighborCombinations){(0, 0, 0d)}
-    nnDescent(nodeLocator, graph, reverseNeighbors, reusableDistanceStorage)
+    nnDescent(nodeLocator, graph, reverseNeighbors)
   }
 
   def nnDescent(nodeLocator: NodeLocator[BuildGraphEvent],
                 graph: Map[Int, Seq[(Int, Double)]],
-                reverseNeighbors: Map[Int, Seq[Int]],
-                reusableDistanceStorage: Array[(Int, Int, Double)]): Behavior[BuildGraphEvent] =
+                reverseNeighbors: Map[Int, Seq[Int]]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessage {
       case StartNNDescent =>
         // already done, so do nothing
-        nnDescent(nodeLocator, graph, reverseNeighbors, reusableDistanceStorage)
+        nnDescent(nodeLocator, graph, reverseNeighbors)
 
       case CompleteLocalJoin(g_node) =>
+        ctx.log.info("local join")
         // prevent timeouts in the initial phase of graph nnDescent
         timers.cancel(NNDescentTimerKey)
         val neighbors = graph(g_node)
-        // send all PotentialNeighbors to the correct actors
-        var nextDistanceIndex = 0
-        for (n1 <- 0 until k) {
-          for (n2 <- n1 + 1 until k) {
-            val neighbor1 = neighbors(n1)._1
-            val neighbor2 = neighbors(n2)._1
-            reusableDistanceStorage(nextDistanceIndex) = (neighbor1, neighbor2, euclideanDist(data(neighbor1), data(neighbor2)))
-            nextDistanceIndex += 1
-          }
-        }
-        neighbors.foreach{case (neighbor, _) =>
-          val potentialNeighbors = reusableDistanceStorage.collect{ case(n1, n2, dist) if n1 == neighbor || n2 == neighbor =>
-            if (n1 == neighbor) {
-              (n2, dist)
-            } else {
-              (n1, dist)
-            }
-          }
-          nodeLocator.findResponsibleActor(data(neighbor)) ! PotentialNeighbors(neighbor, potentialNeighbors, g_node)
-        }
+        val potentialNeighbors = joinNeighbors(neighbors)
+        sendPotentialNeighbors(potentialNeighbors, neighbors, nodeLocator, g_node)
         // if this is the last inital join, the timer is needed from now on
         timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
-        nnDescent(nodeLocator, graph, reverseNeighbors, reusableDistanceStorage)
+        nnDescent(nodeLocator, graph, reverseNeighbors)
 
       case PotentialNeighbors(g_node, potentialNeighbors, senderIndex) =>
+        ctx.log.info("improving graph")
         // TODO refactor with less memory allocation
         val currentNeighbors: Seq[(Int, Double)] = graph(g_node)
         val currentMaxDist: Double = currentNeighbors(currentNeighbors.length - 1)._2
         val probableNeighbors: Set[(Int, Double)] = potentialNeighbors.filter(_._2 < currentMaxDist).toSet -- currentNeighbors - ((g_node, 0.0))
         if (probableNeighbors.isEmpty) {
           // nothing changes
-          nnDescent(nodeLocator, graph, reverseNeighbors, reusableDistanceStorage)
+          nnDescent(nodeLocator, graph, reverseNeighbors)
         } else {
           if (timers.isTimerActive(NNDescentTimerKey)) {
             timers.cancel(NNDescentTimerKey)
@@ -380,7 +361,7 @@ class KnngWorker(data: Seq[Seq[Float]],
           val updatedGraph = graph + (g_node -> updatedNeighbors)
           // something changed so reset the NNDescent Timer
           timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
-          nnDescent(nodeLocator, updatedGraph, reverseNeighbors, reusableDistanceStorage)
+          nnDescent(nodeLocator, updatedGraph, reverseNeighbors)
         }
 
       case AddReverseNeighbor(g_nodeIndex, neighborIndex) =>
@@ -395,16 +376,16 @@ class KnngWorker(data: Seq[Seq[Float]],
         }
         // update reverse neighbors
         val updatedReverseNeighbors = reverseNeighbors(g_nodeIndex) :+ neighborIndex
-        nnDescent(nodeLocator, graph, reverseNeighbors + (g_nodeIndex -> updatedReverseNeighbors), reusableDistanceStorage)
+        nnDescent(nodeLocator, graph, reverseNeighbors + (g_nodeIndex -> updatedReverseNeighbors))
 
       case RemoveReverseNeighbor(g_nodeIndex, neighborIndex) =>
         val updatedReverseNeighbors = reverseNeighbors(g_nodeIndex).diff(Seq(neighborIndex))
-        nnDescent(nodeLocator, graph, reverseNeighbors + (g_nodeIndex -> updatedReverseNeighbors), reusableDistanceStorage)
+        nnDescent(nodeLocator, graph, reverseNeighbors + (g_nodeIndex -> updatedReverseNeighbors))
 
       case NNDescentTimeout =>
         ctx.log.info("Looks like I'm done with NNDescent")
         supervisor ! FinishedNNDescent
-        nnDescent(nodeLocator, graph, reverseNeighbors, reusableDistanceStorage)
+        nnDescent(nodeLocator, graph, reverseNeighbors)
 
       case StartSearchOnGraph(graphHolder) =>
         // all nodes are done with NNDescent, nothing will change with the graph anymore, so it is moved to SearchOnGraph actors
@@ -426,6 +407,27 @@ class KnngWorker(data: Seq[Seq[Float]],
             Behaviors.empty
         }
     }
+
+  def joinNeighbors(neighbors: Seq[(Int, Double)]): Array[Array[(Int, Double)]] = {
+    val neighborDistances = Array.fill(k){Array.fill(k - 1){(0, 0d)}}
+    for (n1 <- 0 until k) {
+      for (n2 <- n1 + 1 until k) {
+        val neighbor1 = neighbors(n1)._1
+        val neighbor2 = neighbors(n2)._1
+        val dist = euclideanDist(data(neighbor1), data(neighbor2))
+        neighborDistances(n1)(n2 - 1) = (neighbor2, dist)
+        neighborDistances(n2)(n1) = (neighbor1, dist)
+      }
+    }
+    neighborDistances
+  }
+
+  def sendPotentialNeighbors(potentialNeighbors: Array[Array[(Int, Double)]], neighbors: Seq[(Int, Double)], nodeLocator: NodeLocator[BuildGraphEvent], g_nodeIndex: Int): Unit = {
+    for (neighborIndex <- 0 until k) {
+      val neighbor = neighbors(neighborIndex)._1
+      nodeLocator.findResponsibleActor(data(neighbor)) ! PotentialNeighbors(neighbor, potentialNeighbors(neighborIndex), g_nodeIndex)
+    }
+  }
 
   def combineSOGDistributionTree(leftChild: ActorRef[BuildGraphEvent],
                                  rightChild: ActorRef[BuildGraphEvent],
