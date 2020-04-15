@@ -309,7 +309,9 @@ class KnngWorker(data: Seq[Seq[Float]],
         var nextDistanceIndex = 0
         for (n1 <- 0 until k) {
           for (n2 <- n1 + 1 until k) {
-            reusableDistanceStorage(nextDistanceIndex) = (n1, n2, euclideanDist(data(n1), data(n2)))
+            val neighbor1 = neighbors(n1)._1
+            val neighbor2 = neighbors(n2)._1
+            reusableDistanceStorage(nextDistanceIndex) = (neighbor1, neighbor2, euclideanDist(data(neighbor1), data(neighbor2)))
             nextDistanceIndex += 1
           }
         }
