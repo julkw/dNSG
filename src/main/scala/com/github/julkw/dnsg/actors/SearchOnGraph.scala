@@ -87,7 +87,6 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
   def waitForLocalGraph(): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case Graph(graph, sender) =>
-        ctx.log.info("Received graph")
         sender ! GraphReceived(ctx.self)
         waitForDistributionInfo(graph)
     }
@@ -95,7 +94,6 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
   def waitForDistributionInfo(graph: Map[Int, Seq[Int]]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case GraphDistribution(nodeLocator) =>
-        ctx.log.info("Received distribution info, ready for queries")
         searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, None)
     }
 
@@ -254,12 +252,12 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
         searchOnGraph(graph + (startNode -> updatedNeighbors), nodeLocator, neighborQueries, pathQueries, connectivityInfo)
 
       case GetNSGFrom(nsgMerger) =>
-        ctx.log.info("Asking NSG Merger for my part of the NSG")
+        //ctx.log.info("Asking NSG Merger for my part of the NSG")
         nsgMerger ! GetPartialGraph(graph.keys.toSet, ctx.self)
         waitForNSG(nodeLocator)
 
       case GetGraph(sender) =>
-        ctx.log.info("Asked for graph info")
+        //ctx.log.info("Asked for graph info")
         sender ! Graph(graph, ctx.self)
         searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
 
@@ -271,7 +269,7 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
   def waitForNSG(nodeLocator: NodeLocator[SearchOnGraphEvent]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case PartialNSG(graph) =>
-        ctx.log.info("Received nsg, ready for queries/establishing connectivity")
+        //ctx.log.info("Received nsg, ready for queries/establishing connectivity")
         supervisor ! UpdatedToNSG
         searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, None)
     }

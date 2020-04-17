@@ -72,7 +72,7 @@ class Coordinator(settings: Settings,
       ctx.log.info("Successfully loaded data")
       // create Actor to start distribution of data
       val maxResponsibilityPerNode: Int = data.length / settings.workers + data.length / 10
-      val kw = ctx.spawn(KnngWorker(data, maxResponsibilityPerNode, settings.k, buildGraphEventAdapter), name = "KnngWorker")
+      val kw = ctx.spawn(KnngWorker(data, maxResponsibilityPerNode, settings.k, settings.sampleRate, buildGraphEventAdapter), name = "KnngWorker")
       val allIndices: Seq[Int] = 0 until data.length
       kw ! ResponsibleFor(allIndices)
       distributeDataForKnng(data)
@@ -219,18 +219,19 @@ class Coordinator(settings: Settings,
       case AllConnected =>
         ctx.log.info("NSG build seems to be done")
         dataHolder ! ReadTestQueries(settings.queryFilePath, ctx.self)
-        testNSG(data, navigatingNodeIndex, nodeLocator, Map.empty)
+        testNSG(data, navigatingNodeIndex, nodeLocator, Map.empty, 0)
     }
 
     def testNSG(data: Seq[Seq[Float]],
                 navigatingNodeIndex: Int,
                 nodeLocator: NodeLocator[SearchOnGraphEvent],
-                queries: Map[Seq[Float], Seq[Int]]): Behavior[CoordinationEvent] =
+                queries: Map[Seq[Float], Seq[Int]],
+                sumOfNeighborsFound: Int): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial{
         case TestQueries(testQueries) =>
           testQueries.foreach(query => nodeLocator.findResponsibleActor(query._1) !
               FindNearestNeighborsStartingFrom(query._1, navigatingNodeIndex, searchOnGraphEventAdapter))
-          testNSG(data, navigatingNodeIndex, nodeLocator, testQueries.toMap)
+          testNSG(data, navigatingNodeIndex, nodeLocator, testQueries.toMap, sumOfNeighborsFound)
 
         case wrappedSearchOnGraphEvent: WrappedSearchOnGraphEvent =>
           wrappedSearchOnGraphEvent.event match {
@@ -241,7 +242,9 @@ class Coordinator(settings: Settings,
               ctx.log.info("The correct neighbors would have been: {}", correctNeighborIndices)
               ctx.log.info("The NSG found: {}", neighbors)
               ctx.log.info("Found {} of {} nearest neighbors", correctNeighborIndices.intersect(neighbors).length, correctNeighborIndices.length)
-              testNSG(data, navigatingNodeIndex, nodeLocator, queries - query)
+              val newSum = sumOfNeighborsFound + correctNeighborIndices.intersect(neighbors).length
+              ctx.log.info("Overall correct neighbors found: {}", newSum)
+              testNSG(data, navigatingNodeIndex, nodeLocator, queries - query, newSum)
           }
       }
 

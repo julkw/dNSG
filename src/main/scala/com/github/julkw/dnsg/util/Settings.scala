@@ -10,6 +10,8 @@ case class Settings(config: Config) {
 
   val k: Int = config.getInt(s"$namespace.k")
 
+  val sampleRate: Double = config.getDouble(s"$namespace.sample-rate")
+
   val maxReverseNeighbors: Int= config.getInt(s"$namespace.max-reverse-neighbors")
 
   val workers: Int = config.getInt(s"$namespace.workers")
