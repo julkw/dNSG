@@ -304,8 +304,7 @@ class KnngWorker(data: Seq[Seq[Float]],
         // prevent timeouts in the initial phase of graph nnDescent
         timers.cancel(NNDescentTimerKey)
         val neighbors = graph(g_node)
-        val potentialNeighbors = joinNeighbors(neighbors)
-        sendPotentialNeighbors(potentialNeighbors, neighbors, nodeLocator, g_node)
+        joinNeighbors(neighbors, nodeLocator, g_node)
         // if this is the last inital join, the timer is needed from now on
         timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
         nnDescent(nodeLocator, graph, reverseNeighbors)
