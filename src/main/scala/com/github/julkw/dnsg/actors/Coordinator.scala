@@ -89,7 +89,7 @@ class Coordinator(settings: Settings,
             val positionTree: PositionTree[BuildGraphEvent] = PositionTree(distInfoRoot)
             val workers = positionTree.allLeafs().map(leaf => leaf.data)
             val nodeLocator: NodeLocator[BuildGraphEvent] = NodeLocator(positionTree)
-            workers.foreach(worker => worker ! BuildApproximateGraph(NodeLocator(positionTree)))
+            workers.foreach(worker => worker ! BuildApproximateGraph(nodeLocator))
             buildKnng(data, workers, nodeLocator)
         }
     }
