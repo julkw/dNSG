@@ -28,7 +28,7 @@ object NSGWorker {
             maxReverseNeighbors: Int,
             nodeLocator: NodeLocator[SearchOnGraphEvent],
             nsgMerger: ActorRef[MergeNSGEvent]): Behavior[BuildNSGEvent] = Behaviors.setup { ctx =>
-    ctx.log.info("Started NSGWorker")
+    //ctx.log.info("Started NSGWorker")
     Behaviors.setup(ctx =>
       new NSGWorker(supervisor, data, navigatingNode, maxReverseNeighbors, nodeLocator, nsgMerger, ctx).setup())
   }
@@ -46,7 +46,7 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
   def setup(): Behavior[BuildNSGEvent] =
     Behaviors.receiveMessagePartial{
       case Responsibility(responsibility) =>
-        ctx.log.info("Received responsibilities")
+        //ctx.log.info("Received responsibilities")
         val searchOnGraphEventAdapter: ActorRef[SearchOnGraphEvent] =
           ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
         ctx.self ! StartEdgeFindingProcessFor(0)

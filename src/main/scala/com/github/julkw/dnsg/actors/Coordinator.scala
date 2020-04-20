@@ -118,7 +118,7 @@ class Coordinator(settings: Settings,
             buildKnng(data, knngWorkers, nodeLocator)
 
           case SOGDistributionInfo(treeNode, _) =>
-            ctx.log.info("All graphs not with SearchOnGraph actors")
+            ctx.log.info("All graphs now with SearchOnGraph actors")
             val nodeLocator: NodeLocator[SearchOnGraphEvent] = NodeLocator(PositionTree(treeNode))
             nodeLocator.positionTree.allLeafs().foreach(graphHolder => graphHolder.data ! GraphDistribution(nodeLocator))
             dataHolder ! GetAverageValue(ctx.self)
@@ -239,12 +239,18 @@ class Coordinator(settings: Settings,
               val correctNeighborIndices = queries(query)
               //val cniWithDist = correctNeighborIndices.map(index => (index, euclideanDist(data(index), query)))
               //val foundNeighborsWithDist = neighbors.map(index => (index, euclideanDist(data(index), query)))
-              ctx.log.info("The correct neighbors would have been: {}", correctNeighborIndices)
-              ctx.log.info("The NSG found: {}", neighbors)
-              ctx.log.info("Found {} of {} nearest neighbors", correctNeighborIndices.intersect(neighbors).length, correctNeighborIndices.length)
+              //ctx.log.info("The correct neighbors would have been: {}", correctNeighborIndices)
+              //ctx.log.info("The NSG found: {}", neighbors)
+              //ctx.log.info("Found {} of {} nearest neighbors", correctNeighborIndices.intersect(neighbors).length, correctNeighborIndices.length)
               val newSum = sumOfNeighborsFound + correctNeighborIndices.intersect(neighbors).length
-              ctx.log.info("Overall correct neighbors found: {}", newSum)
-              testNSG(data, navigatingNodeIndex, nodeLocator, queries - query, newSum)
+              if (queries.size == 1) {
+                ctx.log.info("Overall correct neighbors found: {}", newSum)
+                ctx.system.terminate()
+                Behaviors.stopped
+              } else {
+                testNSG(data, navigatingNodeIndex, nodeLocator, queries - query, newSum)
+              }
+
           }
       }
 

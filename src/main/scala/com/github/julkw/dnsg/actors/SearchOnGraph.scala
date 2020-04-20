@@ -73,7 +73,7 @@ object SearchOnGraph {
   def apply(supervisor: ActorRef[CoordinationEvent],
             data: Seq[Seq[Float]],
             k: Int): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
-    ctx.log.info("Started SearchOnGraph")
+    //ctx.log.info("Started SearchOnGraph")
     Behaviors.setup(ctx => new SearchOnGraph(supervisor, data, k, ctx).waitForLocalGraph())
   }
 }

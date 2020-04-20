@@ -71,7 +71,7 @@ object KnngWorker {
             k: Int,
             sampleRate: Double,
             supervisor: ActorRef[BuildGraphEvent]): Behavior[BuildGraphEvent] = Behaviors.setup { ctx =>
-    ctx.log.info("Started KnngWorker")
+    //ctx.log.info("Started KnngWorker")
     Behaviors.withTimers(timers => new KnngWorker(data, maxResponsibility, k, sampleRate, supervisor, timers, ctx).buildDistributionTree())
   }
 }
@@ -176,14 +176,13 @@ class KnngWorker(data: Seq[Seq[Float]],
                               responsibility: Seq[Int]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
       case BuildApproximateGraph(nodeLocator) =>
-        ctx.log.info("Received Distribution Tree. Start building approximate graph")
+        //ctx.log.info("Received Distribution Tree. Start building approximate graph")
         ctx.self ! FindCandidates(0)
         val candidates: Map[Int, Seq[Int]] = Map.empty
         val awaitingAnswer: Array[Int] = Array.fill(responsibility.length){0}
         val graph: Map[Int, Seq[(Int, Double)]] = Map.empty
         buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
       case GetCandidates(query, index, sender) =>
-        // TODO forward to self with timer
         val getCandidateKey = "GetCandidates"
         timers.startSingleTimer(getCandidateKey, GetCandidates(query, index, sender), 1.second)
         ctx.log.info("Got a request for candidates before the distribution info. Forwarded to self with delay.")
@@ -198,11 +197,6 @@ class KnngWorker(data: Seq[Seq[Float]],
                             nodeLocator: NodeLocator[BuildGraphEvent],
                             graph:Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
-      case BuildApproximateGraph(distributionTree) =>
-        ctx.log.info("Received Distribution Tree. Start building approximate graph")
-        ctx.self ! FindCandidates(0)
-        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, distributionTree, graph)
-
       case FindCandidates(responsibilityIndex) =>
         // Also look for the closest neighbors of the other g_nodes
         if (responsibilityIndex < responsibility.length - 1) {
@@ -246,7 +240,7 @@ class KnngWorker(data: Seq[Seq[Float]],
             (candidateIndex, euclideanDist(data(candidateIndex), data(graphIndex)))).sortBy(_._2).slice(1, k+1)
           val updatedGraph = graph + (graphIndex -> neighbors)
           if (updatedGraph.size == responsibility.length) {
-            ctx.log.info("Should be able to switch to nnDescent now")
+            // ctx.log.info("Should be able to switch to nnDescent now")
             supervisor ! FinishedApproximateGraph
           }
           buildApproximateGraph(kdTree, responsibility, updatedCandidates, awaitingAnswer, nodeLocator, updatedGraph)
@@ -273,7 +267,7 @@ class KnngWorker(data: Seq[Seq[Float]],
 
   def startNNDescent(nodeLocator: NodeLocator[BuildGraphEvent],
                      graph: Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] = {
-    ctx.log.info("Starting nnDescent")
+    //ctx.log.info("Starting nnDescent")
     // for debugging
     ctx.log.info("Average distance in graph before nndescent: {}", averageGraphDist(graph, k))
     graph.foreach{ case (index, neighbors) =>
@@ -372,7 +366,7 @@ class KnngWorker(data: Seq[Seq[Float]],
               case Some(node) =>
                 val combinedNode = SplitNode(treeNode, node, oldNode.dimension, oldNode.border)
                 supervisor ! SOGDistributionInfo(combinedNode, ctx.self)
-                Behaviors.empty
+                Behaviors.stopped
             }
           case `rightChild` =>
             leftNode match {
@@ -381,7 +375,7 @@ class KnngWorker(data: Seq[Seq[Float]],
               case Some(node) =>
                 val combinedNode = SplitNode(node, treeNode, oldNode.dimension, oldNode.border)
                 supervisor ! SOGDistributionInfo(combinedNode, ctx.self)
-                Behaviors.empty
+                Behaviors.stopped
             }
         }
   }
