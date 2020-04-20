@@ -38,7 +38,7 @@ object KnngWorker {
 
   final case class CompleteLocalJoin(g_node: Int) extends BuildGraphEvent
 
-  final case class PotentialNeighbors(g_node: Int, potentialNeighbors: Seq[(Int, Double)], senderIndex: Int) extends BuildGraphEvent
+  final case class PotentialNeighbor(g_node: Int, potentialNeighbor: (Int, Double), senderIndex: Int) extends BuildGraphEvent
 
   final case class RemoveReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int) extends BuildGraphEvent
 
@@ -260,8 +260,8 @@ class KnngWorker(data: Seq[Seq[Float]],
         ctx.self ! RemoveReverseNeighbor(g_nodeIndex, neighborIndex)
         startNNDescent(nodeLocator, graph)
 
-      case PotentialNeighbors(g_node, potentialNeighbors, senderIndex) =>
-        ctx.self ! PotentialNeighbors(g_node, potentialNeighbors, senderIndex)
+      case PotentialNeighbor(g_node, potentialNeighbor, senderIndex) =>
+        ctx.self ! PotentialNeighbor(g_node, potentialNeighbor, senderIndex)
         startNNDescent(nodeLocator, graph)
     }
 
@@ -303,19 +303,33 @@ class KnngWorker(data: Seq[Seq[Float]],
         timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
-      case PotentialNeighbors(g_node, potentialNeighbors, senderIndex) =>
-        val updatedNeighbors = updateNeighbors(potentialNeighbors, graph(g_node), reverseNeighbors(g_node), g_node, senderIndex, nodeLocator)
-        if (updatedNeighbors.nonEmpty) {
-          // ctx.log.info("Updating graph")
-          nnDescent(nodeLocator,  graph + (g_node -> updatedNeighbors), reverseNeighbors)
+      case PotentialNeighbor(g_node, potentialNeighbor, senderIndex) =>
+        val currentNeighbors = graph(g_node)
+        val currentReverseNeighbors = reverseNeighbors(g_node)
+        val currentMaxDist = currentNeighbors(currentNeighbors.length - 1)._2
+        val isNew: Boolean = !(currentNeighbors.exists(neighbor => neighbor._1 == potentialNeighbor._1)
+          || currentReverseNeighbors.contains(potentialNeighbor._1))
+        if (currentMaxDist > potentialNeighbor._2 && potentialNeighbor._1 != g_node && isNew) {
+          if (timers.isTimerActive(NNDescentTimerKey)) {
+            timers.cancel(NNDescentTimerKey)
+          } else {
+            // if the timer is inactive, it has already run out and the actor has mistakenly told its supervisor that it is done
+            supervisor ! CorrectFinishedNNDescent
+          }
+          joinNewNeighbor(currentNeighbors.slice(0, k-1), currentReverseNeighbors, g_node, potentialNeighbor._1, senderIndex, nodeLocator)
+          timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
+          val updatedNeighbors = (currentNeighbors :+ potentialNeighbor).sortBy(_._2).slice(0, k)
+          nnDescent(nodeLocator, graph + (g_node -> updatedNeighbors), reverseNeighbors)
         } else {
           nnDescent(nodeLocator, graph, reverseNeighbors)
         }
 
       case AddReverseNeighbor(g_nodeIndex, neighborIndex) =>
         //ctx.log.info("add reverse neighbor")
-        // introduce new neighbor to all current neighbors
-        joinReverseNeighbor(graph(g_nodeIndex), reverseNeighbors(g_nodeIndex), g_nodeIndex, neighborIndex, nodeLocator)
+        // if new and not already a neighbor, introduce to all current neighbors
+        if (!graph(g_nodeIndex).exists(neighbor => neighbor._1 == neighborIndex)) {
+          joinNewNeighbor(graph(g_nodeIndex), reverseNeighbors(g_nodeIndex), g_nodeIndex, neighborIndex, neighborIndex, nodeLocator)
+        }
         // update reverse neighbors
         val updatedReverseNeighbors = reverseNeighbors(g_nodeIndex) + neighborIndex
         nnDescent(nodeLocator, graph, reverseNeighbors + (g_nodeIndex -> updatedReverseNeighbors))
