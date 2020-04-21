@@ -14,7 +14,15 @@
         <appender-ref ref="STDOUT" />
     </appender>
 
+    <appender name="FILE" class="ch.qos.logback.core.FileAppender">
+        <file>data/dNSG.log</file>
+        <encoder>
+            <pattern>[%date{ISO8601}] [%level] [%logger] [%marker] [%thread] - %msg {%mdc}%n</pattern>
+        </encoder>
+    </appender>
+
     <root level="INFO">
         <appender-ref ref="ASYNC"/>
+        <appender-ref ref="FILE" />
     </root>
 </configuration>
