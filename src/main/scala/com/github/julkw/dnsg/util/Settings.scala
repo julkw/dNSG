@@ -1,5 +1,7 @@
 package com.github.julkw.dnsg.util
 
+import akka.actor.typed.scaladsl.ActorContext
+import com.github.julkw.dnsg.actors.Coordinator
 import com.typesafe.config.Config
 
 case class Settings(config: Config) {
@@ -26,4 +28,13 @@ case class Settings(config: Config) {
   val dimensionOffset: Int = config.getInt(s"$namespace.query-testing.dimension-offset")
 
   val dimensions: Int = config.getInt(s"$namespace.query-testing.dimensions")
+
+  def printSettings(ctx: ActorContext[Coordinator.CoordinationEvent]): Unit = {
+    ctx.log.info("inputFile: {}", inputFilePath)
+    ctx.log.info("k: {}", k)
+    ctx.log.info("sampleRate: {}", sampleRate)
+    ctx.log.info("workers: {}", workers)
+    ctx.log.info("maxReverseNeighbors: {}", maxReverseNeighbors)
+    ctx.log.info("lines: {}", lines)
+  }
 }

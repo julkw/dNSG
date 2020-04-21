@@ -46,6 +46,7 @@ object Coordinator {
       ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
 
     val settings = Settings(ctx.system.settings.config)
+    settings.printSettings(ctx)
 
     val dh = ctx.spawn(DataHolder(), name = "DataHolder")
     //dh ! LoadSiftDataFromFile(filename, ctx.self)
