@@ -1,6 +1,5 @@
 package com.github.julkw.dnsg.actors.createNSG
 
-import math._
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinator.CoordinationEvent

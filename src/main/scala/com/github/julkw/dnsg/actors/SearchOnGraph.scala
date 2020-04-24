@@ -269,7 +269,7 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
   def waitForNSG(nodeLocator: NodeLocator[SearchOnGraphEvent]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case PartialNSG(graph) =>
-        //ctx.log.info("Received nsg, ready for queries/establishing connectivity")
+        ctx.log.info("Received nsg, ready for queries/establishing connectivity")
         supervisor ! UpdatedToNSG
         searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, None)
     }

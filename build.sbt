@@ -11,15 +11,25 @@ lazy val `dNSG` = project
     libraryDependencies ++= Seq(
       "com.typesafe.akka" %% "akka-actor-typed"           % akkaVersion,
       "com.typesafe.akka" %% "akka-cluster-typed"         % akkaVersion,
-      "com.typesafe.akka" %% "akka-serialization-jackson" % akkaVersion,
       "ch.qos.logback"    %  "logback-classic"             % "1.2.3",
       "com.typesafe.akka" %% "akka-multi-node-testkit"    % akkaVersion % Test,
       "org.scalatest"     %% "scalatest"                  % "3.0.8"     % Test,
       "com.typesafe.akka" %% "akka-actor-testkit-typed"   % akkaVersion % Test),
-    
-    run / fork := false,
-    Global / cancelable := false,
-    // disable parallel tests
-    Test / parallelExecution := false,
+
     licenses := Seq(("CC0", url("http://creativecommons.org/publicdomain/zero/1.0")))
   )
+
+// set main class for assembly
+mainClass in assembly := Some("com.github.julkw.dnsg.Main")
+
+// skip tests during assembly
+test in assembly := {}
+
+// don't include logging configuration file
+assemblyMergeStrategy in assembly := {
+  case PathList("META-INF", xs @ _*) => MergeStrategy.discard
+  //case x => MergeStrategy.first
+  case x =>
+    val oldStrategy = (assemblyMergeStrategy in assembly).value
+    oldStrategy(x)
+}

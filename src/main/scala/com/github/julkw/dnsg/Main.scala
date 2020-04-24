@@ -5,7 +5,7 @@ import akka.actor.typed.Behavior
 import com.github.julkw.dnsg.actors.Coordinator
 import com.typesafe.config.ConfigFactory
 
-object App {
+object Main {
 
   object RootBehavior {
     def apply(): Behavior[Nothing] = Behaviors.setup[Nothing] { context =>
@@ -19,11 +19,8 @@ object App {
 
   def main(args: Array[String]): Unit = {
     // Remnants from copied example
-    val ports =
-      if (args.isEmpty)
-        Seq(25251)
-      else
-        args.toSeq.map(_.toInt)
+    val ports = Seq(25251)
+
     ports.foreach(startup)
   }
 
