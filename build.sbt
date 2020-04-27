@@ -1,5 +1,5 @@
 
-val akkaVersion = "2.6.3"
+val akkaVersion = "2.6.4"
 
 lazy val `dNSG` = project
   .in(file("."))
@@ -10,8 +10,10 @@ lazy val `dNSG` = project
     run / javaOptions ++= Seq("-Xms128m", "-Xmx1024m", "-Djava.library.path=./target/native"),
     libraryDependencies ++= Seq(
       "com.typesafe.akka" %% "akka-actor-typed"           % akkaVersion,
+      "com.typesafe.akka" %% "akka-actor"                 % akkaVersion,
       "com.typesafe.akka" %% "akka-cluster-typed"         % akkaVersion,
-      "ch.qos.logback"    %  "logback-classic"             % "1.2.3",
+      "ch.qos.logback"    %  "logback-classic"            % "1.2.3",
+      "com.typesafe.akka" %% "akka-serialization-jackson" % akkaVersion,
       "com.typesafe.akka" %% "akka-multi-node-testkit"    % akkaVersion % Test,
       "org.scalatest"     %% "scalatest"                  % "3.0.8"     % Test,
       "com.typesafe.akka" %% "akka-actor-testkit-typed"   % akkaVersion % Test),
@@ -27,6 +29,7 @@ test in assembly := {}
 
 // don't include logging configuration file
 assemblyMergeStrategy in assembly := {
+  case "module-info.class" => MergeStrategy.discard
   case PathList("META-INF", xs @ _*) => MergeStrategy.discard
   //case x => MergeStrategy.first
   case x =>
