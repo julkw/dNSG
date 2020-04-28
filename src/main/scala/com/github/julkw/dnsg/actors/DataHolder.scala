@@ -8,7 +8,7 @@ import java.nio.ByteOrder
 import akka.actor.typed.ActorRef
 import akka.actor.typed.Behavior
 import akka.actor.typed.scaladsl.Behaviors
-import com.github.julkw.dnsg.actors.ClusterCoordinator.{AverageValue, CoordinationEvent, TestQueries}
+import com.github.julkw.dnsg.actors.ClusterCoordinator.{AverageValue, CoordinationEvent, DataSize, TestQueries}
 import com.github.julkw.dnsg.actors.NodeCoordinator.{DataRef, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{GetGraph, Graph, SearchOnGraphEvent}
 import com.github.julkw.dnsg.util.LocalData
@@ -48,6 +48,7 @@ object DataHolder {
       case LoadSiftDataFromFile(filename, replyTo, clusterCoordinator) =>
         ctx.log.info("Asked to load SIFT data from {}", filename)
         readData(filename)
+        clusterCoordinator ! DataSize(data.length, ctx.self)
         replyTo ! DataRef(LocalData(data, 0))
         Behaviors.same
 
@@ -56,6 +57,7 @@ object DataHolder {
         readData(filename)
         data = data.slice(lineOffset, lineOffset + linesUsed).map(vector =>
           vector.slice(dimensionsOffset, dimensionsOffset + dimensionsUsed))
+        clusterCoordinator ! DataSize(data.length, ctx.self)
         replyTo ! DataRef(LocalData(data, 0))
         Behaviors.same
 

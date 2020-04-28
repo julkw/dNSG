@@ -19,7 +19,7 @@ object KnngWorker {
   sealed trait BuildGraphEvent
 
   // setup
-  final case class ResponsibleFor(responsibility: Seq[Int]) extends BuildGraphEvent
+  final case class ResponsibleFor(responsibility: Seq[Int], treeDepth: Int) extends BuildGraphEvent
 
   final case class BuildApproximateGraph(nodeLocator: NodeLocator[BuildGraphEvent], workers: Set[ActorRef[BuildGraphEvent]]) extends BuildGraphEvent
 
@@ -84,14 +84,14 @@ class KnngWorker(data: LocalData[Float],
   import KnngWorker._
 
   def buildDistributionTree(): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
-    case ResponsibleFor(responsibility) =>
+    case ResponsibleFor(responsibility, treeDepth) =>
       val treeBuilder: TreeBuilder = TreeBuilder(data, k)
       if(responsibility.length > maxResponsibility) {
         // further split the data
         val splitNode: SplitNode[Seq[Int]] = treeBuilder.oneLevelSplit(responsibility)
-        val right = ctx.spawn(KnngWorker(data, maxResponsibility, k, sampleRate, clusterCoordinator, localCoordinator), name="KnngWorker")
-        ctx.self ! ResponsibleFor(splitNode.left.data)
-        right ! ResponsibleFor(splitNode.right.data)
+        val right = ctx.spawn(KnngWorker(data, maxResponsibility, k, sampleRate, clusterCoordinator, localCoordinator), "KnngWorker" + treeDepth.toString)
+        ctx.self ! ResponsibleFor(splitNode.left.data, treeDepth + 1)
+        right ! ResponsibleFor(splitNode.right.data, treeDepth + 1)
         buildDistributionTree()
       } else {
         // this is a leaf node for data distribution
@@ -119,7 +119,7 @@ class KnngWorker(data: LocalData[Float],
         buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, workers, graph)
       case GetCandidates(query, index, sender) =>
         val getCandidateKey = "GetCandidates"
-        timers.startSingleTimer(getCandidateKey, GetCandidates(query, index, sender), 1.second)
+        timers.startSingleTimer(getCandidateKey, GetCandidates(query, index, sender), 1.milliseconds)
         ctx.log.info("Got a request for candidates before the distribution info. Forwarded to self with delay.")
         waitForDistributionInfo(kdTree, responsibility)
     }
@@ -140,9 +140,11 @@ class KnngWorker(data: LocalData[Float],
         val index = responsibility(responsibilityIndex)
         val query: Seq[Float] = data.at(index).get
         // find candidates for current node by asking all workers for candidates to ensure a connected graph across all nodes
-        knngWorkers.foreach { case worker if worker != ctx.self =>
-          worker ! GetCandidates(query, responsibilityIndex, ctx.self)
-          awaitingAnswer(responsibilityIndex) += 1
+        knngWorkers.foreach { worker =>
+          if (worker != ctx.self) {
+            worker ! GetCandidates(query, responsibilityIndex, ctx.self)
+            awaitingAnswer(responsibilityIndex) += 1
+          }
         }
 
         // Find candidates on own tree using Efanna method
@@ -188,6 +190,7 @@ class KnngWorker(data: LocalData[Float],
         }
 
       case StartNNDescent =>
+        assert(!awaitingAnswer.exists(_ > 0))
         startNNDescent(nodeLocator, graph)
 
       // in case one of the other actors got the message slightly earlier and has already started sending me nnDescent messages
@@ -214,7 +217,7 @@ class KnngWorker(data: LocalData[Float],
       ctx.self ! CompleteLocalJoin(index)
       // send all reverse neighbors to the correct actors
       neighbors.foreach{case (neighborIndex, _) =>
-        nodeLocator.findResponsibleActor(data(neighborIndex)) ! AddReverseNeighbor(neighborIndex, index)
+        nodeLocator.findResponsibleActor(neighborIndex) ! AddReverseNeighbor(neighborIndex, index)
       }
     }
     // setup timer used to determine when the graph is done

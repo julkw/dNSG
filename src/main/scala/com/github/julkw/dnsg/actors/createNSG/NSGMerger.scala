@@ -45,7 +45,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       }
       if (messagesReceived + 1 == messagesExpected) {
         ctx.log.info("Building of NSG seems to be done")
-        supervisor ! InitialNSGDone(ctx.self)
+        supervisor ! InitialNSGDone
         distributeGraph(graph.toMap)
       } else {
         buildGraph(graph, messagesReceived + 1, messagesExpected)

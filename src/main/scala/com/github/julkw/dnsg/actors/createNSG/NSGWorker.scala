@@ -74,7 +74,7 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
             // don't make a node its own neighbor
             if (checkedNodes.head == queryIndex) nodeIndex = 1
             while (neighbors.length < maxReverseNeighbors && nodeIndex < checkedNodes.length) {
-              val node = data(checkedNodes(nodeIndex))
+              val node = data.at(checkedNodes(nodeIndex)).get
               if (!conflictFound(query, node, neighbors)) {
                 neighbors = neighbors :+ checkedNodes(nodeIndex)
               }

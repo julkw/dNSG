@@ -24,7 +24,7 @@ abstract class Joiner(sampleRate: Double, data: LocalData[Float]) extends Distan
       // don't send newNeighbor back to the node that introduced us
       // use set to prevent duplication of nodes that are both neighbors and reverse neighbors
       val allNeighbors = neighbors.map(_._1).toSet ++ oldReverseNeighbors - senderIndex
-      val newNeighborActor = nodeLocator.findResponsibleActor(data(newNeighbor))
+      val newNeighborActor = nodeLocator.findResponsibleActor(newNeighbor)
       allNeighbors.foreach { oldNeighbor =>
         if (scala.util.Random.nextFloat() < sampleRate) {
           // TODO this will have to be adjusted to deal with potentially non local neighbors

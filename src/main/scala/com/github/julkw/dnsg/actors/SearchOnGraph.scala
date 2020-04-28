@@ -228,7 +228,7 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
         connectivityInfo match {
           case None =>
             ctx.log.info("Asked for unconnected nodes before updating connectivity")
-            sendTo ! UnconnectedNode(graph.head._1)
+            sendTo ! UnconnectedNode(graph.head._1, data.at(graph.head._1).get)
           case Some(cInfo) =>
             val unconnectedNodes = graph.keys.toSet -- cInfo.connectedNodes
             if (unconnectedNodes.isEmpty) {
@@ -241,7 +241,7 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
               }
             } else {
               // send one of the unconnected nodes
-              sendTo ! UnconnectedNode(unconnectedNodes.head)
+              sendTo ! UnconnectedNode(unconnectedNodes.head, data.at(unconnectedNodes.head).get)
             }
         }
         searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)

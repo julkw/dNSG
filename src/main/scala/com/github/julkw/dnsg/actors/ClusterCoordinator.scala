@@ -88,7 +88,7 @@ class ClusterCoordinator(settings: Settings,
               updatedKnngWorkers.foreach{ worker =>
                 worker ! BuildApproximateGraph(nodeLocator, updatedKnngWorkers)
               }
-              buildApproximateKnng(knngWorkers, 0, nodeLocator.graphSize, nodeCoordinators, dataHolder)
+              buildApproximateKnng(updatedKnngWorkers, 0, nodeLocator.graphSize, nodeCoordinators, dataHolder)
             case None =>
               // not yet collected all distributionInfo
               distributeDataForKnng(nodeLocatorBuilder, updatedKnngWorkers, nodeCoordinators, dataHolder)
@@ -144,7 +144,7 @@ class ClusterCoordinator(settings: Settings,
             ctx.log.info("All graphs now with SearchOnGraph actors")
             dataHolder ! GetAverageValue(ctx.self)
             updatedSogActors.foreach(sogActor => sogActor ! GraphDistribution(nodeLocator))
-            searchOnKnng(nodeLocator, graphHolders, nodeCoordinators, dataHolder)
+            searchOnKnng(nodeLocator, updatedSogActors, nodeCoordinators, dataHolder)
           case None =>
             waitOnSearchOnGraphDistributionInfo(nodeLocatorBuilder, updatedSogActors, nodeCoordinators, dataHolder)
         }
@@ -180,6 +180,7 @@ class ClusterCoordinator(settings: Settings,
                 dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial{
       case InitialNSGDone =>
+        // TODO This currently assumes that the MergeNSG actors will commuicate within themselves and only one will send this message when all are done
         nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraph)
         waitOnNSG(movedToSog, navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
 

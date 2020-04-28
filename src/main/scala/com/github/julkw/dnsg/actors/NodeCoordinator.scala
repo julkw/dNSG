@@ -3,7 +3,7 @@ package com.github.julkw.dnsg.actors
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import akka.cluster.typed.{ClusterSingleton, SingletonActor}
-import com.github.julkw.dnsg.actors.ClusterCoordinator.CoordinationEvent
+import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, NodeCoordinatorIntroduction}
 import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, LoadPartialDataFromFile, WaitForStreamedData}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{GetNSGFrom, SearchOnGraphEvent, SendResponsibleIndicesTo}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
@@ -32,6 +32,7 @@ object NodeCoordinator {
     val singletonManager = ClusterSingleton(ctx.system)
     val clusterCoordinator: ActorRef[ClusterCoordinator.CoordinationEvent] = singletonManager.init(
       SingletonActor(Behaviors.supervise(ClusterCoordinator()).onFailure[Exception](SupervisorStrategy.restart), "ClusterCoordinator"))
+    clusterCoordinator ! NodeCoordinatorIntroduction(ctx.self)
 
     val dh = ctx.spawn(DataHolder(), name = "DataHolder")
     fileName match {
@@ -63,7 +64,7 @@ class NodeCoordinator(settings: Settings,
       // create Actor to start distribution of data
       val maxResponsibilityPerNode: Int = data.localDataSize / settings.workers + data.localDataSize / 10
       val kw = ctx.spawn(KnngWorker(data, maxResponsibilityPerNode, settings.k, settings.sampleRate, clusterCoordinator, ctx.self), name = "KnngWorker")
-      kw ! ResponsibleFor(data.localIndices)
+      kw ! ResponsibleFor(data.localIndices, 0)
       waitForKnng(Set.empty, data)
   }
 
