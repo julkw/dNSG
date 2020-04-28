@@ -2,11 +2,28 @@ package com.github.julkw.dnsg.util
 
 import akka.actor.typed.ActorRef
 
-case class NodeLocator[T](positionTree: PositionTree[T]) {
-  def findResponsibleActor (query: Seq[Float]): ActorRef[T] = {
-    positionTree.root.queryLeaf(query).data
+
+case class NodeLocatorBuilder[T](dataLength: Int) {
+  val nodeMap: Array[Option[ActorRef[T]]] = Array.fill(dataLength){None}
+
+  def addLocations(indices: Seq[Int], location: ActorRef[T]): Option[NodeLocator[T]] = {
+    indices.foreach { index =>
+      nodeMap(index) = Some(location)
+    }
+    if (nodeMap.contains(None)) {
+      None
+    } else {
+      Some(NodeLocator(nodeMap.map(_.get)))
+    }
   }
-  // TODO hold variable number of Position Trees
-  // Can map index to correct Position Tree (later for Clustering)
-  // change between local and global index
+}
+
+case class NodeLocator[T](locationData: Array[ActorRef[T]]) {
+  def findResponsibleActor (absolutIndex: Int): ActorRef[T] = {
+   locationData(absolutIndex)
+  }
+
+  def graphSize: Int = {
+    locationData.length
+  }
 }

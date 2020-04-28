@@ -8,8 +8,10 @@ import java.nio.ByteOrder
 import akka.actor.typed.ActorRef
 import akka.actor.typed.Behavior
 import akka.actor.typed.scaladsl.Behaviors
-import com.github.julkw.dnsg.actors.Coordinator.{AverageValue, CoordinationEvent, DataRef, TestQueries}
+import com.github.julkw.dnsg.actors.ClusterCoordinator.{AverageValue, CoordinationEvent, TestQueries}
+import com.github.julkw.dnsg.actors.NodeCoordinator.{DataRef, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{GetGraph, Graph, SearchOnGraphEvent}
+import com.github.julkw.dnsg.util.LocalData
 
 import scala.language.postfixOps
 
@@ -17,17 +19,18 @@ object DataHolder {
 
   sealed trait LoadDataEvent
 
-  final case class LoadSiftDataFromFile(filename: String, replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
+  final case class LoadSiftDataFromFile(filename: String, replyTo: ActorRef[NodeCoordinationEvent], clusterCoordinator: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
-  final case class LoadPartialDataFromFile(filename: String, lineOffset: Int, linesUsed: Int, dimensionsOffset: Int, dimensionsUsed: Int, replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
+  final case class LoadPartialDataFromFile(filename: String, lineOffset: Int, linesUsed: Int, dimensionsOffset: Int, dimensionsUsed: Int, replyTo: ActorRef[NodeCoordinationEvent], clusterCoordinator: ActorRef[CoordinationEvent]) extends LoadDataEvent
+
+  final case object WaitForStreamedData extends LoadDataEvent
 
   final case class GetAverageValue(replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
   final case class ReadTestQueries(filename: String, replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
+  // TODO this message is not really being handled at the moment
   final case class SaveGraphToFile(filename: String, graphHolders: Set[ActorRef[SearchOnGraphEvent]], k: Int) extends LoadDataEvent
-  // TODO in a cluster the indices would not be enough, so maybe one message per node including its location
-  // unless the graph and the data remain in two different files
 
   final case class WrappedSearchOnGraphEvent(event: SearchOnGraph.SearchOnGraphEvent) extends LoadDataEvent
 
@@ -37,18 +40,23 @@ object DataHolder {
   def apply(): Behavior[LoadDataEvent] = Behaviors.setup { ctx =>
     ctx.log.info("Started up DataHolder")
     Behaviors.receiveMessage {
-      case LoadSiftDataFromFile(filename, replyTo) =>
+      case WaitForStreamedData =>
+        // TODO register to receptionist for data distribution
+        ctx.log.info("Not supplied with file, waiting for other node to send data")
+        Behaviors.same
+
+      case LoadSiftDataFromFile(filename, replyTo, clusterCoordinator) =>
         ctx.log.info("Asked to load SIFT data from {}", filename)
         readData(filename)
-        replyTo ! DataRef(data)
+        replyTo ! DataRef(LocalData(data, 0))
         Behaviors.same
 
       // only return part of the data for testing (number of lines and dimensions need to be known beforehand for this)
-      case LoadPartialDataFromFile(filename, lineOffset, linesUsed, dimensionsOffset, dimensionsUsed, replyTo) =>
+      case LoadPartialDataFromFile(filename, lineOffset, linesUsed, dimensionsOffset, dimensionsUsed, replyTo, clusterCoordinator) =>
         readData(filename)
         data = data.slice(lineOffset, lineOffset + linesUsed).map(vector =>
           vector.slice(dimensionsOffset, dimensionsOffset + dimensionsUsed))
-        replyTo ! DataRef(data)
+        replyTo ! DataRef(LocalData(data, 0))
         Behaviors.same
 
       case GetAverageValue(replyTo) =>

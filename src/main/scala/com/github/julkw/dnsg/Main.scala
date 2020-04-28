@@ -1,9 +1,8 @@
 package com.github.julkw.dnsg
 import akka.actor.typed.scaladsl.Behaviors
-import akka.actor.typed.ActorSystem
-import akka.actor.typed.Behavior
-import akka.cluster.typed.{Cluster, Join}
-import com.github.julkw.dnsg.actors.Coordinator
+import akka.actor.typed.{ActorRef, ActorSystem, Behavior, SupervisorStrategy}
+import akka.cluster.typed.{Cluster, ClusterSingleton, Join, SingletonActor}
+import com.github.julkw.dnsg.actors.{ClusterCoordinator, NodeCoordinator}
 import com.typesafe.config.ConfigFactory
 
 object Main {
@@ -11,9 +10,8 @@ object Main {
   object RootBehavior {
     def apply(): Behavior[Nothing] = Behaviors.setup[Nothing] { context =>
       context.log.info("Started up dNSG app")
-      // Create an actor that handles cluster domain events
-      //context.spawn(ClusterListener(), "ClusterListener")
-      context.spawn(Coordinator(), name="Coordinator")
+      // TODO get filename from command line
+      context.spawn(NodeCoordinator(None), name="Coordinator")
       Behaviors.empty
     }
   }
