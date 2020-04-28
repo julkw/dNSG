@@ -6,7 +6,7 @@ import com.github.julkw.dnsg.actors.ClusterCoordinator.CoordinationEvent
 import com.github.julkw.dnsg.actors.SearchOnGraph
 import com.github.julkw.dnsg.actors.SearchOnGraph.{CheckedNodesOnSearch, SearchOnGraphEvent, SortedCheckedNodes}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, ReverseNeighbors}
-import com.github.julkw.dnsg.util.{Distance, NodeLocator}
+import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator}
 
 import scala.language.postfixOps
 
@@ -22,7 +22,7 @@ object NSGWorker {
   final case class WrappedSearchOnGraphEvent(event: SearchOnGraph.SearchOnGraphEvent) extends BuildNSGEvent
 
   def apply(supervisor: ActorRef[CoordinationEvent],
-            data: Seq[Seq[Float]],
+            data: LocalData[Float],
             navigatingNode: Int,
             maxReverseNeighbors: Int,
             nodeLocator: NodeLocator[SearchOnGraphEvent],
@@ -34,7 +34,7 @@ object NSGWorker {
 }
 
 class NSGWorker(supervisor: ActorRef[CoordinationEvent],
-                data: Seq[Seq[Float]],
+                data: LocalData[Float],
                 navigatingNode: Int,
                 maxReverseNeighbors: Int,
                 nodeLocator: NodeLocator[SearchOnGraphEvent],
@@ -59,7 +59,7 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
         if (responsibilityIndex < responsibility.length - 1) {
           ctx.self ! StartEdgeFindingProcessFor (responsibilityIndex + 1)
         }
-        nodeLocator.findResponsibleActor(data(responsibility(responsibilityIndex))) !
+        nodeLocator.findResponsibleActor(responsibility(responsibilityIndex)) !
           CheckedNodesOnSearch(responsibility(responsibilityIndex), navigatingNode, searchOnGraphEventAdapter)
         buildNSG(responsibility, searchOnGraphEventAdapter)
 
@@ -68,7 +68,7 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
           case SortedCheckedNodes(queryIndex, checkedNodes) =>
             // check neighbor candidates for conflicts
             var neighbors: Seq[Int] = Seq.empty
-            val query = data(queryIndex)
+            val query = data.at(queryIndex).get
             // choose up to maxReverseNeighbors neighbors from checked nodes by checking for conflicts
             var nodeIndex = 0
             // don't make a node its own neighbor
@@ -91,7 +91,7 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
     // check for conflicts (conflict exists if potential Edge is the longest edge in triangle of query, node and neighbor)
     var neighborIndex = 0
     while (!conflictFound && neighborIndex < neighborsSoFar.length) {
-      val setNeighbor = data(neighborsSoFar(neighborIndex))
+      val setNeighbor = data.at(neighborsSoFar(neighborIndex)).get
       conflictFound = (potentialEdgeDist >= euclideanDist(query, setNeighbor)) &&
         (potentialEdgeDist >= euclideanDist(nodeToTest, setNeighbor))
       neighborIndex += 1

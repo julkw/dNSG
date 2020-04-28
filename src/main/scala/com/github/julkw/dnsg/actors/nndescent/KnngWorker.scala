@@ -8,7 +8,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, CorrectFinishedNNDescent, FinishedApproximateGraph, FinishedNNDescent, KnngDistributionInfo}
 import com.github.julkw.dnsg.actors.NodeCoordinator.{LocalKnngWorker, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph
-import com.github.julkw.dnsg.actors.SearchOnGraph.{Graph, GraphReceived, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.SearchOnGraph.{Graph, SearchOnGraphEvent}
 import com.github.julkw.dnsg.util.{IndexTree, LeafNode, LocalData, NodeLocator, SplitNode, TreeBuilder, TreeNode}
 
 import scala.language.postfixOps

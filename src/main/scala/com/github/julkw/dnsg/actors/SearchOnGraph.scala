@@ -1,6 +1,5 @@
 package com.github.julkw.dnsg.actors
 
-import math._
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{AllConnected, CoordinationEvent, FinishedUpdatingConnectivity, KnngDistributionInfo, SearchOnGraphDistributionInfo, UnconnectedNode, UpdatedToNSG}
@@ -71,7 +70,7 @@ object SearchOnGraph {
   protected case class ConnectivityInfo(connectedNodes: mutable.Set[Int], messageTracker: mutable.Map[Int, MessageCounter])
 
   def apply(supervisor: ActorRef[CoordinationEvent],
-            data: Seq[Seq[Float]],
+            data: LocalData[Float],
             k: Int): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
     //ctx.log.info("Started SearchOnGraph")
     Behaviors.setup(ctx => new SearchOnGraph(supervisor, data, k, ctx).waitForLocalGraph())
