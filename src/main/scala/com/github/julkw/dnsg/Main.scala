@@ -31,8 +31,6 @@ object Main {
 
     // Create an Akka system
     val system = ActorSystem[Nothing](RootBehavior(filename), "dNSGSystem", config)
-    val cluster = Cluster(system)
-    cluster.manager ! Join(cluster.selfMember.address)
     // TODO add Reaper
   }
 

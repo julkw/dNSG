@@ -7,7 +7,8 @@ import java.nio.ByteOrder
 
 import akka.actor.typed.ActorRef
 import akka.actor.typed.Behavior
-import akka.actor.typed.scaladsl.Behaviors
+import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
+import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{AverageValue, CoordinationEvent, DataSize, TestQueries}
 import com.github.julkw.dnsg.actors.NodeCoordinator.{DataRef, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{GetGraph, Graph, SearchOnGraphEvent}
@@ -34,59 +35,92 @@ object DataHolder {
 
   final case class WrappedSearchOnGraphEvent(event: SearchOnGraph.SearchOnGraphEvent) extends LoadDataEvent
 
-  var data : Seq[Seq[Float]] = Seq.empty[Seq[Float]]
+  val dataHolderServiceKey: ServiceKey[DataHolder.LoadDataEvent] = ServiceKey[LoadDataEvent]("dataService")
 
+  private case class ListingResponse(listing: Receptionist.Listing) extends LoadDataEvent
 
   def apply(): Behavior[LoadDataEvent] = Behaviors.setup { ctx =>
     ctx.log.info("Started up DataHolder")
-    Behaviors.receiveMessage {
+
+    val listingResponseAdapter = ctx.messageAdapter[Receptionist.Listing](ListingResponse)
+
+    new DataHolder(ctx, listingResponseAdapter).setup()
+  }
+}
+
+class DataHolder(ctx: ActorContext[DataHolder.LoadDataEvent], listingAdapter: ActorRef[Receptionist.Listing]) {
+  import DataHolder._
+
+  def setup(): Behavior[LoadDataEvent] = {
+    ctx.system.receptionist ! Receptionist.Register(dataHolderServiceKey, ctx.self)
+    ctx.system.receptionist ! Receptionist.Subscribe(dataHolderServiceKey, listingAdapter)
+    ctx.system.receptionist ! Receptionist.Find(dataHolderServiceKey, listingAdapter)
+    loadData(Set.empty)
+  }
+
+  def loadData(dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
+    Behaviors.receiveMessagePartial {
+      case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
+        ctx.log.info("{} dataHolders found", listings.size)
+        loadData(dataHolders ++ listings)
+
       case WaitForStreamedData =>
-        // TODO register to receptionist for data distribution
         ctx.log.info("Not supplied with file, waiting for other node to send data")
-        Behaviors.same
+        loadData(dataHolders)
 
       case LoadSiftDataFromFile(filename, replyTo, clusterCoordinator) =>
         ctx.log.info("Asked to load SIFT data from {}", filename)
-        readData(filename)
+        val data = readData(filename)
         clusterCoordinator ! DataSize(data.length, ctx.self)
-        replyTo ! DataRef(LocalData(data, 0))
-        Behaviors.same
+        // TODO distribute the data
+        val localData = LocalData(data, 0)
+        replyTo ! DataRef(localData)
+        holdData(localData, dataHolders)
 
       // only return part of the data for testing (number of lines and dimensions need to be known beforehand for this)
       case LoadPartialDataFromFile(filename, lineOffset, linesUsed, dimensionsOffset, dimensionsUsed, replyTo, clusterCoordinator) =>
-        readData(filename)
-        data = data.slice(lineOffset, lineOffset + linesUsed).map(vector =>
+        val data = readData(filename).slice(lineOffset, lineOffset + linesUsed).map(vector =>
           vector.slice(dimensionsOffset, dimensionsOffset + dimensionsUsed))
         clusterCoordinator ! DataSize(data.length, ctx.self)
-        replyTo ! DataRef(LocalData(data, 0))
-        Behaviors.same
+        // TODO distribute the data
+        val localData = LocalData(data, 0)
+        replyTo ! DataRef(localData)
+        holdData(localData, dataHolders)
+    }
+
+  def holdData(data: LocalData[Float], dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
+    Behaviors.receiveMessagePartial {
+      case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
+        ctx.log.info("{} dataHolders found (too late)", listings.size)
+        holdData(data, dataHolders ++ listings)
 
       case GetAverageValue(replyTo) =>
         // TODO calculate average while loading data (as when in the cluster not all the data will be held here)
-        val averageValue: Seq[Float] = (0 until data(0).length).map{ index =>
-          data.map(value => value(index)).sum / data.length
+        val averageValue: Seq[Float] = (0 until data.dimension).map{ index =>
+          data.data.map(value => value(index)).sum / data.localDataSize
         }
         replyTo ! AverageValue(averageValue)
-        Behaviors.same
+        holdData(data, dataHolders)
 
       case ReadTestQueries(filename, replyTo) =>
         val queries = readQueries(filename)
         replyTo ! TestQueries(queries)
-        Behaviors.same
+        loadData(dataHolders)
 
       case SaveGraphToFile(filename, graphHolders, k) =>
         // TODO create file so it can be appended with the graph
         val searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent] =
           ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
         graphHolders.foreach(gh => gh ! GetGraph(searchOnGraphEventAdapter))
-        saveToFile(filename, graphHolders, k, searchOnGraphEventAdapter)
+        saveToFile(filename, graphHolders, k, searchOnGraphEventAdapter, data, dataHolders)
     }
-  }
 
   def saveToFile(filename: String,
                  remainingGraphHolders: Set[ActorRef[SearchOnGraphEvent]],
                  k: Int,
-                 searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent]): Behavior[LoadDataEvent] =
+                 searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent],
+                 data: LocalData[Float],
+                 dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessage {
       case WrappedSearchOnGraphEvent(event) =>
         event match {
@@ -94,11 +128,18 @@ object DataHolder {
             // TODO open and append file with graph
             // Each g_node one line
             val updatedGraphHolders = remainingGraphHolders - sender
-            saveToFile(filename, updatedGraphHolders, k, searchOnGraphEventAdapter)
+            if (updatedGraphHolders.isEmpty) {
+              holdData(data, dataHolders)
+            } else {
+              saveToFile(filename, updatedGraphHolders, k, searchOnGraphEventAdapter, data, dataHolders)
+            }
+
         }
     }
 
-  def readData(filename: String): Unit = {
+
+  // utility functions
+  def readData(filename: String): Seq[Seq[Float]] = {
     // read dimensions for proper grouping
     val bis = new BufferedInputStream(new FileInputStream(filename))
     bis.mark(0)
@@ -107,10 +148,11 @@ object DataHolder {
     val dimensions = byteArrayToLittleEndianInt(dimArray)
     bis.reset()
 
-    data = LazyList.continually(bis.read).takeWhile(-1 !=).map(_.toByte).grouped(4).grouped(dimensions + 1).map{
+    val data = LazyList.continually(bis.read).takeWhile(-1 !=).map(_.toByte).grouped(4).grouped(dimensions + 1).map{
       byteValues =>
         byteValues.slice(1, byteValues.length).map(value => byteArrayToLittleEndianFloat(value.toArray))
     }.toSeq
+    data
   }
 
   // read Queries and indices of nearest neighbors

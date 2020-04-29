@@ -59,7 +59,6 @@ object ClusterCoordinator {
       ctx => new ClusterCoordinator(settings, searchOnGraphEventAdapter, ctx).setUp(Set.empty)
     )
   }
-
 }
 
 class ClusterCoordinator(settings: Settings,
