@@ -54,7 +54,6 @@ object ClusterCoordinator {
       ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
 
     val settings = Settings(ctx.system.settings.config)
-    ctx.log.info("start building the approximate graph")
 
     Behaviors.setup(
       ctx => new ClusterCoordinator(settings, searchOnGraphEventAdapter, ctx).setUp(Set.empty)

@@ -16,16 +16,47 @@ object Main {
   }
 
   def main(args: Array[String]): Unit = {
-    // TODO get filename and port from command line
-    val config = ConfigFactory.load()
-    val filename = "data/siftsmall/siftsmall_base.fvecs"
+    val arguments = parseArgs(args)
+    val port = arguments._1
+    val filename = arguments._2
+
+    val config = port match {
+      case Some(inputPort) =>
+        ConfigFactory.parseString(s"""
+      akka.remote.artery.canonical.port=$inputPort
+      """).withFallback(ConfigFactory.load())
+      case None =>
+        ConfigFactory.load()
+    }
+
     // Create an Akka system
-    val system = ActorSystem[Nothing](RootBehavior(Some(filename)), "dNSGSystem", config)
+    val system = ActorSystem[Nothing](RootBehavior(filename), "dNSGSystem", config)
     val cluster = Cluster(system)
     cluster.manager ! Join(cluster.selfMember.address)
     // TODO add Reaper
   }
 
+  def parseArgs(args: Array[String]): (Option[Int], Option[String]) = {
+    // TODO: maybe add seed-port over arguments as well?
+    var port: Option[Int] = None
+    var filename: Option[String] = None
+
+    def nextOption(list: List[String]): Unit = {
+      list match {
+        case Nil =>
+        case "--port" :: value :: tail =>
+          port = Some(value.toInt)
+          nextOption(tail)
+        case "--filename" :: value :: tail =>
+          filename = Some(value)
+          nextOption(tail)
+      }
+    }
+
+    val argList = args.toList.flatMap(arg => arg.split("="))
+    nextOption(argList)
+    (port, filename)
+  }
 
 
 
