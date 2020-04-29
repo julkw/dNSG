@@ -10,11 +10,11 @@ import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildGraphEvent, MoveGraph, ResponsibleFor}
-import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator, Settings}
+import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator, Settings, dNSGSerializable}
 
 object NodeCoordinator {
 
-  sealed trait NodeCoordinationEvent
+  sealed trait NodeCoordinationEvent extends dNSGSerializable
 
   final case class DataRef(dataRef: LocalData[Float]) extends NodeCoordinationEvent
 

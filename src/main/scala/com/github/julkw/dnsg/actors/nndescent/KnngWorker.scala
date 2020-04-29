@@ -9,14 +9,14 @@ import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, Corre
 import com.github.julkw.dnsg.actors.NodeCoordinator.{LocalKnngWorker, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph
 import com.github.julkw.dnsg.actors.SearchOnGraph.{Graph, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.{IndexTree, LeafNode, LocalData, NodeLocator, SplitNode, TreeBuilder, TreeNode}
+import com.github.julkw.dnsg.util.{IndexTree, LeafNode, LocalData, NodeLocator, SplitNode, TreeBuilder, TreeNode, dNSGSerializable}
 
 import scala.language.postfixOps
 
 
 object KnngWorker {
 
-  sealed trait BuildGraphEvent
+  sealed trait BuildGraphEvent extends dNSGSerializable
 
   // setup
   final case class ResponsibleFor(responsibility: Seq[Int], treeDepth: Int) extends BuildGraphEvent

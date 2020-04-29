@@ -6,14 +6,14 @@ import com.github.julkw.dnsg.actors.ClusterCoordinator.CoordinationEvent
 import com.github.julkw.dnsg.actors.SearchOnGraph
 import com.github.julkw.dnsg.actors.SearchOnGraph.{CheckedNodesOnSearch, SearchOnGraphEvent, SortedCheckedNodes}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, ReverseNeighbors}
-import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator}
+import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator, dNSGSerializable}
 
 import scala.language.postfixOps
 
 
 object NSGWorker {
 
-  sealed trait BuildNSGEvent
+  sealed trait BuildNSGEvent extends dNSGSerializable
   // setup
   final case class Responsibility(responsibility: Seq[Int]) extends BuildNSGEvent
   // build NSG

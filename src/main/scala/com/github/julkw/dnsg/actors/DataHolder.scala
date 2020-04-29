@@ -12,13 +12,13 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{AverageValue, CoordinationEvent, DataSize, TestQueries}
 import com.github.julkw.dnsg.actors.NodeCoordinator.{DataRef, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{GetGraph, Graph, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.LocalData
+import com.github.julkw.dnsg.util.{LocalData, dNSGSerializable}
 
 import scala.language.postfixOps
 
 object DataHolder {
 
-  sealed trait LoadDataEvent
+  sealed trait LoadDataEvent extends dNSGSerializable
 
   final case class LoadSiftDataFromFile(filename: String, replyTo: ActorRef[NodeCoordinationEvent], clusterCoordinator: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
@@ -54,7 +54,6 @@ class DataHolder(ctx: ActorContext[DataHolder.LoadDataEvent], listingAdapter: Ac
   def setup(): Behavior[LoadDataEvent] = {
     ctx.system.receptionist ! Receptionist.Register(dataHolderServiceKey, ctx.self)
     ctx.system.receptionist ! Receptionist.Subscribe(dataHolderServiceKey, listingAdapter)
-    ctx.system.receptionist ! Receptionist.Find(dataHolderServiceKey, listingAdapter)
     loadData(Set.empty)
   }
 
@@ -62,7 +61,7 @@ class DataHolder(ctx: ActorContext[DataHolder.LoadDataEvent], listingAdapter: Ac
     Behaviors.receiveMessagePartial {
       case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
         ctx.log.info("{} dataHolders found", listings.size)
-        loadData(dataHolders ++ listings)
+        loadData(listings)
 
       case WaitForStreamedData =>
         ctx.log.info("Not supplied with file, waiting for other node to send data")

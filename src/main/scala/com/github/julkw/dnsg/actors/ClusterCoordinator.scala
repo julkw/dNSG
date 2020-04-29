@@ -5,13 +5,12 @@ import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries}
 import com.github.julkw.dnsg.actors.NodeCoordinator.{NodeCoordinationEvent, StartBuildingNSG, StartSearchOnGraph}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{AddToGraph, FindNearestNeighbors, FindNearestNeighborsStartingFrom, FindUnconnectedNode, GraphDistribution, KNearestNeighbors, SearchOnGraphEvent, SendResponsibleIndicesTo, UpdateConnectivity}
-
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
-import com.github.julkw.dnsg.util.{Distance, NodeLocator, NodeLocatorBuilder, Settings}
+import com.github.julkw.dnsg.util.{Distance, NodeLocator, NodeLocatorBuilder, Settings, dNSGSerializable}
 
 object ClusterCoordinator {
 
-  sealed trait CoordinationEvent
+  sealed trait CoordinationEvent extends dNSGSerializable
 
   // setup
   final case class NodeCoordinatorIntroduction(nodeCoordinator: ActorRef[NodeCoordinationEvent]) extends CoordinationEvent

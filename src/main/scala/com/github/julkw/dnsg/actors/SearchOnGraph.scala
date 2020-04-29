@@ -5,7 +5,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{AllConnected, CoordinationEvent, FinishedUpdatingConnectivity, KnngDistributionInfo, SearchOnGraphDistributionInfo, UnconnectedNode, UpdatedToNSG}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, Responsibility}
-import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator}
+import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator, dNSGSerializable}
 
 import scala.collection.mutable
 import scala.language.postfixOps
@@ -13,7 +13,7 @@ import scala.language.postfixOps
 
 object SearchOnGraph {
 
-  sealed trait SearchOnGraphEvent
+  sealed trait SearchOnGraphEvent extends dNSGSerializable
 
   // setup
   final case class Graph(graph: Map[Int, Seq[Int]], sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
@@ -86,7 +86,7 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
   def waitForLocalGraph(): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case Graph(graph, sender) =>
-        sender ! GraphReceived(ctx.self)
+        //sender ! GraphReceived(ctx.self)
         supervisor ! SearchOnGraphDistributionInfo(graph.keys.toSeq, ctx.self)
         waitForDistributionInfo(graph)
     }

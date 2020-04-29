@@ -5,6 +5,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, InitialNSGDone}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{PartialNSG, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
+import com.github.julkw.dnsg.util.dNSGSerializable
 
 import scala.collection.mutable
 import scala.language.postfixOps
@@ -12,7 +13,7 @@ import scala.language.postfixOps
 
 object NSGMerger {
 
-  sealed trait MergeNSGEvent
+  sealed trait MergeNSGEvent extends dNSGSerializable
 
   final case class ReverseNeighbors(nodeIndex: Int, reverseNeighbors: Seq[Int]) extends MergeNSGEvent
 
