@@ -28,9 +28,9 @@ object DataHolder {
   // share data
   final case class PrepareForData(dataSize: Int, offset: Int, replyTo: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
-  final case class ReadyForData(sendDataTo: ActorRef[LoadDataEvent]) extends LoadDataEvent
+  final case class PartialData(partialData: Seq[Seq[Float]], dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
-  final case class PartialData(partialData: Seq[Seq[Float]], startIndex: Int) extends LoadDataEvent
+  final case class GetNext(alreadyReceived: Int, dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
   // other stuff
   final case class GetAverageValue(replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
@@ -103,15 +103,17 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
           holdData(localData, dataHolders)
         } else {
           val partitionInfo = calculatePartitionInfo(data.length, dataHolders)
-          partitionInfo.foreach { case (dataHolder, pInfo) if dataHolder != ctx.self =>
-            dataHolder ! PrepareForData(pInfo._2, pInfo._1, ctx.self)
+          partitionInfo.foreach { case (dataHolder, pInfo) =>
+            if (dataHolder != ctx.self) {
+              dataHolder ! PrepareForData(pInfo._2, pInfo._1, ctx.self)
+            }
           }
           shareData(data, partitionInfo, dataHolders)
         }
 
       case PrepareForData(dataSize, offset, replyTo) =>
         ctx.log.info("Receiving data from other dataHolder")
-        replyTo ! ReadyForData(ctx.self)
+        replyTo ! GetNext(0, ctx.self)
         receiveData(Seq.empty, dataSize, offset, 0, dataHolders)
     }
 
@@ -119,56 +121,53 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
                 partitionInfo: Map[ActorRef[LoadDataEvent], (Int, Int)],
                 dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial {
-      case ReadyForData(dataHolder) =>
-        val offset = partitionInfo(dataHolder)._1
-        val dataSize = partitionInfo(dataHolder)._2
-        var pdIndex = 0
-        // TODO can I send them all at once like this or do I have to do an extra step of the other asking for more after dealing with a single message?
-        data.slice(offset, dataSize).grouped(dataMessageSize).foreach { partialData =>
-          val partialDataOffset = offset + dataMessageSize * pdIndex
-          pdIndex += 1
-          dataHolder ! PartialData(partialData, partialDataOffset)
+      case GetNext(alreadyReceived, dataHolder) =>
+        val offset = partitionInfo(dataHolder)._1 + alreadyReceived
+        val partitionDataSize = partitionInfo(dataHolder)._2
+        val amountToSend = math.min(partitionDataSize - alreadyReceived, dataMessageSize)
+        val dataToSend = data.slice(offset, offset + amountToSend)
+        dataHolder ! PartialData(dataToSend, ctx.self)
+        // check if done with this (and maybe all) actor(s)
+        if (offset + amountToSend == partitionDataSize) {
+          // all data has been sent to this actor
+          val remainingPartitionInfo = partitionInfo - dataHolder
+          if (remainingPartitionInfo == 1) {
+            ctx.log.info("Done distributing data")
+            val localOffset = remainingPartitionInfo(ctx.self)._1
+            val localDataSize = remainingPartitionInfo(ctx.self)._2
+            val localData = LocalData(data.slice(localOffset, localDataSize), localOffset)
+            nodeCoordinator ! DataRef(localData)
+            holdData(localData, dataHolders)
+          } else {
+            shareData(data, remainingPartitionInfo, dataHolders)
+          }
         }
-        val remainingPartitionInfo = partitionInfo - dataHolder
-        if (remainingPartitionInfo == 1) {
-          // only myself left
-          val localOffset = remainingPartitionInfo(ctx.self)._1
-          val localDataSize = remainingPartitionInfo(ctx.self)._2
-          val localData = LocalData(data.slice(localOffset, localDataSize), localOffset)
-          nodeCoordinator ! DataRef(localData)
-          holdData(localData, dataHolders)
-        } else {
-          shareData(data, partitionInfo - dataHolder, dataHolders)
-        }
+        shareData(data, partitionInfo, dataHolders)
     }
 
-  def receiveData(data: Seq[(Int, Seq[Seq[Float]])],
+  def receiveData(data: Seq[Seq[Float]],
                   expectedDataSize: Int,
                   localOffset: Int,
                   pointsReceived: Int,
                   dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial{
-      case PartialData(partialData, partialDataOffset) =>
-        val updatedData = data :+ (partialDataOffset, partialData)
+      case PartialData(partialData, dataHolder) =>
+        val updatedData = data ++ partialData
         val updatedPointsReceived = pointsReceived + partialData.length
         if (updatedPointsReceived == expectedDataSize) {
           // all data received
-          val combinedData = data.sortBy(_._1).map(_._2).reduce(_ ++ _)
-          val localData = LocalData(combinedData, localOffset)
+          val localData = LocalData(updatedData, localOffset)
           nodeCoordinator ! DataRef(localData)
           ctx.log.info("got all my data")
           holdData(localData, dataHolders)
         } else {
+          dataHolder ! GetNext(pointsReceived, ctx.self)
           receiveData(updatedData, expectedDataSize, localOffset, updatedPointsReceived, dataHolders)
         }
     }
 
   def holdData(data: LocalData[Float], dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial {
-      case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
-        // TODO prevent this from happening
-        holdData(data, dataHolders ++ listings)
-
       case GetAverageValue(replyTo) =>
         // TODO calculate average while loading data (as when in the cluster not all the data will be held here)
         val averageValue: Seq[Float] = (0 until data.dimension).map{ index =>

@@ -18,6 +18,8 @@ case class Settings(config: Config) {
 
   val workers: Int = config.getInt(s"$namespace.workers")
 
+  val nodesExpected: Int = config.getInt(s"$namespace.nodes-expected")
+
   // for testing
   val queryFilePath: String = config.getString(s"$namespace.query-testing.query-file")
 

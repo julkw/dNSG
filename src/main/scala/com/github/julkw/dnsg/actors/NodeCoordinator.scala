@@ -16,6 +16,8 @@ object NodeCoordinator {
 
   sealed trait NodeCoordinationEvent extends dNSGSerializable
 
+  final case object StartDistributingData extends NodeCoordinationEvent
+
   final case class DataRef(dataRef: LocalData[Float]) extends NodeCoordinationEvent
 
   final case object StartSearchOnGraph extends NodeCoordinationEvent
@@ -37,14 +39,14 @@ object NodeCoordinator {
     val dh = ctx.spawn(DataHolder(ctx.self), name = "DataHolder")
     fileName match {
       case Some(fName) =>
-        // TODO somehow ensure that all others are already registered to receive data
-        dh ! LoadPartialDataFromFile(fName, settings.linesOffset, settings.lines, settings.dimensionOffset, settings.dimensions, ctx.self, clusterCoordinator)
+        Behaviors.setup(
+          ctx => new NodeCoordinator(settings, dh, clusterCoordinator, ctx).setUp(fName)
+        )
+      case None =>
+        Behaviors.setup(
+          ctx => new NodeCoordinator(settings, dh, clusterCoordinator, ctx).waitForData()
+        )
     }
-
-    ctx.log.info("start building the approximate graph")
-    Behaviors.setup(
-      ctx => new NodeCoordinator(settings, dh, clusterCoordinator, ctx).setUp()
-    )
   }
 
 }
@@ -55,7 +57,17 @@ class NodeCoordinator(settings: Settings,
                       ctx: ActorContext[NodeCoordinator.NodeCoordinationEvent]) extends Distance {
   import NodeCoordinator._
 
-  def setUp(): Behavior[NodeCoordinationEvent] = Behaviors.receiveMessagePartial {
+  def setUp(filename: String): Behavior[NodeCoordinationEvent] = Behaviors.receiveMessagePartial {
+    case StartDistributingData =>
+      dataHolder ! LoadPartialDataFromFile(filename, settings.linesOffset, settings.lines, settings.dimensionOffset, settings.dimensions, ctx.self, clusterCoordinator)
+      waitForData()
+  }
+
+  def waitForData(): Behavior[NodeCoordinationEvent] = Behaviors.receiveMessagePartial {
+    case StartDistributingData =>
+      // this node doesn't have the file and so can do nothing but wait
+      waitForData()
+
     case DataRef(dataRef) =>
       val data = dataRef
       ctx.log.info("Successfully loaded data")

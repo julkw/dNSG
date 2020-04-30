@@ -3,7 +3,7 @@ package com.github.julkw.dnsg.actors
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries}
-import com.github.julkw.dnsg.actors.NodeCoordinator.{NodeCoordinationEvent, StartBuildingNSG, StartSearchOnGraph}
+import com.github.julkw.dnsg.actors.NodeCoordinator.{NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{AddToGraph, FindNearestNeighbors, FindNearestNeighborsStartingFrom, FindUnconnectedNode, GraphDistribution, KNearestNeighbors, SearchOnGraphEvent, SendResponsibleIndicesTo, UpdateConnectivity}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, NodeLocatorBuilder, Settings, dNSGSerializable}
@@ -67,7 +67,11 @@ class ClusterCoordinator(settings: Settings,
 
   def setUp(nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]]): Behavior[CoordinationEvent] = Behaviors.receiveMessagePartial {
     case NodeCoordinatorIntroduction(nodeCoordinator) =>
-      setUp(nodeCoordinators + nodeCoordinator)
+      val updatedNodeCoordinators = nodeCoordinators + nodeCoordinator
+      if (settings.nodesExpected == updatedNodeCoordinators.size) {
+        updatedNodeCoordinators.foreach(nc => nc ! StartDistributingData)
+      }
+      setUp(updatedNodeCoordinators)
     case DataSize(dataSize, dataHolder) =>
       distributeDataForKnng(NodeLocatorBuilder(dataSize), Set.empty, nodeCoordinators, dataHolder)
   }
@@ -75,6 +79,7 @@ class ClusterCoordinator(settings: Settings,
   def distributeDataForKnng(nodeLocatorBuilder: NodeLocatorBuilder[BuildGraphEvent],
                             knngWorkers: Set[ActorRef[BuildGraphEvent]],
                             nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
+
                             dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
         case KnngDistributionInfo(responsibility, worker) =>
