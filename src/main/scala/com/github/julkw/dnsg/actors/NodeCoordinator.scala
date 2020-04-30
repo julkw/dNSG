@@ -4,7 +4,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import akka.cluster.typed.{ClusterSingleton, SingletonActor}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, NodeCoordinatorIntroduction}
-import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, LoadPartialDataFromFile, WaitForStreamedData}
+import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, LoadPartialDataFromFile}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{GetNSGFrom, SearchOnGraphEvent, SendResponsibleIndicesTo}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
@@ -34,13 +34,11 @@ object NodeCoordinator {
       SingletonActor(Behaviors.supervise(ClusterCoordinator()).onFailure[Exception](SupervisorStrategy.restart), "ClusterCoordinator"))
     clusterCoordinator ! NodeCoordinatorIntroduction(ctx.self)
 
-    val dh = ctx.spawn(DataHolder(), name = "DataHolder")
+    val dh = ctx.spawn(DataHolder(ctx.self), name = "DataHolder")
     fileName match {
       case Some(fName) =>
         // TODO somehow ensure that all others are already registered to receive data
         dh ! LoadPartialDataFromFile(fName, settings.linesOffset, settings.lines, settings.dimensionOffset, settings.dimensions, ctx.self, clusterCoordinator)
-      case None =>
-        dh ! WaitForStreamedData
     }
 
     ctx.log.info("start building the approximate graph")
