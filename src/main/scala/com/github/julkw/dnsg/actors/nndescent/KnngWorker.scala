@@ -37,6 +37,10 @@ object KnngWorker {
 
   final case class PotentialNeighbor(g_node: Int, potentialNeighbor: (Int, Double), senderIndex: Int) extends BuildGraphEvent
 
+  final case class SendLocation(g_node: Int, potentialNeighborIndex: Int, senderIndex: Int) extends BuildGraphEvent
+
+  final case class CalculateDistance(g_node: Int, potentialNeighborIndex: Int, potentialNeighbor: Seq[Float], senderIndex: Int) extends BuildGraphEvent
+
   final case class RemoveReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int) extends BuildGraphEvent
 
   final case class AddReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int) extends BuildGraphEvent
@@ -119,7 +123,7 @@ class KnngWorker(data: LocalData[Float],
         buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, workers, graph)
       case GetCandidates(query, index, sender) =>
         val getCandidateKey = "GetCandidates"
-        timers.startSingleTimer(getCandidateKey, GetCandidates(query, index, sender), 1.milliseconds)
+        timers.startSingleTimer(getCandidateKey, GetCandidates(query, index, sender), 100.milliseconds)
         ctx.log.info("Got a request for candidates before the distribution info. Forwarded to self with delay.")
         waitForDistributionInfo(kdTree, responsibility)
     }
@@ -231,26 +235,20 @@ class KnngWorker(data: LocalData[Float],
         timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
+      case SendLocation(g_node, potentialNeighborIndex, senderIndex) =>
+        nodeLocator.findResponsibleActor(potentialNeighborIndex) ! CalculateDistance(potentialNeighborIndex, g_node, data.at(g_node).get, senderIndex)
+        nnDescent(nodeLocator, graph, reverseNeighbors)
+
+      case CalculateDistance(g_node, potentialNeighborIndex, potentialNeighbor, senderIndex) =>
+        val dist = euclideanDist(data.at(g_node).get, potentialNeighbor)
+        ctx.self ! PotentialNeighbor(g_node, (potentialNeighborIndex, dist), senderIndex)
+        nodeLocator.findResponsibleActor(potentialNeighborIndex) ! PotentialNeighbor(potentialNeighborIndex, (g_node, dist), senderIndex)
+        nnDescent(nodeLocator, graph, reverseNeighbors)
+
       case PotentialNeighbor(g_node, potentialNeighbor, senderIndex) =>
-        val currentNeighbors = graph(g_node)
-        val currentReverseNeighbors = reverseNeighbors(g_node)
-        val currentMaxDist = currentNeighbors(currentNeighbors.length - 1)._2
-        val isNew: Boolean = !(currentNeighbors.exists(neighbor => neighbor._1 == potentialNeighbor._1)
-          || currentReverseNeighbors.contains(potentialNeighbor._1))
-        if (currentMaxDist > potentialNeighbor._2 && potentialNeighbor._1 != g_node && isNew) {
-          if (timers.isTimerActive(NNDescentTimerKey)) {
-            timers.cancel(NNDescentTimerKey)
-          } else {
-            // if the timer is inactive, it has already run out and the actor has mistakenly told its supervisor that it is done
-            clusterCoordinator ! CorrectFinishedNNDescent
-          }
-          joinNewNeighbor(currentNeighbors.slice(0, k-1), currentReverseNeighbors, g_node, potentialNeighbor._1, senderIndex, nodeLocator)
-          timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
-          val updatedNeighbors = (currentNeighbors :+ potentialNeighbor).sortBy(_._2).slice(0, k)
-          nnDescent(nodeLocator, graph + (g_node -> updatedNeighbors), reverseNeighbors)
-        } else {
-          nnDescent(nodeLocator, graph, reverseNeighbors)
-        }
+        // TODO: If g_nodes bundled, call handlePotentialNeighbor multiple times
+        val updatedGraph = handlePotentialNeighbor(g_node, potentialNeighbor, senderIndex, graph, reverseNeighbors, nodeLocator)
+        nnDescent(nodeLocator, updatedGraph, reverseNeighbors)
 
       case AddReverseNeighbor(g_nodeIndex, neighborIndex) =>
         //ctx.log.info("add reverse neighbor")
@@ -298,6 +296,33 @@ class KnngWorker(data: LocalData[Float],
       (index, euclideanDist(data.at(index).get, query))
     ).sortBy(_._2).slice(0, k)
     localCandidates
+  }
+
+  def handlePotentialNeighbor(g_node: Int,
+                              potentialNeighbor: (Int, Double),
+                              senderIndex: Int,
+                              graph: Map[Int, Seq[(Int, Double)]],
+                              reverseNeighbors: Map[Int, Set[Int]],
+                              nodeLocator: NodeLocator[BuildGraphEvent]): Map[Int, Seq[(Int, Double)]] = {
+    val currentNeighbors = graph(g_node)
+    val currentReverseNeighbors = reverseNeighbors(g_node)
+    val currentMaxDist = currentNeighbors(currentNeighbors.length - 1)._2
+    val isNew: Boolean = !(currentNeighbors.exists(neighbor => neighbor._1 == potentialNeighbor._1)
+      || currentReverseNeighbors.contains(potentialNeighbor._1))
+    if (currentMaxDist > potentialNeighbor._2 && potentialNeighbor._1 != g_node && isNew) {
+      if (timers.isTimerActive(NNDescentTimerKey)) {
+        timers.cancel(NNDescentTimerKey)
+      } else {
+        // if the timer is inactive, it has already run out and the actor has mistakenly told its supervisor that it is done
+        clusterCoordinator ! CorrectFinishedNNDescent
+      }
+      joinNewNeighbor(currentNeighbors.slice(0, k-1), currentReverseNeighbors, g_node, potentialNeighbor._1, senderIndex, nodeLocator)
+      timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
+      val updatedNeighbors = (currentNeighbors :+ potentialNeighbor).sortBy(_._2).slice(0, k)
+      graph + (g_node -> updatedNeighbors)
+    } else {
+      graph
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 package com.github.julkw.dnsg.actors.nndescent
 
-import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildGraphEvent, PotentialNeighbor}
+import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildGraphEvent, CalculateDistance, PotentialNeighbor, SendLocation}
 import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator}
 
 
@@ -10,13 +10,31 @@ abstract class Joiner(sampleRate: Double, data: LocalData[Float]) extends Distan
     val sampledNeighbors = neighbors.filter(_ => scala.util.Random.nextFloat() < sampleRate)
     for (n1 <- 0 until sampledNeighbors.length) {
       for (n2 <- n1 + 1 until sampledNeighbors.length) {
-        val neighbor1 = sampledNeighbors(n1)._1
-        val neighbor2 = sampledNeighbors(n2)._1
-        // TODO this will have to be adjusted to deal with potentially non local neighbors
-        val dist = euclideanDist(data.at(neighbor1).get, data.at(neighbor2).get)
-        nodeLocator.findResponsibleActor(neighbor1) ! PotentialNeighbor(neighbor1, (neighbor2, dist), g_nodeIndex)
-        nodeLocator.findResponsibleActor(neighbor2) ! PotentialNeighbor(neighbor2, (neighbor1, dist), g_nodeIndex)
+        joinPair(n1, n2, nodeLocator, g_nodeIndex)
       }
+    }
+  }
+
+  def joinPair(neighbor1: Int, neighbor2: Int, nodeLocator: NodeLocator[BuildGraphEvent], g_nodeIndex: Int): Unit = {
+    val point1 = data.at(neighbor1)
+    val point2 = data.at(neighbor2)
+    point1 match {
+      case Some(p1) =>
+        point2 match {
+          case Some(p2) =>
+            val dist = euclideanDist(p1, p2)
+            nodeLocator.findResponsibleActor(neighbor1) ! PotentialNeighbor(neighbor1, (neighbor2, dist), g_nodeIndex)
+            nodeLocator.findResponsibleActor(neighbor2) ! PotentialNeighbor(neighbor2, (neighbor1, dist), g_nodeIndex)
+          case None =>
+            nodeLocator.findResponsibleActor(neighbor2) ! CalculateDistance(neighbor2, neighbor1, p1, g_nodeIndex)
+        }
+      case None =>
+        point2 match {
+          case Some(p2) =>
+            nodeLocator.findResponsibleActor(neighbor1) ! CalculateDistance(neighbor1, neighbor2, p2, g_nodeIndex)
+          case None =>
+            nodeLocator.findResponsibleActor(neighbor1) ! SendLocation(neighbor1, neighbor2, g_nodeIndex)
+        }
     }
   }
 
@@ -24,13 +42,9 @@ abstract class Joiner(sampleRate: Double, data: LocalData[Float]) extends Distan
       // don't send newNeighbor back to the node that introduced us
       // use set to prevent duplication of nodes that are both neighbors and reverse neighbors
       val allNeighbors = neighbors.map(_._1).toSet ++ oldReverseNeighbors - senderIndex
-      val newNeighborActor = nodeLocator.findResponsibleActor(newNeighbor)
       allNeighbors.foreach { oldNeighbor =>
         if (scala.util.Random.nextFloat() < sampleRate) {
-          // TODO this will have to be adjusted to deal with potentially non local neighbors
-          val dist = euclideanDist(data.at(oldNeighbor).get, data.at(newNeighbor).get)
-          nodeLocator.findResponsibleActor(oldNeighbor) ! PotentialNeighbor(oldNeighbor, (newNeighbor, dist), g_nodeIndex)
-          newNeighborActor ! PotentialNeighbor(newNeighbor, (oldNeighbor, dist), g_nodeIndex)
+          joinPair(oldNeighbor, newNeighbor, nodeLocator, g_nodeIndex)
         }
       }
   }
