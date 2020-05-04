@@ -14,6 +14,7 @@ lazy val `dNSG` = project
       "com.typesafe.akka" %% "akka-cluster-typed"         % akkaVersion,
       "ch.qos.logback"    %  "logback-classic"            % "1.2.3",
       "com.typesafe.akka" %% "akka-serialization-jackson" % akkaVersion,
+      "com.twitter"       %% "chill-akka"                 % "0.9.5",
       "com.typesafe.akka" %% "akka-multi-node-testkit"    % akkaVersion % Test,
       "org.scalatest"     %% "scalatest"                  % "3.0.8"     % Test,
       "com.typesafe.akka" %% "akka-actor-testkit-typed"   % akkaVersion % Test),

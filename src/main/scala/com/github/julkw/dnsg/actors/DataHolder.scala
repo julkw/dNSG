@@ -144,10 +144,10 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
         val dataToSend = data.slice(offset, offset + amountToSend)
         dataHolder ! PartialData(dataToSend, ctx.self)
         // check if done with this (and maybe all) actor(s)
-        if (offset + amountToSend == partitionDataSize) {
+        if (alreadyReceived + amountToSend == partitionDataSize) {
           // all data has been sent to this actor
           val remainingPartitionInfo = partitionInfo - dataHolder
-          if (remainingPartitionInfo == 1) {
+          if (remainingPartitionInfo.size == 1) {
             ctx.log.info("Done distributing data")
             val localOffset = remainingPartitionInfo(ctx.self)._1
             val localDataSize = remainingPartitionInfo(ctx.self)._2
@@ -168,9 +168,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
                   dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial{
       case PartialData(partialData, dataHolder) =>
-        // TODO this breaks because for some reason the contents of partialData ar deserialized as doubles
-        val typeSafeData = partialData.map(point => point.map(value => value.floatValue()))
-        val updatedData: Seq[Seq[Float]] = data ++ typeSafeData
+        val updatedData: Seq[Seq[Float]] = data ++ partialData
 
         val updatedPointsReceived = pointsReceived + partialData.length
         if (updatedPointsReceived == expectedDataSize) {
@@ -180,7 +178,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
           ctx.log.info("got all my data")
           holdData(localData, dataHolders)
         } else {
-          dataHolder ! GetNext(pointsReceived, ctx.self)
+          dataHolder ! GetNext(updatedPointsReceived, ctx.self)
           receiveData(updatedData, expectedDataSize, localOffset, updatedPointsReceived, dataHolders)
         }
     }
