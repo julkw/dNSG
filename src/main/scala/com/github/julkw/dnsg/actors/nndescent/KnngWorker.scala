@@ -9,7 +9,7 @@ import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, Corre
 import com.github.julkw.dnsg.actors.NodeCoordinator.{LocalKnngWorker, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph
 import com.github.julkw.dnsg.actors.SearchOnGraph.{Graph, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.{IndexTree, LeafNode, LocalData, NodeLocator, SplitNode, TreeBuilder, TreeNode, dNSGSerializable}
+import com.github.julkw.dnsg.util.{IndexTree, KdTree, LeafNode, LocalData, NodeLocator, SplitNode, TreeBuilder, TreeNode, dNSGSerializable}
 
 import scala.language.postfixOps
 
@@ -146,21 +146,7 @@ class KnngWorker(data: LocalData[Float],
             awaitingAnswer(responsibilityIndex) += 1
           }
         }
-
-        // Find candidates on own tree using Efanna method
-        // TODO test how much time this costs and if it improves the graph significantly
-        var currentDataNode: TreeNode[Seq[Int]] = kdTree.root
-        var localCandidates: Seq[(Int, Double)] = Seq.empty
-        while (currentDataNode.inverseQueryChild(query) != currentDataNode) {
-          val newCandidates = currentDataNode.inverseQueryChild(query).queryLeaf(query).data.map(index =>
-            (index, euclideanDist(data.at(index).get, query))
-          )
-          localCandidates = localCandidates ++ newCandidates
-          currentDataNode = currentDataNode.queryChild(query)
-        }
-        localCandidates = localCandidates ++ currentDataNode.data.map(index =>
-          (index, euclideanDist(data.at(index).get, query))
-        )
+        val localCandidates = findLocalCandidates(query, kdTree)
         ctx.self ! Candidates(localCandidates, responsibilityIndex)
         awaitingAnswer(responsibilityIndex) += 1
         buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, knngWorkers, graph)
@@ -295,6 +281,24 @@ class KnngWorker(data: LocalData[Float],
         // TODO add some kind of check to ensure the arrival of the graph?
         Behaviors.empty
     }
+
+  def findLocalCandidates(query: Seq[Float], kdTree: KdTree[Seq[Int]]): Seq[(Int, Double)] = {
+    // Find candidates on own tree using Efanna method
+    // TODO test how much time this costs and if it improves the graph significantly
+    var currentDataNode: TreeNode[Seq[Int]] = kdTree.root
+    var localCandidates: Seq[(Int, Double)] = Seq.empty
+    while (currentDataNode.inverseQueryChild(query) != currentDataNode) {
+      val newCandidates = currentDataNode.inverseQueryChild(query).queryLeaf(query).data.map(index =>
+        (index, euclideanDist(data.at(index).get, query))
+      )
+      localCandidates = (localCandidates ++ newCandidates).sortBy(_._2).slice(0, k)
+      currentDataNode = currentDataNode.queryChild(query)
+    }
+    localCandidates = localCandidates ++ currentDataNode.data.map(index =>
+      (index, euclideanDist(data.at(index).get, query))
+    ).sortBy(_._2).slice(0, k)
+    localCandidates
+  }
 }
 
 
