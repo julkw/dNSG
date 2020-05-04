@@ -21,9 +21,9 @@ object DataHolder {
   sealed trait LoadDataEvent extends dNSGSerializable
 
   // load data
-  final case class LoadSiftDataFromFile(filename: String, replyTo: ActorRef[NodeCoordinationEvent], clusterCoordinator: ActorRef[CoordinationEvent]) extends LoadDataEvent
+  final case class LoadSiftDataFromFile(expectedNodes: Int, filename: String, replyTo: ActorRef[NodeCoordinationEvent], clusterCoordinator: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
-  final case class LoadPartialDataFromFile(filename: String, lineOffset: Int, linesUsed: Int, dimensionsOffset: Int, dimensionsUsed: Int, replyTo: ActorRef[NodeCoordinationEvent], clusterCoordinator: ActorRef[CoordinationEvent]) extends LoadDataEvent
+  final case class LoadPartialDataFromFile(expectedNodes: Int, filename: String, lineOffset: Int, linesUsed: Int, dimensionsOffset: Int, dimensionsUsed: Int, replyTo: ActorRef[NodeCoordinationEvent], clusterCoordinator: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
   // share data
   final case class PrepareForData(dataSize: Int, offset: Int, replyTo: ActorRef[LoadDataEvent]) extends LoadDataEvent
@@ -72,43 +72,38 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
         ctx.log.info("{} dataHolders found", listings.size)
         loadData(listings)
 
-      case LoadSiftDataFromFile(filename, replyTo, clusterCoordinator) =>
+      case LoadSiftDataFromFile(expectedNodes, filename, replyTo, clusterCoordinator) =>
         ctx.log.info("Asked to load SIFT data from {}", filename)
         // TODO potentially send while reading for really big dataSets
         val data = readData(filename)
         clusterCoordinator ! DataSize(data.length, ctx.self)
-        if (dataHolders.size <= 1) {
+        if (expectedNodes == 1) {
           // I am the only node in the cluster
           val localData = LocalData(data, 0)
           nodeCoordinator ! DataRef(localData)
           holdData(localData, dataHolders)
+        } else if (dataHolders.size < expectedNodes) {
+          ctx.log.info("Waiting on other nodes before distributing data")
+          waitForDataHolders(data, expectedNodes, dataHolders)
         } else {
-          val partitionInfo = calculatePartitionInfo(data.length, dataHolders)
-          partitionInfo.foreach { case (dataHolder, pInfo) if dataHolder != ctx.self =>
-            dataHolder ! PrepareForData(pInfo._2, pInfo._1, ctx.self)
-          }
-          shareData(data, partitionInfo, dataHolders)
+          startDistributingData(data, dataHolders)
         }
 
       // only return part of the data for testing (number of lines and dimensions need to be known beforehand for this)
-      case LoadPartialDataFromFile(filename, lineOffset, linesUsed, dimensionsOffset, dimensionsUsed, replyTo, clusterCoordinator) =>
+      case LoadPartialDataFromFile(expectedNodes, filename, lineOffset, linesUsed, dimensionsOffset, dimensionsUsed, replyTo, clusterCoordinator) =>
         val data = readData(filename).slice(lineOffset, lineOffset + linesUsed).map(vector =>
           vector.slice(dimensionsOffset, dimensionsOffset + dimensionsUsed))
         clusterCoordinator ! DataSize(data.length, ctx.self)
-        if (dataHolders.size <= 1) {
+        if (expectedNodes == 1) {
           // I am the only node in the cluster
-          ctx.log.info("Only node in cluster, not sharing data")
           val localData = LocalData(data, 0)
           nodeCoordinator ! DataRef(localData)
           holdData(localData, dataHolders)
+        } else if (dataHolders.size < expectedNodes) {
+          ctx.log.info("Waiting on other nodes before distributing data")
+          waitForDataHolders(data, expectedNodes, dataHolders)
         } else {
-          val partitionInfo = calculatePartitionInfo(data.length, dataHolders)
-          partitionInfo.foreach { case (dataHolder, pInfo) =>
-            if (dataHolder != ctx.self) {
-              dataHolder ! PrepareForData(pInfo._2, pInfo._1, ctx.self)
-            }
-          }
-          shareData(data, partitionInfo, dataHolders)
+          startDistributingData(data, dataHolders)
         }
 
       case PrepareForData(dataSize, offset, replyTo) =>
@@ -116,6 +111,27 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
         replyTo ! GetNext(0, ctx.self)
         receiveData(Seq.empty, dataSize, offset, 0, dataHolders)
     }
+
+  def waitForDataHolders(data: Seq[Seq[Float]], expectedNodes: Int, dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
+    Behaviors.receiveMessagePartial {
+      case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
+        ctx.log.info("{} dataHolders found", listings.size)
+        if (expectedNodes < listings.size) {
+          waitForDataHolders(data, expectedNodes, listings)
+        } else {
+          startDistributingData(data, listings)
+        }
+    }
+
+  def startDistributingData(data: Seq[Seq[Float]], dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] = {
+    val partitionInfo = calculatePartitionInfo(data.length, dataHolders)
+    partitionInfo.foreach { case (dataHolder, pInfo) =>
+      if (dataHolder != ctx.self) {
+        dataHolder ! PrepareForData(pInfo._2, pInfo._1, ctx.self)
+      }
+    }
+    shareData(data, partitionInfo, dataHolders)
+  }
 
   def shareData(data: Seq[Seq[Float]],
                 partitionInfo: Map[ActorRef[LoadDataEvent], (Int, Int)],
@@ -152,11 +168,14 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
                   dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial{
       case PartialData(partialData, dataHolder) =>
-        val updatedData = data ++ partialData
+        // TODO this breaks because for some reason the contents of partialData ar deserialized as doubles
+        val typeSafeData = partialData.map(point => point.map(value => value.floatValue()))
+        val updatedData: Seq[Seq[Float]] = data ++ typeSafeData
+
         val updatedPointsReceived = pointsReceived + partialData.length
         if (updatedPointsReceived == expectedDataSize) {
           // all data received
-          val localData = LocalData(updatedData, localOffset)
+          val localData: LocalData[Float] = LocalData(updatedData, localOffset)
           nodeCoordinator ! DataRef(localData)
           ctx.log.info("got all my data")
           holdData(localData, dataHolders)

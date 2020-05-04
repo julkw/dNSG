@@ -1,7 +1,7 @@
 package com.github.julkw.dnsg.util
 
 import akka.actor.typed.scaladsl.ActorContext
-import com.github.julkw.dnsg.actors.{ClusterCoordinator, NodeCoordinator}
+import com.github.julkw.dnsg.actors.{ClusterCoordinator}
 import com.typesafe.config.Config
 
 case class Settings(config: Config) {
@@ -31,7 +31,7 @@ case class Settings(config: Config) {
 
   val dimensions: Int = config.getInt(s"$namespace.query-testing.dimensions")
 
-  def printSettings(ctx: ActorContext[NodeCoordinator.NodeCoordinationEvent]): Unit = {
+  def printSettings(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]): Unit = {
     ctx.log.info("inputFile: {}", inputFilePath)
     ctx.log.info("k: {}", k)
     ctx.log.info("sampleRate: {}", sampleRate)

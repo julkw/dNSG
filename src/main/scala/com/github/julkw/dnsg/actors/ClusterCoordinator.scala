@@ -52,22 +52,21 @@ object ClusterCoordinator {
     val searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent] =
       ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
 
-    val settings = Settings(ctx.system.settings.config)
-
     Behaviors.setup(
-      ctx => new ClusterCoordinator(settings, searchOnGraphEventAdapter, ctx).setUp(Set.empty)
+      ctx => new ClusterCoordinator(searchOnGraphEventAdapter, ctx).setUp(Set.empty)
     )
   }
 }
 
-class ClusterCoordinator(settings: Settings,
-                         searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent],
+class ClusterCoordinator(searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent],
                          ctx: ActorContext[ClusterCoordinator.CoordinationEvent]) extends Distance {
   import ClusterCoordinator._
 
   def setUp(nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]]): Behavior[CoordinationEvent] = Behaviors.receiveMessagePartial {
     case NodeCoordinatorIntroduction(nodeCoordinator) =>
       val updatedNodeCoordinators = nodeCoordinators + nodeCoordinator
+      val settings = Settings(ctx.system.settings.config)
+      settings.printSettings(ctx)
       if (settings.nodesExpected == updatedNodeCoordinators.size) {
         updatedNodeCoordinators.foreach(nc => nc ! StartDistributingData)
       }
@@ -79,7 +78,6 @@ class ClusterCoordinator(settings: Settings,
   def distributeDataForKnng(nodeLocatorBuilder: NodeLocatorBuilder[BuildGraphEvent],
                             knngWorkers: Set[ActorRef[BuildGraphEvent]],
                             nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
-
                             dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
         case KnngDistributionInfo(responsibility, worker) =>
@@ -229,6 +227,7 @@ class ClusterCoordinator(settings: Settings,
 
       case AllConnected =>
         ctx.log.info("NSG build seems to be done")
+        val settings = Settings(ctx.system.settings.config)
         dataHolder ! ReadTestQueries(settings.queryFilePath, ctx.self)
         testNSG(navigatingNodeIndex, nodeLocator, graphHolders, Map.empty, 0)
     }

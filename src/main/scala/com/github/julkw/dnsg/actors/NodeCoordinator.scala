@@ -28,7 +28,6 @@ object NodeCoordinator {
 
   def apply(fileName: Option[String]): Behavior[NodeCoordinationEvent] = Behaviors.setup { ctx =>
     val settings = Settings(ctx.system.settings.config)
-    settings.printSettings(ctx)
 
     // get access to cluster coordinator
     val singletonManager = ClusterSingleton(ctx.system)
@@ -59,7 +58,7 @@ class NodeCoordinator(settings: Settings,
 
   def setUp(filename: String): Behavior[NodeCoordinationEvent] = Behaviors.receiveMessagePartial {
     case StartDistributingData =>
-      dataHolder ! LoadPartialDataFromFile(filename, settings.linesOffset, settings.lines, settings.dimensionOffset, settings.dimensions, ctx.self, clusterCoordinator)
+      dataHolder ! LoadPartialDataFromFile(settings.nodesExpected, filename, settings.linesOffset, settings.lines, settings.dimensionOffset, settings.dimensions, ctx.self, clusterCoordinator)
       waitForData()
   }
 
