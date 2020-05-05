@@ -37,9 +37,9 @@ object KnngWorker {
 
   final case class PotentialNeighbor(g_node: Int, potentialNeighbor: (Int, Double), senderIndex: Int) extends BuildGraphEvent
 
-  final case class SendLocation(g_node: Int, potentialNeighborIndex: Int, senderIndex: Int) extends BuildGraphEvent
+  final case class SendLocation(g_node: Int, potentialNeighborIndices: Seq[Int], senderIndex: Int) extends BuildGraphEvent
 
-  final case class CalculateDistance(g_node: Int, potentialNeighborIndex: Int, potentialNeighbor: Seq[Float], senderIndex: Int) extends BuildGraphEvent
+  final case class CalculateDistance(g_nodes: Seq[Int], potentialNeighborIndex: Int, potentialNeighbor: Seq[Float], senderIndex: Int) extends BuildGraphEvent
 
   final case class RemoveReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int) extends BuildGraphEvent
 
@@ -235,14 +235,29 @@ class KnngWorker(data: LocalData[Float],
         timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
-      case SendLocation(g_node, potentialNeighborIndex, senderIndex) =>
-        nodeLocator.findResponsibleActor(potentialNeighborIndex) ! CalculateDistance(potentialNeighborIndex, g_node, data.at(g_node).get, senderIndex)
+      case SendLocation(g_node, potentialNeighborIndices, senderIndex) =>
+        potentialNeighborIndices.groupBy(neighbor => nodeLocator.findResponsibleActor(neighbor)).foreach {
+          case (actor, potentialNeighbors) =>
+            val g_nodeData = data.at(g_node).get
+            if (actor != ctx.self) {
+              actor ! CalculateDistance(potentialNeighbors, g_node, g_nodeData, senderIndex)
+            } else {
+              // do the join here as I am holding both g_nodes
+              potentialNeighbors.foreach { potentialNeighbor =>
+                val dist = euclideanDist(g_nodeData, data.at(potentialNeighbor).get)
+                ctx.self ! PotentialNeighbor(g_node, (potentialNeighbor, dist), senderIndex)
+                ctx.self ! PotentialNeighbor(potentialNeighbor, (g_node, dist), senderIndex)
+              }
+            }
+        }
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
-      case CalculateDistance(g_node, potentialNeighborIndex, potentialNeighbor, senderIndex) =>
-        val dist = euclideanDist(data.at(g_node).get, potentialNeighbor)
-        ctx.self ! PotentialNeighbor(g_node, (potentialNeighborIndex, dist), senderIndex)
-        nodeLocator.findResponsibleActor(potentialNeighborIndex) ! PotentialNeighbor(potentialNeighborIndex, (g_node, dist), senderIndex)
+      case CalculateDistance(g_nodes, potentialNeighborIndex, potentialNeighbor, senderIndex) =>
+        g_nodes.foreach {g_node =>
+          val dist = euclideanDist(data.at(g_node).get, potentialNeighbor)
+          ctx.self ! PotentialNeighbor(g_node, (potentialNeighborIndex, dist), senderIndex)
+          nodeLocator.findResponsibleActor(potentialNeighborIndex) ! PotentialNeighbor(potentialNeighborIndex, (g_node, dist), senderIndex)
+        }
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
       case PotentialNeighbor(g_node, potentialNeighbor, senderIndex) =>

@@ -4,12 +4,17 @@ package com.github.julkw.dnsg.util
 case class LocalData[T] (data: Seq[Seq[T]], localOffset: Int) {
 
   def at(globalIndex: Int): Option[Seq[T]] = {
-    val index = localIndex(globalIndex)
-    if (0 <= index && index < data.length) {
+    if (isLocal(globalIndex)) {
+      val index = localIndex(globalIndex)
       Some(data(index))
     } else {
       None
     }
+  }
+
+  def isLocal(globalIndex: Int): Boolean = {
+    val index = localIndex(globalIndex)
+    0 <= index && index < data.length
   }
 
   def localDataSize: Int = {
