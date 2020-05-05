@@ -68,13 +68,13 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
           case SortedCheckedNodes(queryIndex, checkedNodes) =>
             // check neighbor candidates for conflicts
             var neighbors: Seq[Int] = Seq.empty
-            val query = data.at(queryIndex).get
+            val query = data.get(queryIndex)
             // choose up to maxReverseNeighbors neighbors from checked nodes by checking for conflicts
             var nodeIndex = 0
             // don't make a node its own neighbor
             if (checkedNodes.head == queryIndex) nodeIndex = 1
             while (neighbors.length < maxReverseNeighbors && nodeIndex < checkedNodes.length) {
-              val node = data.at(checkedNodes(nodeIndex)).get
+              val node = data.get(checkedNodes(nodeIndex))
               if (!conflictFound(query, node, neighbors)) {
                 neighbors = neighbors :+ checkedNodes(nodeIndex)
               }
@@ -91,7 +91,7 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
     // check for conflicts (conflict exists if potential Edge is the longest edge in triangle of query, node and neighbor)
     var neighborIndex = 0
     while (!conflictFound && neighborIndex < neighborsSoFar.length) {
-      val setNeighbor = data.at(neighborsSoFar(neighborIndex)).get
+      val setNeighbor = data.get(neighborsSoFar(neighborIndex))
       conflictFound = (potentialEdgeDist >= euclideanDist(query, setNeighbor)) &&
         (potentialEdgeDist >= euclideanDist(nodeToTest, setNeighbor))
       neighborIndex += 1
