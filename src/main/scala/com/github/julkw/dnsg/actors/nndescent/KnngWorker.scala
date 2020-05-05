@@ -332,8 +332,10 @@ class KnngWorker(data: LocalData[Float],
         clusterCoordinator ! CorrectFinishedNNDescent
       }
       joinNewNeighbor(currentNeighbors.slice(0, k-1), currentReverseNeighbors, g_node, potentialNeighbor._1, senderIndex, nodeLocator)
-      timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
+      val removedNeighbor = currentNeighbors(currentNeighbors.length - 1)._1
+      nodeLocator.findResponsibleActor(removedNeighbor) ! RemoveReverseNeighbor(removedNeighbor, g_node)
       val updatedNeighbors = (currentNeighbors :+ potentialNeighbor).sortBy(_._2).slice(0, k)
+      timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
       graph + (g_node -> updatedNeighbors)
     } else {
       graph
