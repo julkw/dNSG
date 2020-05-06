@@ -41,7 +41,7 @@ object SearchOnGraph {
   // answering queries
   final case class KNearestNeighbors(query: Seq[Float], neighbors: Seq[Int]) extends SearchOnGraphEvent
 
-  final case class SortedCheckedNodes(queryIndex: Int, checkedNodes: Seq[Int]) extends SearchOnGraphEvent
+  final case class SortedCheckedNodes(queryIndex: Int, checkedNodes: Seq[(Int, Seq[Float])]) extends SearchOnGraphEvent
 
   // send responsiblities to NSG workers
   final case class SendResponsibleIndicesTo(nsgWorker: ActorRef[BuildNSGEvent]) extends SearchOnGraphEvent
@@ -75,6 +75,11 @@ object SearchOnGraph {
 
   protected case class ConnectivityInfo(connectedNodes: mutable.Set[Int], messageTracker: mutable.Map[Int, MessageCounter])
 
+  // TODO change to class that deletes entries when usedIn == 0
+  protected case class ResponseLocation(data: Seq[Float], var usedIn: Int)
+
+  protected case class CandidateList(var candidates: Seq[QueryCandidate], var waitingOn: Int)
+
   def apply(supervisor: ActorRef[CoordinationEvent],
             data: LocalData[Float],
             k: Int): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
@@ -100,84 +105,115 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
   def waitForDistributionInfo(graph: Map[Int, Seq[Int]]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case GraphDistribution(nodeLocator) =>
-        searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, None)
+        searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, Map.empty, None)
     }
 
   def searchOnGraph(graph: Map[Int, Seq[Int]],
                     nodeLocator: NodeLocator[SearchOnGraphEvent],
-                    neighborQueries: Map[Query, Seq[QueryCandidate]],
+                    neighborQueries: Map[Query, CandidateList],
                     pathQueries: Map[Query, PathQueryInfo],
+                    responseLocations: Map[Int, ResponseLocation],
                     connectivityInfo: Option[ConnectivityInfo]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessage {
       case FindNearestNeighbors(query, asker) =>
         // choose node to start search from local nodes
         val startingNodeIndex: Int = graph.keys.head
-        val candidateList = Seq(QueryCandidate(startingNodeIndex, euclideanDist(data.get(startingNodeIndex), query), processed=false))
+        val candidateList = CandidateList(Seq(QueryCandidate(startingNodeIndex, euclideanDist(data.get(startingNodeIndex), query), processed=false)), 0)
         // since this node is located locally, just ask self
         ctx.self ! GetNeighbors(startingNodeIndex, Query(query, asker), ctx.self)
-        searchOnGraph(graph, nodeLocator, neighborQueries + (Query(query, asker) -> candidateList), pathQueries, connectivityInfo)
+        searchOnGraph(graph, nodeLocator, neighborQueries + (Query(query, asker) -> candidateList), pathQueries, responseLocations, connectivityInfo)
 
       case FindNearestNeighborsStartingFrom(query, startingPoint, asker) =>
-        val candidateList = Seq(QueryCandidate(startingPoint, euclideanDist(data.get(startingPoint), query), processed=false))
+        val candidateList = CandidateList(Seq(QueryCandidate(startingPoint, euclideanDist(data.get(startingPoint), query), processed=false)), 0)
         nodeLocator.findResponsibleActor(startingPoint) ! GetNeighbors(startingPoint, Query(query, asker), ctx.self)
-        searchOnGraph(graph, nodeLocator, neighborQueries + (Query(query, asker) -> candidateList), pathQueries, connectivityInfo)
+        searchOnGraph(graph, nodeLocator, neighborQueries + (Query(query, asker) -> candidateList), pathQueries, responseLocations, connectivityInfo)
 
       case CheckedNodesOnSearch(endPoint, startingPoint, asker) =>
         val query = data.get(endPoint)
-        val candidateList = Seq(QueryCandidate(startingPoint, euclideanDist(data.get(startingPoint), query), processed=false))
+        val candidateList = CandidateList(Seq(QueryCandidate(startingPoint, euclideanDist(data.get(startingPoint), query), processed=false)), 0)
         nodeLocator.findResponsibleActor(startingPoint) ! GetNeighbors(startingPoint, Query(query, asker), ctx.self)
         searchOnGraph(graph, nodeLocator,
           neighborQueries + (Query(query, asker) -> candidateList),
           pathQueries + (Query(query, asker) -> PathQueryInfo(endPoint, Seq.empty)),
+          responseLocations,
           connectivityInfo)
 
       case GetNeighbors(index, query, sender) =>
         sender ! Neighbors(query, index, graph(index))
-        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
+        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, connectivityInfo)
 
       case Neighbors(query, processedIndex, neighbors) =>
-        // update candidates
-        val currentCandidates: Seq[QueryCandidate] = neighborQueries(query)
-        val currentCandidateIndices = currentCandidates.map(_.index)
-        // only add candidates that are not already in the candidateList
-        val newCandidates = neighbors.diff(currentCandidateIndices).map(
-          candidateIndex => QueryCandidate(candidateIndex, euclideanDist(query.point, data.get(candidateIndex)), processed=false))
-        val mergedCandidates = (currentCandidates ++: newCandidates).sortBy(_.distance)
-        // set flag for the now processed index to true
-        val processedCandidate = mergedCandidates.find(query => query.index == processedIndex)
-        processedCandidate match {
-          case Some(candidate) =>
-            candidate.processed = true
-            if (pathQueries.contains(query)) {
-              pathQueries(query).checkedCandidates = pathQueries(query).checkedCandidates :+ (candidate.index, candidate.distance)
-            }
-          case None =>
-            // this should not happen
-            ctx.log.info("Somehow got neighbors for a removed candidate.")
-        }
-
-        val updatedCandidates = mergedCandidates.slice(0, k)
+        val updatedCandidates = updateCandidates(neighborQueries(query).candidates, query, processedIndex, neighbors, pathQueries)
+        neighborQueries(query).candidates = updatedCandidates
         // check if all candidates have been processed
         val nextCandidateToProcess = updatedCandidates.find(query => !query.processed)
         nextCandidateToProcess match {
           case Some(nextCandidate) =>
             // find the neighbors of the next candidate to be processed and update queries
             nodeLocator.findResponsibleActor(nextCandidate.index) ! GetNeighbors(nextCandidate.index, query, ctx.self)
-            val updatedQueries = neighborQueries + (query -> updatedCandidates)
-            searchOnGraph(graph, nodeLocator, updatedQueries, pathQueries, connectivityInfo)
+            searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, connectivityInfo)
           case None =>
-            // all candidates have been processed
-            if (pathQueries.contains(query)) {
+            val stillWaitingOnLocations = neighborQueries(query).waitingOn > 0
+            if (stillWaitingOnLocations) {
+              // do nothing for now
+              searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, connectivityInfo)
+            } else if (pathQueries.contains(query)) {
               // send back the checked nodes instead of the result
               val result = pathQueries(query)
-              val sortedCandidates = result.checkedCandidates.sortBy(_._2).map(_._1)
+              val sortedCandidates = result.checkedCandidates.sortBy(_._2).map { node =>
+                val nodeData = responseLocations(node._1)
+                nodeData.usedIn -= 1
+                //TODO  if 0 can be remove
+                (node._1, nodeData.data)
+              }
               query.asker ! SortedCheckedNodes(result.queryIndex, sortedCandidates)
+              searchOnGraph(graph, nodeLocator, neighborQueries - query, pathQueries - query, responseLocations, connectivityInfo)
             } else {
               val nearestNeighbors: Seq[Int] = updatedCandidates.map(_.index)
               query.asker ! KNearestNeighbors(query.point, nearestNeighbors)
+              searchOnGraph(graph, nodeLocator, neighborQueries - query, pathQueries - query, responseLocations, connectivityInfo)
             }
-            searchOnGraph(graph, nodeLocator, neighborQueries - query, pathQueries - query, connectivityInfo)
+            searchOnGraph(graph, nodeLocator, neighborQueries - query, pathQueries - query, responseLocations, connectivityInfo)
         }
+
+      case GetLocation(index, query, sender) =>
+        // TODO actually call at some point
+        sender ! Location(index, query, data.get(index))
+        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, connectivityInfo)
+
+      case Location(index, query, location) =>
+        val currentCandidates = neighborQueries(query).candidates
+        neighborQueries(query).waitingOn -= 1
+        // TODO if 0 check if all processed -> if yes send of
+        val allProcessed = !currentCandidates.exists(_.processed == false)
+        // check if valid candidate
+        val alreadyAdded = currentCandidates.exists(candidate => candidate.index == index)
+        val dist = euclideanDist(query.point, location)
+        if (!alreadyAdded && currentCandidates(currentCandidates.length).distance > dist) {
+          // update candidates
+          val updatedCandidates = (currentCandidates :+ QueryCandidate(index, euclideanDist(query.point, location), false)).sortBy(candidate => candidate.distance).slice(0, k)
+          neighborQueries(query).candidates = updatedCandidates
+          // If all other candidates have already been processed, the new now needs to be processed
+          if (allProcessed) {
+            nodeLocator.findResponsibleActor(index) ! GetNeighbors(index, query, ctx.self)
+          }
+          // update responseLocations
+          // TODO remove if set to 0
+          responseLocations(currentCandidates(currentCandidates.length).index).usedIn -= 1
+          // TODO move this code to class. Seriously.
+          val oldNumberOfUsers =
+            if (responseLocations.contains(index)) {
+              responseLocations(index).usedIn
+            } else {
+              0
+            }
+          val updatedResponseLocations = responseLocations + (index -> ResponseLocation(location, oldNumberOfUsers + 1))
+          searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, updatedResponseLocations, connectivityInfo)
+        } else {
+          // TODO if waitingOn now to 0 and allProcessed send Results (which should also be a function)
+          searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, connectivityInfo)
+        }
+
 
       case UpdateConnectivity(root) =>
         ctx.log.info("Updating connectivity")
@@ -185,12 +221,12 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
           case Some(cInfo) =>
             cInfo.connectedNodes.add(root)
             updateNeighbors(root, root, cInfo, graph, nodeLocator)
-            searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
+            searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, connectivityInfo)
 
           case None =>
             val cInfo = ConnectivityInfo(mutable.Set(root), mutable.Map.empty)
             updateNeighbors(root, root, cInfo, graph, nodeLocator)
-            searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, Some(cInfo))
+            searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, Some(cInfo))
         }
 
       case IsConnected(connectedNode, parent) =>
@@ -204,12 +240,12 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
               cInfo.connectedNodes.add(connectedNode)
               updateNeighbors(connectedNode, parent, cInfo, graph, nodeLocator)
             }
-            searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
+            searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, connectivityInfo)
 
           case None =>
             val cInfo = ConnectivityInfo(mutable.Set(connectedNode, parent), mutable.Map.empty)
             updateNeighbors(connectedNode, parent, cInfo, graph, nodeLocator)
-            searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, Some(cInfo))
+            searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, Some(cInfo))
         }
 
       case DoneConnectingChildren(nodeAwaitingAnswer) =>
@@ -228,7 +264,7 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
               }
             }
         }
-        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
+        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, connectivityInfo)
 
       case FindUnconnectedNode(sendTo, notAskedYet) =>
         connectivityInfo match {
@@ -250,12 +286,12 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
               sendTo ! UnconnectedNode(unconnectedNodes.head, data.get(unconnectedNodes.head))
             }
         }
-        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
+        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, connectivityInfo)
 
       case AddToGraph(startNode, endNode) =>
         ctx.log.info("Add edge to graph to ensure connectivity")
         val updatedNeighbors = graph(startNode) :+ endNode
-        searchOnGraph(graph + (startNode -> updatedNeighbors), nodeLocator, neighborQueries, pathQueries, connectivityInfo)
+        searchOnGraph(graph + (startNode -> updatedNeighbors), nodeLocator, neighborQueries, pathQueries, responseLocations, connectivityInfo)
 
       case GetNSGFrom(nsgMerger) =>
         //ctx.log.info("Asking NSG Merger for my part of the NSG")
@@ -265,11 +301,11 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
       case GetGraph(sender) =>
         //ctx.log.info("Asked for graph info")
         sender ! Graph(graph, ctx.self)
-        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
+        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, connectivityInfo)
 
       case SendResponsibleIndicesTo(nsgWorker) =>
         nsgWorker ! Responsibility(graph.keys.toSeq)
-        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, connectivityInfo)
+        searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, connectivityInfo)
     }
 
   def waitForNSG(nodeLocator: NodeLocator[SearchOnGraphEvent]): Behavior[SearchOnGraphEvent] =
@@ -277,7 +313,7 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
       case PartialNSG(graph) =>
         ctx.log.info("Received nsg, ready for queries/establishing connectivity")
         supervisor ! UpdatedToNSG
-        searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, None)
+        searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, Map.empty, None)
     }
 
   def updateNeighbors(node: Int,
@@ -300,6 +336,33 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
     } else { // no neighbors updated and this is the root
       supervisor ! FinishedUpdatingConnectivity
       ctx.log.info("None of the previously unconnected nodes are connected to the root")
+    }
+  }
+
+  def updateCandidates(currentCandidates: Seq[QueryCandidate],
+                       query: Query,
+                       processedIndex: Int,
+                       neighbors: Seq[Int],
+                       pathQueries: Map[Query, PathQueryInfo]): Seq[QueryCandidate] = {
+    val processedCandidate = currentCandidates.find(query => query.index == processedIndex)
+    // check if I still care about these neighbors or if the node they belong to has already been kicked out of the candidate list
+    processedCandidate match {
+      case Some(candidate) =>
+        // update candidates
+        val currentCandidateIndices = currentCandidates.map(_.index)
+        // only add candidates that are not already in the candidateList
+        // TODO check if candidate is local and if not ask for location and count waitinOn up
+        val newCandidates = neighbors.diff(currentCandidateIndices).map(
+          candidateIndex => QueryCandidate(candidateIndex, euclideanDist(query.point, data.get(candidateIndex)), processed=false))
+        val updatedCandidates = (currentCandidates ++: newCandidates).sortBy(_.distance).slice(0, k)
+        // mark candidate as processed
+        candidate.processed = true
+        if (pathQueries.contains(query)) {
+          pathQueries(query).checkedCandidates = pathQueries(query).checkedCandidates :+ (candidate.index, candidate.distance)
+        }
+        updatedCandidates
+      case None =>
+        currentCandidates
     }
   }
 }

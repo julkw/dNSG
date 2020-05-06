@@ -5,6 +5,7 @@ trait NodeCache[T] {
   def inCache(index: Int): Boolean
   def get(index: Int): Seq[T]
   def currentSize(): Int
+  def empty(): Unit
 }
 
 case class NodeCacheLRU[T](size: Int) extends NodeCache[T] {
@@ -51,6 +52,10 @@ case class NodeCacheLRU[T](size: Int) extends NodeCache[T] {
       nodes.values.foreach(node => node.age += 1)
     }
   }
+
+  def empty(): Unit = {
+    nodes = Map.empty
+  }
 }
 
 case class NodeCacheRandom[T](size: Int) extends NodeCache[T] {
@@ -84,6 +89,9 @@ case class NodeCacheRandom[T](size: Int) extends NodeCache[T] {
       val indexToRemove = nodes.iterator.drop(r).next()._1
       nodes = nodes - indexToRemove
     }
+  }
 
+  def empty(): Unit = {
+    nodes = Map.empty
   }
 }
