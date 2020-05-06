@@ -37,11 +37,11 @@ object KnngWorker {
 
   final case class PotentialNeighbor(g_node: Int, potentialNeighbor: (Int, Double), senderIndex: Int) extends BuildGraphEvent
 
-  final case class JoinNodes(g_node: Int, potentialNeighborIndex: Int, senderIndex: Int) extends BuildGraphEvent
+  final case class JoinNodes(g_nodes: Seq[Int], potentialNeighborIndex: Int, senderIndex: Int) extends BuildGraphEvent
 
-  final case class SendLocation(g_node: Int, potentialNeighborIndex: Int, senderIndex: Int) extends BuildGraphEvent
+  final case class SendLocation(g_node: Int, potentialNeighborIndices: Seq[Int], senderIndex: Int) extends BuildGraphEvent
 
-  final case class CalculateDistance(g_node: Int, potentialNeighborIndex: Int, potentialNeighbor: Seq[Float], senderIndex: Int) extends BuildGraphEvent
+  final case class CalculateDistance(g_nodes: Seq[Int], potentialNeighborIndex: Int, potentialNeighbor: Seq[Float], senderIndex: Int) extends BuildGraphEvent
 
   final case class RemoveReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int) extends BuildGraphEvent
 
@@ -237,28 +237,35 @@ class KnngWorker(data: LocalData[Float],
         timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
-      case JoinNodes(g_node, potentialNeighborIndex, senderIndex) =>
+      case JoinNodes(g_nodes, potentialNeighborIndex, senderIndex) =>
         if (data.isLocal(potentialNeighborIndex)) {
           val neighborData = data.get(potentialNeighborIndex)
-          join(g_node, data.get(g_node), potentialNeighborIndex, neighborData, nodeLocator, senderIndex)
+          g_nodes.foreach ( g_node =>
+            joinLocals(g_node, data.get(g_node), potentialNeighborIndex, neighborData, nodeLocator, senderIndex)
+          )
         }
         else {
-          nodeLocator.findResponsibleActor(potentialNeighborIndex) ! SendLocation(potentialNeighborIndex, g_node, senderIndex)
+          nodeLocator.findResponsibleActor(potentialNeighborIndex) ! SendLocation(potentialNeighborIndex, g_nodes, senderIndex)
         }
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
-      case SendLocation(g_node, potentialNeighborIndex, senderIndex) =>
-        if (data.isLocal(potentialNeighborIndex)) {
-          join(g_node, data.get(g_node), potentialNeighborIndex, data.get(potentialNeighborIndex), nodeLocator, senderIndex)
-        }
-        else {
-          nodeLocator.findResponsibleActor(potentialNeighborIndex) ! CalculateDistance(potentialNeighborIndex, g_node, data.get(g_node), senderIndex)
-        }
+      case SendLocation(g_node, potentialNeighborIndices, senderIndex) =>
+        // join those we have in cache
+        potentialNeighborIndices.filter(potentialNeighbor => data.isLocal(potentialNeighbor)).foreach(potentialNeighbor =>
+          joinLocals(g_node, data.get(g_node), potentialNeighbor, data.get(potentialNeighbor), nodeLocator, senderIndex)
+        )
+        // send the rest back
+        nodeLocator.findResponsibleActor(potentialNeighborIndices.head) !
+          CalculateDistance(potentialNeighborIndices.filter(potentialNeighbor =>
+            !data.isLocal(potentialNeighbor)
+          ), g_node, data.get(g_node), senderIndex)
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
-      case CalculateDistance(g_node, potentialNeighborIndex, potentialNeighbor, senderIndex) =>
+      case CalculateDistance(g_nodes, potentialNeighborIndex, potentialNeighbor, senderIndex) =>
         data.add(potentialNeighborIndex, potentialNeighbor)
-        join(g_node, data.get(g_node), potentialNeighborIndex, potentialNeighbor, nodeLocator, senderIndex)
+        g_nodes.foreach(g_node =>
+          joinLocals(g_node, data.get(g_node), potentialNeighborIndex, potentialNeighbor, nodeLocator, senderIndex)
+        )
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
       case PotentialNeighbor(g_node, potentialNeighbor, senderIndex) =>

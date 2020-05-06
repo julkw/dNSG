@@ -16,9 +16,13 @@ case class LocalData[T] (data: Seq[Seq[T]], localOffset: Int) {
     }
   }
 
-  def isLocal(globalIndex: Int): Boolean = {
+  def isPermanentlyLocal(globalIndex: Int): Boolean = {
     val index = localIndex(globalIndex)
-    0 <= index && index < data.length || cache.inCache(globalIndex)
+    0 <= index && index < data.length
+  }
+
+  def isLocal(globalIndex: Int): Boolean = {
+    isPermanentlyLocal(globalIndex) || cache.inCache(globalIndex)
   }
 
   def add(nodeIndex: Int, nodeData: Seq[T]): Unit = {

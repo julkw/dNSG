@@ -22,20 +22,26 @@ object SearchOnGraph {
 
   final case class GraphDistribution(nodeLocator: NodeLocator[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
-  // answering queries
+  // queries
   final case class FindNearestNeighbors(query: Seq[Float], asker: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
   final case class FindNearestNeighborsStartingFrom(query: Seq[Float], startingPoint: Int, asker: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
   final case class CheckedNodesOnSearch(endPoint: Int, startingPoint: Int, asker: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
-  final case class SortedCheckedNodes(queryIndex: Int, checkedNodes: Seq[Int]) extends SearchOnGraphEvent
-
+  // search
   final case class GetNeighbors(index: Int, query: Query, sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
   final case class Neighbors(query: Query, index: Int, neighbors: Seq[Int]) extends SearchOnGraphEvent
 
+  final case class GetLocation(index: Int, query: Query, sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
+
+  final case class Location(index: Int, query: Query, location: Seq[Float]) extends SearchOnGraphEvent
+
+  // answering queries
   final case class KNearestNeighbors(query: Seq[Float], neighbors: Seq[Int]) extends SearchOnGraphEvent
+
+  final case class SortedCheckedNodes(queryIndex: Int, checkedNodes: Seq[(Int, Seq[Float])]) extends SearchOnGraphEvent
 
   // send responsiblities to NSG workers
   final case class SendResponsibleIndicesTo(nsgWorker: ActorRef[BuildNSGEvent]) extends SearchOnGraphEvent
