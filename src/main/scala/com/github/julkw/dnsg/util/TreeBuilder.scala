@@ -38,11 +38,11 @@ case class TreeBuilder (data: LocalData[Float], k: Int) {
     // TODO replace with better median implementation
     // https://stackoverflow.com/questions/4662292/scala-median-implementation
 
-    val sortedValues = indices.map(index => data.at(index).get(splittingDimension)).sorted
+    val sortedValues = indices.map(index => data.get(index)(splittingDimension)).sorted
     val median = sortedValues(indices.length / 2)
 
-    val leftIndices = indices.filter(index => data.at(index).get(splittingDimension) < median)
-    val rightIndices = indices.filter(index => data.at(index).get(splittingDimension) >= median)
+    val leftIndices = indices.filter(index => data.get(index)(splittingDimension) < median)
+    val rightIndices = indices.filter(index => data.get(index)(splittingDimension) >= median)
 
     val leftNode: LeafNode[Seq[Int]] = LeafNode[Seq[Int]](leftIndices)
     val rightNode: LeafNode[Seq[Int]] = LeafNode[Seq[Int]](rightIndices)

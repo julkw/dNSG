@@ -9,7 +9,7 @@ import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, Corre
 import com.github.julkw.dnsg.actors.NodeCoordinator.{LocalKnngWorker, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph
 import com.github.julkw.dnsg.actors.SearchOnGraph.{Graph, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.{IndexTree, KdTree, LeafNode, LocalData, NodeLocator, SplitNode, TreeBuilder, TreeNode, dNSGSerializable}
+import com.github.julkw.dnsg.util.{IndexTree, KdTree, LeafNode, LocalData, NodeCache, NodeCacheLRU, NodeLocator, SplitNode, TreeBuilder, TreeNode, dNSGSerializable}
 
 import scala.language.postfixOps
 
@@ -36,6 +36,8 @@ object KnngWorker {
   final case class CompleteLocalJoin(g_node: Int) extends BuildGraphEvent
 
   final case class PotentialNeighbor(g_node: Int, potentialNeighbor: (Int, Double), senderIndex: Int) extends BuildGraphEvent
+
+  final case class JoinNodes(g_nodes: Seq[Int], potentialNeighborIndex: Int, senderIndex: Int) extends BuildGraphEvent
 
   final case class SendLocation(g_node: Int, potentialNeighborIndices: Seq[Int], senderIndex: Int) extends BuildGraphEvent
 
@@ -142,7 +144,7 @@ class KnngWorker(data: LocalData[Float],
           ctx.self ! FindCandidates(responsibilityIndex + 1)
         }
         val index = responsibility(responsibilityIndex)
-        val query: Seq[Float] = data.at(index).get
+        val query: Seq[Float] = data.get(index)
         // find candidates for current node by asking all workers for candidates to ensure a connected graph across all nodes
         knngWorkers.foreach { worker =>
           if (worker != ctx.self) {
@@ -157,7 +159,7 @@ class KnngWorker(data: LocalData[Float],
 
       case GetCandidates(query, index, sender) =>
         val localCandidates = kdTree.root.queryLeaf(query).data.map(index =>
-          (index, euclideanDist(data.at(index).get, query))
+          (index, euclideanDist(data.get(index), query))
         )
         sender ! Candidates(localCandidates, index)
         buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, knngWorkers, graph)
@@ -235,33 +237,38 @@ class KnngWorker(data: LocalData[Float],
         timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
-      case SendLocation(g_node, potentialNeighborIndices, senderIndex) =>
-        potentialNeighborIndices.groupBy(neighbor => nodeLocator.findResponsibleActor(neighbor)).foreach {
-          case (actor, potentialNeighbors) =>
-            val g_nodeData = data.at(g_node).get
-            if (actor != ctx.self) {
-              actor ! CalculateDistance(potentialNeighbors, g_node, g_nodeData, senderIndex)
-            } else {
-              // do the join here as I am holding both g_nodes
-              potentialNeighbors.foreach { potentialNeighbor =>
-                val dist = euclideanDist(g_nodeData, data.at(potentialNeighbor).get)
-                ctx.self ! PotentialNeighbor(g_node, (potentialNeighbor, dist), senderIndex)
-                ctx.self ! PotentialNeighbor(potentialNeighbor, (g_node, dist), senderIndex)
-              }
-            }
+      case JoinNodes(g_nodes, potentialNeighborIndex, senderIndex) =>
+        if (data.isLocal(potentialNeighborIndex)) {
+          val neighborData = data.get(potentialNeighborIndex)
+          g_nodes.foreach ( g_node =>
+            joinLocals(g_node, data.get(g_node), potentialNeighborIndex, neighborData, nodeLocator, senderIndex)
+          )
         }
+        else {
+          nodeLocator.findResponsibleActor(potentialNeighborIndex) ! SendLocation(potentialNeighborIndex, g_nodes, senderIndex)
+        }
+        nnDescent(nodeLocator, graph, reverseNeighbors)
+
+      case SendLocation(g_node, potentialNeighborIndices, senderIndex) =>
+        // join those we have in cache
+        potentialNeighborIndices.filter(potentialNeighbor => data.isLocal(potentialNeighbor)).foreach(potentialNeighbor =>
+          joinLocals(g_node, data.get(g_node), potentialNeighbor, data.get(potentialNeighbor), nodeLocator, senderIndex)
+        )
+        // send the rest back
+        nodeLocator.findResponsibleActor(potentialNeighborIndices.head) !
+          CalculateDistance(potentialNeighborIndices.filter(potentialNeighbor =>
+            !data.isLocal(potentialNeighbor)
+          ), g_node, data.get(g_node), senderIndex)
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
       case CalculateDistance(g_nodes, potentialNeighborIndex, potentialNeighbor, senderIndex) =>
-        g_nodes.foreach {g_node =>
-          val dist = euclideanDist(data.at(g_node).get, potentialNeighbor)
-          ctx.self ! PotentialNeighbor(g_node, (potentialNeighborIndex, dist), senderIndex)
-          nodeLocator.findResponsibleActor(potentialNeighborIndex) ! PotentialNeighbor(potentialNeighborIndex, (g_node, dist), senderIndex)
-        }
+        data.add(potentialNeighborIndex, potentialNeighbor)
+        g_nodes.foreach(g_node =>
+          joinLocals(g_node, data.get(g_node), potentialNeighborIndex, potentialNeighbor, nodeLocator, senderIndex)
+        )
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
       case PotentialNeighbor(g_node, potentialNeighbor, senderIndex) =>
-        // TODO: If g_nodes bundled, call handlePotentialNeighbor multiple times
         val updatedGraph = handlePotentialNeighbor(g_node, potentialNeighbor, senderIndex, graph, reverseNeighbors, nodeLocator)
         nnDescent(nodeLocator, updatedGraph, reverseNeighbors)
 
@@ -302,13 +309,13 @@ class KnngWorker(data: LocalData[Float],
     var localCandidates: Seq[(Int, Double)] = Seq.empty
     while (currentDataNode.inverseQueryChild(query) != currentDataNode) {
       val newCandidates = currentDataNode.inverseQueryChild(query).queryLeaf(query).data.map(index =>
-        (index, euclideanDist(data.at(index).get, query))
+        (index, euclideanDist(data.get(index), query))
       )
       localCandidates = (localCandidates ++ newCandidates).sortBy(_._2).slice(0, k)
       currentDataNode = currentDataNode.queryChild(query)
     }
     localCandidates = localCandidates ++ currentDataNode.data.map(index =>
-      (index, euclideanDist(data.at(index).get, query))
+      (index, euclideanDist(data.get(index), query))
     ).sortBy(_._2).slice(0, k)
     localCandidates
   }
