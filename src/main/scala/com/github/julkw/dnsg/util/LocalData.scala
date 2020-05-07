@@ -26,7 +26,9 @@ case class LocalData[T] (data: Seq[Seq[T]], localOffset: Int) {
   }
 
   def add(nodeIndex: Int, nodeData: Seq[T]): Unit = {
-    cache.insert(nodeIndex, nodeData)
+    if (!isPermanentlyLocal(nodeIndex)) {
+      cache.insert(nodeIndex, nodeData)
+    }
   }
 
   def localDataSize: Int = {

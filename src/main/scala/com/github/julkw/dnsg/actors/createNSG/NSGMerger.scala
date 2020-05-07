@@ -42,6 +42,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
                   messagesExpected: Int): Behavior[MergeNSGEvent] = Behaviors.receiveMessagePartial {
     case ReverseNeighbors(nodeIndex, reverseNeighbors) =>
       reverseNeighbors.foreach{ neighborIndex =>
+        // TODO this breaks in distributed. Fix
         graph(neighborIndex) = graph(neighborIndex) :+ nodeIndex
       }
       if (messagesReceived + 1 == messagesExpected) {

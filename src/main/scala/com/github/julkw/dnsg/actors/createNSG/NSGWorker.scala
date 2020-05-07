@@ -67,31 +67,33 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
         event match {
           case SortedCheckedNodes(queryIndex, checkedNodes) =>
             // check neighbor candidates for conflicts
-            var neighbors: Seq[Int] = Seq.empty
+            var neighborIndices: Seq[Int] = Seq.empty
+            var neighborLocations: Seq[Seq[Float]] = Seq.empty
             val query = data.get(queryIndex)
             // choose up to maxReverseNeighbors neighbors from checked nodes by checking for conflicts
             var nodeIndex = 0
             // don't make a node its own neighbor
-            if (checkedNodes.head == queryIndex) nodeIndex = 1
-            while (neighbors.length < maxReverseNeighbors && nodeIndex < checkedNodes.length) {
-              val node = data.get(checkedNodes(nodeIndex))
-              if (!conflictFound(query, node, neighbors)) {
-                neighbors = neighbors :+ checkedNodes(nodeIndex)
+            if (checkedNodes.head._1 == queryIndex) nodeIndex = 1
+            while (neighborIndices.length < maxReverseNeighbors && nodeIndex < checkedNodes.length) {
+              val node = checkedNodes(nodeIndex)._2
+              if (!conflictFound(query, node, neighborLocations)) {
+                neighborIndices = neighborIndices :+ checkedNodes(nodeIndex)._1
+                neighborLocations = neighborLocations :+ checkedNodes(nodeIndex)._2
               }
               nodeIndex += 1
             }
-            nsgMerger ! ReverseNeighbors(queryIndex, neighbors)
+            nsgMerger ! ReverseNeighbors(queryIndex, neighborIndices)
         }
         buildNSG(responsibility, searchOnGraphEventAdapter)
     }
 
-  def conflictFound(query: Seq[Float], nodeToTest: Seq[Float], neighborsSoFar: Seq[Int]): Boolean = {
+  def conflictFound(query: Seq[Float], nodeToTest: Seq[Float], neighborsSoFar: Seq[Seq[Float]]): Boolean = {
     var conflictFound = false
     val potentialEdgeDist = euclideanDist(query, nodeToTest)
     // check for conflicts (conflict exists if potential Edge is the longest edge in triangle of query, node and neighbor)
     var neighborIndex = 0
     while (!conflictFound && neighborIndex < neighborsSoFar.length) {
-      val setNeighbor = data.get(neighborsSoFar(neighborIndex))
+      val setNeighbor = neighborsSoFar(neighborIndex)
       conflictFound = (potentialEdgeDist >= euclideanDist(query, setNeighbor)) &&
         (potentialEdgeDist >= euclideanDist(nodeToTest, setNeighbor))
       neighborIndex += 1
