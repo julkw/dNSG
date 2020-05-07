@@ -200,9 +200,11 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
               nodeLocator.findResponsibleActor(index) ! GetNeighbors(index, query, ctx.self)
             }
             // update responseLocations
-            responseLocations.addedToCandidateList(index, location)
-            if (currentCandidates.length >= k) {
-              responseLocations.removedFromCandidateList(currentCandidates(currentCandidates.length - 1).index)
+            if (pathQueries.contains(query)) {
+              responseLocations.addedToCandidateList(index, location)
+              if (currentCandidates.length >= k) {
+                responseLocations.removedFromCandidateList(currentCandidates(currentCandidates.length - 1).index)
+              }
             }
           }
           searchOnGraph(graph, nodeLocator, neighborQueries, pathQueries, responseLocations, connectivityInfo)
@@ -352,7 +354,6 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
           .filter(candidateIndex => responseLocations.hasLocation(candidateIndex))
           .map { candidateIndex =>
             val location = responseLocations.location(candidateIndex)
-            responseLocations.addedToCandidateList(candidateIndex, location)
             QueryCandidate(candidateIndex, euclideanDist(query.point, location), processed = false)
           }
         // candidates for which we don't have the location have to ask for it first
@@ -362,17 +363,22 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
             currentCandidates.waitingOn += 1
             nodeLocator.findResponsibleActor(candidateIndex) ! GetLocation(candidateIndex, query, ctx.self)
           }
-        val mergedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance)
-        // tell responseLocations which candidates are not in use here anymore
-        mergedCandidates.slice(k, mergedCandidates.length).foreach ( candidate =>
-          responseLocations.removedFromCandidateList(candidate.index)
-        )
-        // mark candidate as processed
+        val updatedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance).slice(0, k)
         candidate.processed = true
         if (pathQueries.contains(query)) {
+          // responseLocations only need to be saved if we plan to return a pathQuery, else the locations aren't part of the response
           pathQueries(query).checkedCandidates = pathQueries(query).checkedCandidates :+ (candidate.index, candidate.distance)
+          // update response locations as they are needed for pathQueries
+          val addedCandidates = updatedCandidates.intersect(newCandidates)
+          // only candidates with local locations have been added so this should be safe
+          addedCandidates.foreach(candidate =>
+            responseLocations.addedToCandidateList(candidate.index, responseLocations.location(candidate.index))
+          )
+          currentCandidates.candidates
+            .slice(currentCandidates.candidates.length - addedCandidates.length, currentCandidates.candidates.length)
+            .foreach(candidate => responseLocations.removedFromCandidateList(candidate.index))
         }
-        currentCandidates.candidates = mergedCandidates.slice(0, k)
+        currentCandidates.candidates = updatedCandidates
       case None =>
         // the new candidates do not need to be used as they were generated with a now obsolete old candidate
     }
