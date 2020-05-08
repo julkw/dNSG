@@ -374,9 +374,12 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
           addedCandidates.foreach(candidate =>
             responseLocations.addedToCandidateList(candidate.index, responseLocations.location(candidate.index))
           )
-          currentCandidates.candidates
-            .slice(currentCandidates.candidates.length - addedCandidates.length, currentCandidates.candidates.length)
-            .foreach(candidate => responseLocations.removedFromCandidateList(candidate.index))
+          val candidatesRemoved = currentCandidates.candidates.length - k + addedCandidates.length
+          if (candidatesRemoved > 0) {
+            currentCandidates.candidates
+              .slice(currentCandidates.candidates.length - candidatesRemoved, currentCandidates.candidates.length)
+              .foreach(candidate => responseLocations.removedFromCandidateList(candidate.index))
+          }
         }
         currentCandidates.candidates = updatedCandidates
       case None =>

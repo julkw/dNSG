@@ -99,15 +99,15 @@ class NodeCoordinator(settings: Settings,
   def waitForNavigatingNode(data: LocalData[Float], graphHolders: Set[ActorRef[SearchOnGraphEvent]]): Behavior[NodeCoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case StartBuildingNSG(navigatingNode, nodeLocator) =>
+        // TODO this is where data redistribution would take place
         startBuildingNSG(data, nodeLocator, graphHolders, navigatingNode)
     }
-
 
   def startBuildingNSG(data: LocalData[Float],
                        nodeLocator: NodeLocator[SearchOnGraphEvent],
                        graphHolders: Set[ActorRef[SearchOnGraphEvent]],
                        navigatingNode: Int): Behavior[NodeCoordinationEvent] = {
-    val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, data.localIndices), name = "NSGMerger")
+    val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, data.localIndices, settings.nodesExpected, nodeLocator), name = "NSGMerger")
     var index = 0
     graphHolders.foreach { graphHolder =>
       val nsgWorker = ctx.spawn(NSGWorker(clusterCoordinator, data, navigatingNode, settings.maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)

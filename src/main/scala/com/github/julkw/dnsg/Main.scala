@@ -10,7 +10,7 @@ object Main {
   object RootBehavior {
     def apply(filename: Option[String]): Behavior[Nothing] = Behaviors.setup[Nothing] { context =>
       context.log.info("Started up dNSG app")
-      context.spawn(NodeCoordinator(filename), name="Coordinator")
+      context.spawn(NodeCoordinator(filename), name="NodeCoordinator")
       Behaviors.empty
     }
   }

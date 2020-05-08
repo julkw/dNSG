@@ -5,6 +5,7 @@ import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries}
 import com.github.julkw.dnsg.actors.NodeCoordinator.{NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
 import com.github.julkw.dnsg.actors.SearchOnGraph.{AddToGraph, FindNearestNeighbors, FindNearestNeighborsStartingFrom, FindUnconnectedNode, GraphDistribution, KNearestNeighbors, SearchOnGraphEvent, SendResponsibleIndicesTo, UpdateConnectivity}
+import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, NSGToSearchOnGraph}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, NodeLocatorBuilder, Settings, dNSGSerializable}
 
@@ -34,7 +35,7 @@ object ClusterCoordinator {
 
   final case class AverageValue(average: Seq[Float]) extends CoordinationEvent
 
-  final case object InitialNSGDone extends CoordinationEvent
+  final case class InitialNSGDone(nsgMergers: ActorRef[MergeNSGEvent]) extends CoordinationEvent
 
   final case object UpdatedToNSG extends CoordinationEvent
 
@@ -52,21 +53,23 @@ object ClusterCoordinator {
     val searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent] =
       ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
 
+    val settings = Settings(ctx.system.settings.config)
+    settings.printSettings(ctx)
+
     Behaviors.setup(
-      ctx => new ClusterCoordinator(searchOnGraphEventAdapter, ctx).setUp(Set.empty)
+      ctx => new ClusterCoordinator(searchOnGraphEventAdapter, ctx, settings).setUp(Set.empty)
     )
   }
 }
 
 class ClusterCoordinator(searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent],
-                         ctx: ActorContext[ClusterCoordinator.CoordinationEvent]) extends Distance {
+                         ctx: ActorContext[ClusterCoordinator.CoordinationEvent],
+                         settings: Settings) extends Distance {
   import ClusterCoordinator._
 
   def setUp(nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]]): Behavior[CoordinationEvent] = Behaviors.receiveMessagePartial {
     case NodeCoordinatorIntroduction(nodeCoordinator) =>
       val updatedNodeCoordinators = nodeCoordinators + nodeCoordinator
-      val settings = Settings(ctx.system.settings.config)
-      settings.printSettings(ctx)
       if (settings.nodesExpected == updatedNodeCoordinators.size) {
         updatedNodeCoordinators.foreach(nc => nc ! StartDistributingData)
       }
@@ -143,7 +146,8 @@ class ClusterCoordinator(searchOnGraphEventAdapter: ActorRef[SearchOnGraph.Searc
           case Some (nodeLocator) =>
             ctx.log.info("All graphs now with SearchOnGraph actors")
             // TODO: For some reason this message is unhandled in a cluster setting
-            dataHolder ! GetAverageValue(ctx.self)
+            ctx.self ! AverageValue(Seq.fill(128){0.0f})
+            //dataHolder ! GetAverageValue(ctx.self)
             updatedSogActors.foreach(sogActor => sogActor ! GraphDistribution(nodeLocator))
             searchOnKnng(nodeLocator, updatedSogActors, nodeCoordinators, dataHolder)
           case None =>
@@ -169,29 +173,34 @@ class ClusterCoordinator(searchOnGraphEventAdapter: ActorRef[SearchOnGraph.Searc
             ctx.log.info("The navigating node has the index: {}", navigatingNode)
             // TODO do some kind of data redistribution with the knowledge of the navigating node, updating the nodeLocator in the process
             nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
-            waitOnNSG(0, navigatingNode, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
+            waitOnNSG(Set.empty, 0, navigatingNode, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
         }
     }
 
-  def waitOnNSG(movedToSog: Int,
+  def waitOnNSG(finishedNsgMergers: Set[ActorRef[MergeNSGEvent]],
+                movedToSog: Int,
                 navigatingNodeIndex: Int,
                 nodeLocator: NodeLocator[SearchOnGraphEvent],
                 graphHolders: Set[ActorRef[SearchOnGraphEvent]],
                 nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                 dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial{
-      case InitialNSGDone =>
-        // TODO This currently assumes that the MergeNSG actors will commuicate within themselves and only one will send this message when all are done
-        nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraph)
-        waitOnNSG(movedToSog, navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
+      case InitialNSGDone(nsgMerger) =>
+        val updatedMergers = finishedNsgMergers + nsgMerger
+        if (updatedMergers.size == settings.nodesExpected) {
+          ctx.log.info("Initial NSG seems to be done")
+          finishedNsgMergers.foreach { merger => merger ! NSGToSearchOnGraph}
+          nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraph)
+        }
+        waitOnNSG(finishedNsgMergers, movedToSog, navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
 
       case UpdatedToNSG =>
-        if (movedToSog + 1 == graphHolders.size) {
+        if (movedToSog + 1 == settings.nodesExpected) {
           // nsg is fully back to search on graph actors
           nodeLocator.findResponsibleActor(navigatingNodeIndex) ! UpdateConnectivity(navigatingNodeIndex)
           connectNSG(navigatingNodeIndex, nodeLocator, graphHolders, dataHolder, -1, Seq.empty)
         } else {
-          waitOnNSG(movedToSog + 1, navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
+          waitOnNSG(finishedNsgMergers, movedToSog + 1, navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
         }
     }
 
