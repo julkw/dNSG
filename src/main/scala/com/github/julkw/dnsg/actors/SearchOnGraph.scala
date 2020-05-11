@@ -23,6 +23,7 @@ object SearchOnGraph {
   final case class GraphDistribution(nodeLocator: NodeLocator[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
   // queries
+  // TODO replace askers with correct type and move answer messages to those actors
   final case class FindNearestNeighbors(query: Seq[Float], asker: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
   final case class FindNearestNeighborsStartingFrom(query: Seq[Float], startingPoint: Int, asker: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
@@ -366,13 +367,16 @@ class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
         val updatedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance).slice(0, k)
         candidate.processed = true
         if (pathQueries.contains(query)) {
+          // there is one more place where this candidate location is needed (in the path queries)
+          // and since it is still in the candidate list, the location should be safely local
+          responseLocations.addedToCandidateList(candidate.index, responseLocations.location(candidate.index))
           // responseLocations only need to be saved if we plan to return a pathQuery, else the locations aren't part of the response
           pathQueries(query).checkedCandidates = pathQueries(query).checkedCandidates :+ (candidate.index, candidate.distance)
           // update response locations as they are needed for pathQueries
           val addedCandidates = updatedCandidates.intersect(newCandidates)
           // only candidates with local locations have been added so this should be safe
-          addedCandidates.foreach(candidate =>
-            responseLocations.addedToCandidateList(candidate.index, responseLocations.location(candidate.index))
+          addedCandidates.foreach ( addedCandidate =>
+            responseLocations.addedToCandidateList(addedCandidate.index, responseLocations.location(addedCandidate.index))
           )
           val candidatesRemoved = currentCandidates.candidates.length - k + addedCandidates.length
           if (candidatesRemoved > 0) {

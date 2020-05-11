@@ -59,14 +59,18 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
         if (responsibilityIndex < responsibility.length - 1) {
           ctx.self ! StartEdgeFindingProcessFor (responsibilityIndex + 1)
         }
-        nodeLocator.findResponsibleActor(responsibility(responsibilityIndex)) !
-          CheckedNodesOnSearch(responsibility(responsibilityIndex), navigatingNode, searchOnGraphEventAdapter)
+        val nodeToProcess = responsibility(responsibilityIndex)
+        nodeLocator.findResponsibleActor(nodeToProcess) !
+          CheckedNodesOnSearch(nodeToProcess, navigatingNode, searchOnGraphEventAdapter)
         buildNSG(responsibility, searchOnGraphEventAdapter)
 
       case WrappedSearchOnGraphEvent(event) =>
         event match {
           case SortedCheckedNodes(queryIndex, checkedNodes) =>
             // check neighbor candidates for conflicts
+            // TODO In cluster, I do not get this for all nodes. WHY? :(
+            // Maybe there are messages lost of something in the SearchOnGraph Actor?
+            ctx.log.info("Got sorted checked nodes for {}", queryIndex)
             var neighborIndices: Seq[Int] = Seq.empty
             var neighborLocations: Seq[Seq[Float]] = Seq.empty
             val query = data.get(queryIndex)

@@ -72,13 +72,13 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         }
 
       case ReverseNeighbors(nodeIndex, reverseNeighbors) =>
-        val rnKey = "reverseNeighbors"
-        timers.startSingleTimer(rnKey, ReverseNeighbors(nodeIndex, reverseNeighbors), 100.milliseconds)
+        // TODO is not the best solution
+        ctx.self ! ReverseNeighbors(nodeIndex, reverseNeighbors)
         waitForRegistrations(graph, mergers)
 
       case AddNeighbor(nodeIndex, neighborIndex, sendAckTo) =>
-        val anKey = "addNeighbor"
-        timers.startSingleTimer(anKey, AddNeighbor(nodeIndex, neighborIndex, sendAckTo), 100.milliseconds)
+        graph(nodeIndex) = graph(nodeIndex) :+ neighborIndex
+        sendAckTo ! NeighborReceived
         waitForRegistrations(graph, mergers)
     }
 
@@ -109,7 +109,13 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
             ctx.self ! ReverseNeighbors(nodeIndex, Seq(neighborIndex))
         }
       }
-      buildGraph(graph, messagesReceived + 1, messagesExpected + extraMessagesExpected, awaitingNeighborAcks + awaitingAcks, mergers)
+      val updatedMessagesExpected = messagesExpected + extraMessagesExpected
+      val updatedNeighborAcks = awaitingNeighborAcks + awaitingAcks
+      if (messagesReceived + 1 == updatedMessagesExpected && updatedNeighborAcks == 0) {
+        ctx.log.info("Local NSGWorkers are done")
+        supervisor ! InitialNSGDone(ctx.self)
+      }
+      buildGraph(graph, messagesReceived + 1, updatedMessagesExpected, updatedNeighborAcks, mergers)
 
     case AddNeighbor(nodeIndex, neighborIndex, sendAckTo) =>
       graph(nodeIndex) = graph(nodeIndex) :+ neighborIndex
@@ -117,7 +123,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       buildGraph(graph, messagesReceived, messagesExpected, awaitingNeighborAcks, mergers)
 
     case NeighborReceived =>
-      if (messagesReceived == messagesExpected && awaitingNeighborAcks - 1 == 0) {
+      if (messagesReceived == messagesExpected && awaitingNeighborAcks == 1) {
         ctx.log.info("Local NSGWorkers are done")
         supervisor ! InitialNSGDone(ctx.self)
       }
@@ -125,9 +131,19 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
 
     case NSGToSearchOnGraph =>
       distributeGraph(graph.toMap)
+
+    case GetPartialGraph(nodes, sender) =>
+      // should only get this message after all NSGMergers told the NodeCoordinator that they are done
+      ctx.log.info("Asked for graph before being told by the ClusterCoordinator that the NSG is done. Assuming it is and switching states")
+      ctx.self ! GetPartialGraph(nodes, sender)
+      distributeGraph(graph.toMap)
   }
 
   def distributeGraph(graph: Map[Int, Seq[Int]]): Behavior[MergeNSGEvent] = Behaviors.receiveMessagePartial {
+    case NSGToSearchOnGraph =>
+      // If I switch when I get GetPartialGraph, this message should follow soon after
+      distributeGraph(graph)
+
     case GetPartialGraph(nodes, sender) =>
       val partialGraph = graph.filter{case(node, _) =>
         nodes.contains(node)

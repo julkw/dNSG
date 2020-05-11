@@ -184,6 +184,7 @@ class ClusterCoordinator(searchOnGraphEventAdapter: ActorRef[SearchOnGraph.Searc
                 dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial{
       case InitialNSGDone(nsgMerger) =>
+        ctx.log.info("One NSGMerger is done")
         val updatedMergers = finishedNsgMergers + nsgMerger
         if (updatedMergers.size == settings.nodesExpected) {
           ctx.log.info("Initial NSG seems to be done")
@@ -193,7 +194,7 @@ class ClusterCoordinator(searchOnGraphEventAdapter: ActorRef[SearchOnGraph.Searc
         waitOnNSG(finishedNsgMergers, movedToSog, navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
 
       case UpdatedToNSG =>
-        if (movedToSog + 1 == settings.nodesExpected) {
+        if (movedToSog + 1 == graphHolders.size) {
           // nsg is fully back to search on graph actors
           nodeLocator.findResponsibleActor(navigatingNodeIndex) ! UpdateConnectivity(navigatingNodeIndex)
           connectNSG(navigatingNodeIndex, nodeLocator, graphHolders, dataHolder, -1, Seq.empty)
