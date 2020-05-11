@@ -35,6 +35,10 @@ object DataHolder {
   // other stuff
   final case class GetAverageValue(replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
+  final case class GetLocalAverage(replyTo: ActorRef[LoadDataEvent]) extends LoadDataEvent
+
+  final case class LocalAverage(value: Seq[Float], elementsUsed: Int) extends LoadDataEvent
+
   final case class ReadTestQueries(filename: String, replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
   // TODO this message is not really being handled at the moment
@@ -157,8 +161,9 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
           } else {
             shareData(data, remainingPartitionInfo, dataHolders)
           }
+        } else {
+          shareData(data, partitionInfo, dataHolders)
         }
-        shareData(data, partitionInfo, dataHolders)
     }
 
   def receiveData(data: Seq[Seq[Float]],
@@ -186,11 +191,26 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
   def holdData(data: LocalData[Float], dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial {
       case GetAverageValue(replyTo) =>
-        // TODO calculate average while loading data (as when in the cluster not all the data will be held here)
+        dataHolders.foreach { dataHolder =>
+          if (dataHolder != ctx.self) {
+            dataHolder ! GetLocalAverage(ctx.self)
+          }
+        }
         val averageValue: Seq[Float] = (0 until data.dimension).map{ index =>
           data.data.map(value => value(index)).sum / data.localDataSize
         }
-        replyTo ! AverageValue(averageValue)
+        if (dataHolders.size > 1) {
+          calculateAverages(data, dataHolders, averageValue, data.localDataSize, dataHolders.size - 1, replyTo)
+        } else {
+          replyTo ! AverageValue(averageValue)
+          holdData(data, dataHolders)
+        }
+
+      case GetLocalAverage(replyTo) =>
+        val averageValue: Seq[Float] = (0 until data.dimension).map{ index =>
+          data.data.map(value => value(index)).sum / data.localDataSize
+        }
+        replyTo ! LocalAverage(averageValue, data.localDataSize)
         holdData(data, dataHolders)
 
       case ReadTestQueries(filename, replyTo) =>
@@ -204,6 +224,28 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
           ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
         graphHolders.foreach(gh => gh ! GetGraph(searchOnGraphEventAdapter))
         saveToFile(filename, graphHolders, k, searchOnGraphEventAdapter, data, dataHolders)
+    }
+
+  def calculateAverages(data: LocalData[Float],
+                        dataHolders: Set[ActorRef[LoadDataEvent]],
+                        currentAverage: Seq[Float],
+                        currentElements: Int,
+                        awaitingAnswers: Int,
+                        sendResultTo: ActorRef[CoordinationEvent]): Behavior[LoadDataEvent] =
+    Behaviors.receiveMessagePartial {
+      case LocalAverage(value, elementsUsed) =>
+        val updatedElements = currentElements + elementsUsed
+        val oldMultiplier = currentElements.toFloat / updatedElements
+        val newMultiplier = elementsUsed.toFloat / updatedElements
+        val updatedAverage = currentAverage.zip(value).map { case (oldValue, newValue) =>
+          oldValue * oldMultiplier + newValue * newMultiplier
+        }
+        if (awaitingAnswers == 1) {
+          sendResultTo ! AverageValue(updatedAverage)
+          holdData(data, dataHolders)
+        } else {
+          calculateAverages(data, dataHolders, updatedAverage, updatedElements, awaitingAnswers - 1, sendResultTo)
+        }
     }
 
   def saveToFile(filename: String,

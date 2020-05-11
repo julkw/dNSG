@@ -145,9 +145,7 @@ class ClusterCoordinator(searchOnGraphEventAdapter: ActorRef[SearchOnGraph.Searc
         nodeLocatorBuilder.addLocations(indices, actorRef) match {
           case Some (nodeLocator) =>
             ctx.log.info("All graphs now with SearchOnGraph actors")
-            // TODO: For some reason this message is unhandled in a cluster setting
-            ctx.self ! AverageValue(Seq.fill(128){0.0f})
-            //dataHolder ! GetAverageValue(ctx.self)
+            dataHolder ! GetAverageValue(ctx.self)
             updatedSogActors.foreach(sogActor => sogActor ! GraphDistribution(nodeLocator))
             searchOnKnng(nodeLocator, updatedSogActors, nodeCoordinators, dataHolder)
           case None =>
