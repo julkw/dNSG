@@ -124,9 +124,8 @@ class KnngWorker(data: LocalData[Float],
         val graph: Map[Int, Seq[(Int, Double)]] = Map.empty
         buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, workers, graph)
       case GetCandidates(query, index, sender) =>
-        val getCandidateKey = "GetCandidates"
-        timers.startSingleTimer(getCandidateKey, GetCandidates(query, index, sender), 100.milliseconds)
-        ctx.log.info("Got a request for candidates before the distribution info. Forwarded to self with delay.")
+        val localCandidates = findLocalCandidates(query, kdTree)
+        sender ! Candidates(localCandidates, index)
         waitForDistributionInfo(kdTree, responsibility)
     }
 
@@ -158,9 +157,12 @@ class KnngWorker(data: LocalData[Float],
         buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, knngWorkers, graph)
 
       case GetCandidates(query, index, sender) =>
+        val localCandidates = findLocalCandidates(query, kdTree)
+        /* worse quality approximate graph but faster
         val localCandidates = kdTree.root.queryLeaf(query).data.map(index =>
           (index, euclideanDist(data.get(index), query))
         )
+         */
         sender ! Candidates(localCandidates, index)
         buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, knngWorkers, graph)
 
