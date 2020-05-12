@@ -5,7 +5,7 @@ import akka.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import akka.cluster.typed.{ClusterSingleton, SingletonActor}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, NodeCoordinatorIntroduction}
 import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, LoadPartialDataFromFile}
-import com.github.julkw.dnsg.actors.SearchOnGraph.{GetNSGFrom, SearchOnGraphEvent, SendResponsibleIndicesTo}
+import com.github.julkw.dnsg.actors.SearchOnGraphActor.{GetNSGFrom, SearchOnGraphEvent, SendResponsibleIndicesTo}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker
@@ -88,7 +88,7 @@ class NodeCoordinator(settings: Settings,
   def moveKnngToSearchOnGraph(knngWorkers: Set[ActorRef[BuildGraphEvent]], data: LocalData[Float]): Behavior[NodeCoordinationEvent] = {
     var sogIndex = 0
     val graphHolders = knngWorkers.map { worker =>
-      val nsgw = ctx.spawn(SearchOnGraph(clusterCoordinator, data, settings.k), name = "SearchOnGraph" + sogIndex.toString)
+      val nsgw = ctx.spawn(SearchOnGraphActor(clusterCoordinator, data), name = "SearchOnGraph" + sogIndex.toString)
       sogIndex += 1
       worker ! MoveGraph(nsgw)
       nsgw
@@ -110,7 +110,7 @@ class NodeCoordinator(settings: Settings,
     val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, data.localIndices, settings.nodesExpected, nodeLocator), name = "NSGMerger")
     var index = 0
     graphHolders.foreach { graphHolder =>
-      val nsgWorker = ctx.spawn(NSGWorker(clusterCoordinator, data, navigatingNode, settings.maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)
+      val nsgWorker = ctx.spawn(NSGWorker(clusterCoordinator, data, navigatingNode, settings.k, settings.maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)
       index += 1
       // for now this is the easiest way to distribute responsibility
       graphHolder ! SendResponsibleIndicesTo(nsgWorker)

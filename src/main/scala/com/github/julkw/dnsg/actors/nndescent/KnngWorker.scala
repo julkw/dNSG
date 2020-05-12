@@ -7,8 +7,8 @@ import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, CorrectFinishedNNDescent, FinishedApproximateGraph, FinishedNNDescent, KnngDistributionInfo}
 import com.github.julkw.dnsg.actors.NodeCoordinator.{LocalKnngWorker, NodeCoordinationEvent}
-import com.github.julkw.dnsg.actors.SearchOnGraph
-import com.github.julkw.dnsg.actors.SearchOnGraph.{Graph, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.SearchOnGraphActor
+import com.github.julkw.dnsg.actors.SearchOnGraphActor.{Graph, SearchOnGraphEvent}
 import com.github.julkw.dnsg.util.{IndexTree, KdTree, LeafNode, LocalData, NodeLocator, SplitNode, TreeBuilder, TreeNode, dNSGSerializable}
 
 import scala.language.postfixOps
@@ -56,7 +56,7 @@ object KnngWorker {
   // give final graph to SearchOnGraph Actor
   final case class MoveGraph(graphHolder: ActorRef[SearchOnGraphEvent]) extends BuildGraphEvent
 
-  final case class WrappedSearchOnGraphEvent(event: SearchOnGraph.SearchOnGraphEvent) extends BuildGraphEvent
+  final case class WrappedSearchOnGraphEvent(event: SearchOnGraphActor.SearchOnGraphEvent) extends BuildGraphEvent
 
   final case class SOGDistributionInfo(treeNode: TreeNode[ActorRef[SearchOnGraphEvent]], sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
 
@@ -102,7 +102,6 @@ class KnngWorker(data: LocalData[Float],
       } else {
         // this is a leaf node for data distribution
         ctx.system.receptionist ! Receptionist.Register(knngServiceKey, ctx.self)
-        val locationNode: LeafNode[ActorRef[BuildGraphEvent]] = LeafNode(ctx.self)
         clusterCoordinator ! KnngDistributionInfo(responsibility, ctx.self)
 
         // Build local tree while waiting on DistributionTree message
@@ -117,12 +116,13 @@ class KnngWorker(data: LocalData[Float],
                               responsibility: Seq[Int]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
       case BuildApproximateGraph(nodeLocator, workers) =>
-        //ctx.log.info("Received Distribution Tree. Start building approximate graph")
+        ctx.log.info("Received Distribution Info. Start building approximate graph")
         ctx.self ! FindCandidates(0)
         val candidates: Array[Seq[(Int, Double)]] = Array.fill(responsibility.length){Seq.empty}
         val awaitingAnswer: Array[Int] = Array.fill(responsibility.length){0}
         val graph: Map[Int, Seq[(Int, Double)]] = Map.empty
         buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, workers, graph)
+
       case GetCandidates(query, index, sender) =>
         val localCandidates = findLocalCandidates(query, kdTree)
         sender ! Candidates(localCandidates, index)
@@ -210,6 +210,7 @@ class KnngWorker(data: LocalData[Float],
       // do the initial local joins through messages to self to prevent Heartbeat problems
       ctx.self ! CompleteLocalJoin(index)
       // send all reverse neighbors to the correct actors
+      // TODO move to complete local join, this overloads the
       neighbors.foreach{case (neighborIndex, _) =>
         nodeLocator.findResponsibleActor(neighborIndex) ! AddReverseNeighbor(neighborIndex, index)
       }
@@ -297,7 +298,7 @@ class KnngWorker(data: LocalData[Float],
         ctx.log.info("Average distance in graph after nndescent: {}", averageGraphDist(graph, k))
         // all nodes are done with NNDescent, nothing will change with the graph anymore, so it is moved to SearchOnGraph actors
         val cleanedGraph: Map[Int, Seq[Int]] = graph.map{case (index, neighbors) => index -> neighbors.map(_._1)}
-        val searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent] =
+        val searchOnGraphEventAdapter: ActorRef[SearchOnGraphActor.SearchOnGraphEvent] =
           ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
         graphHolder ! Graph(cleanedGraph, searchOnGraphEventAdapter)
         // TODO add some kind of check to ensure the arrival of the graph?

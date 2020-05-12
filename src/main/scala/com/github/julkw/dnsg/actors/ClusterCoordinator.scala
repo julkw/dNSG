@@ -4,7 +4,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries}
 import com.github.julkw.dnsg.actors.NodeCoordinator.{NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
-import com.github.julkw.dnsg.actors.SearchOnGraph.{AddToGraph, FindNearestNeighbors, FindNearestNeighborsStartingFrom, FindUnconnectedNode, GraphDistribution, KNearestNeighbors, SearchOnGraphEvent, SendResponsibleIndicesTo, UpdateConnectivity}
+import com.github.julkw.dnsg.actors.SearchOnGraphActor.{AddToGraph, FindNearestNeighbors, FindNearestNeighborsStartingFrom, FindUnconnectedNode, GraphConnected, GraphDistribution, SearchOnGraphEvent, SendResponsibleIndicesTo, UpdateConnectivity}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, NSGToSearchOnGraph}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, NodeLocatorBuilder, Settings, dNSGSerializable}
@@ -29,11 +29,13 @@ object ClusterCoordinator {
 
   final case object CorrectFinishedNNDescent extends CoordinationEvent
 
-  final case class WrappedSearchOnGraphEvent(event: SearchOnGraph.SearchOnGraphEvent) extends CoordinationEvent
+  final case class WrappedSearchOnGraphEvent(event: SearchOnGraphActor.SearchOnGraphEvent) extends CoordinationEvent
 
   // building the NSG
 
   final case class AverageValue(average: Seq[Float]) extends CoordinationEvent
+
+  final case class KNearestNeighbors(query: Seq[Float], neighbors: Seq[Int]) extends CoordinationEvent
 
   final case class InitialNSGDone(nsgMergers: ActorRef[MergeNSGEvent]) extends CoordinationEvent
 
@@ -45,25 +47,23 @@ object ClusterCoordinator {
 
   final case object AllConnected extends CoordinationEvent
 
+  final case object BackToSearch extends CoordinationEvent
+
   // testing the graph
   final case class TestQueries(queries: Seq[(Seq[Float], Seq[Int])]) extends CoordinationEvent
 
   def apply(): Behavior[CoordinationEvent] = Behaviors.setup { ctx =>
 
-    val searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent] =
-      ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
-
     val settings = Settings(ctx.system.settings.config)
     settings.printSettings(ctx)
 
     Behaviors.setup(
-      ctx => new ClusterCoordinator(searchOnGraphEventAdapter, ctx, settings).setUp(Set.empty)
+      ctx => new ClusterCoordinator(ctx, settings).setUp(Set.empty)
     )
   }
 }
 
-class ClusterCoordinator(searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent],
-                         ctx: ActorContext[ClusterCoordinator.CoordinationEvent],
+class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent],
                          settings: Settings) extends Distance {
   import ClusterCoordinator._
 
@@ -146,6 +146,7 @@ class ClusterCoordinator(searchOnGraphEventAdapter: ActorRef[SearchOnGraph.Searc
           case Some (nodeLocator) =>
             ctx.log.info("All graphs now with SearchOnGraph actors")
             dataHolder ! GetAverageValue(ctx.self)
+            // TODO wait till they have received dist info?
             updatedSogActors.foreach(sogActor => sogActor ! GraphDistribution(nodeLocator))
             searchOnKnng(nodeLocator, updatedSogActors, nodeCoordinators, dataHolder)
           case None =>
@@ -159,20 +160,18 @@ class ClusterCoordinator(searchOnGraphEventAdapter: ActorRef[SearchOnGraph.Searc
                    dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case AverageValue(value) =>
+        ctx.log.info("Received average value, now looking for Navigating Node")
         // find navigating Node, start from random
-        graphHolders.head ! FindNearestNeighbors(value, searchOnGraphEventAdapter)
+        graphHolders.head ! FindNearestNeighbors(value, settings.k, ctx.self)
         searchOnKnng(nodeLocator, graphHolders, nodeCoordinators, dataHolder)
 
-      case wrappedSearchOnGraphEvent: WrappedSearchOnGraphEvent =>
-        wrappedSearchOnGraphEvent.event match {
-          case KNearestNeighbors(query, neighbors) =>
-            // Right now the only query being asked for is the NavigationNode, so that has been found
-            val navigatingNode = neighbors.head
-            ctx.log.info("The navigating node has the index: {}", navigatingNode)
-            // TODO do some kind of data redistribution with the knowledge of the navigating node, updating the nodeLocator in the process
-            nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
-            waitOnNSG(Set.empty, 0, navigatingNode, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
-        }
+      case KNearestNeighbors(query, neighbors) =>
+        // Right now the only query being asked for is the NavigationNode, so that has been found
+        val navigatingNode = neighbors.head
+        ctx.log.info("The navigating node has the index: {}", navigatingNode)
+        // TODO do some kind of data redistribution with the knowledge of the navigating node, updating the nodeLocator in the process
+        nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
+        waitOnNSG(Set.empty, 0, navigatingNode, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
     }
 
   def waitOnNSG(finishedNsgMergers: Set[ActorRef[MergeNSGEvent]],
@@ -219,27 +218,40 @@ class ClusterCoordinator(searchOnGraphEventAdapter: ActorRef[SearchOnGraph.Searc
       case UnconnectedNode(nodeIndex, nodeData) =>
         ctx.log.info("found an unconnected node")
         nodeLocator.findResponsibleActor(nodeIndex) !
-          FindNearestNeighborsStartingFrom(nodeData, navigatingNodeIndex, searchOnGraphEventAdapter)
+          FindNearestNeighborsStartingFrom(nodeData, navigatingNodeIndex, settings.k, ctx.self)
         connectNSG(navigatingNodeIndex, nodeLocator, graphHolders, dataHolder, nodeIndex, nodeData)
 
-      case wrappedSearchOnGraphEvent: WrappedSearchOnGraphEvent =>
-        wrappedSearchOnGraphEvent.event match {
-          case KNearestNeighbors(query, neighbors) =>
-            // Right now the only query being asked for is to connect unconnected nodes
-            assert(query == latestUnconnectedNodedData)
-            neighbors.foreach(reverseNeighbor =>
-              nodeLocator.findResponsibleActor(reverseNeighbor) !
-                AddToGraph(reverseNeighbor, latestUnconnectedNodeIndex))
-            nodeLocator.findResponsibleActor(latestUnconnectedNodeIndex) ! UpdateConnectivity(latestUnconnectedNodeIndex)
-            connectNSG(navigatingNodeIndex, nodeLocator, graphHolders, dataHolder, -1, Seq.empty)
-        }
+      case KNearestNeighbors(query, neighbors) =>
+        // Right now the only query being asked for is to connect unconnected nodes
+        assert(query == latestUnconnectedNodedData)
+        neighbors.foreach(reverseNeighbor =>
+          nodeLocator.findResponsibleActor(reverseNeighbor) !
+            AddToGraph(reverseNeighbor, latestUnconnectedNodeIndex))
+        nodeLocator.findResponsibleActor(latestUnconnectedNodeIndex) ! UpdateConnectivity(latestUnconnectedNodeIndex)
+        connectNSG(navigatingNodeIndex, nodeLocator, graphHolders, dataHolder, -1, Seq.empty)
 
       case AllConnected =>
-        ctx.log.info("NSG build seems to be done")
-        val settings = Settings(ctx.system.settings.config)
-        dataHolder ! ReadTestQueries(settings.queryFilePath, ctx.self)
-        testNSG(navigatingNodeIndex, nodeLocator, graphHolders, Map.empty, 0)
+        ctx.log.info("NSG now fully connected")
+        graphHolders.foreach(graphHolder => graphHolder ! GraphConnected(ctx.self))
+        waitForBackToSearch(navigatingNodeIndex, nodeLocator, graphHolders, dataHolder, 0)
     }
+
+    def waitForBackToSearch(navigatingNodeIndex: Int,
+                            nodeLocator: NodeLocator[SearchOnGraphEvent],
+                            graphHolders: Set[ActorRef[SearchOnGraphEvent]],
+                            dataHolder: ActorRef[LoadDataEvent],
+                            responses: Int): Behavior[CoordinationEvent] =
+      Behaviors.receiveMessagePartial {
+        case BackToSearch =>
+          if (responses + 1 == graphHolders.size) {
+            ctx.log.info("All Search on Graph actors back to search, can start testing now")
+            val settings = Settings(ctx.system.settings.config)
+            dataHolder ! ReadTestQueries(settings.queryFilePath, ctx.self)
+            testNSG(navigatingNodeIndex, nodeLocator, graphHolders, Map.empty, 0)
+          } else {
+            waitForBackToSearch(navigatingNodeIndex, nodeLocator, graphHolders, dataHolder, responses + 1)
+          }
+      }
 
     def testNSG(navigatingNodeIndex: Int,
                 nodeLocator: NodeLocator[SearchOnGraphEvent],
@@ -250,23 +262,18 @@ class ClusterCoordinator(searchOnGraphEventAdapter: ActorRef[SearchOnGraph.Searc
         case TestQueries(testQueries) =>
           // TODO instead of using the NNActor, find a way to choose them using the query
           testQueries.foreach(query => nodeLocator.findResponsibleActor(navigatingNodeIndex) !
-              FindNearestNeighborsStartingFrom(query._1, navigatingNodeIndex, searchOnGraphEventAdapter))
+              FindNearestNeighborsStartingFrom(query._1, navigatingNodeIndex, settings.k, ctx.self))
           testNSG(navigatingNodeIndex, nodeLocator, graphHolders, testQueries.toMap, sumOfNeighborsFound)
 
-        case wrappedSearchOnGraphEvent: WrappedSearchOnGraphEvent =>
-          wrappedSearchOnGraphEvent.event match {
-            case KNearestNeighbors(query, neighbors) =>
-              val correctNeighborIndices = queries(query)
-              val newSum = sumOfNeighborsFound + correctNeighborIndices.intersect(neighbors).length
-              if (queries.size == 1) {
-                ctx.log.info("Overall correct neighbors found: {}", newSum)
-                ctx.system.terminate()
-                Behaviors.stopped
-              } else {
-                testNSG(navigatingNodeIndex, nodeLocator, graphHolders, queries - query, newSum)
-              }
-
+        case KNearestNeighbors(query, neighbors) =>
+          val correctNeighborIndices = queries(query)
+          val newSum = sumOfNeighborsFound + correctNeighborIndices.intersect(neighbors).length
+          if (queries.size == 1) {
+            ctx.log.info("Overall correct neighbors found: {}", newSum)
+            ctx.system.terminate()
+            Behaviors.stopped
+          } else {
+            testNSG(navigatingNodeIndex, nodeLocator, graphHolders, queries - query, newSum)
           }
       }
-
 }

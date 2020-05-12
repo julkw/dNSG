@@ -5,7 +5,7 @@ import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, InitialNSGDone}
-import com.github.julkw.dnsg.actors.SearchOnGraph.{PartialNSG, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.SearchOnGraphActor.{PartialNSG, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}
 

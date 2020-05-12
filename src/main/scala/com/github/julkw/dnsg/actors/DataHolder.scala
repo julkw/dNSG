@@ -11,7 +11,7 @@ import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{AverageValue, CoordinationEvent, DataSize, TestQueries}
 import com.github.julkw.dnsg.actors.NodeCoordinator.{DataRef, NodeCoordinationEvent}
-import com.github.julkw.dnsg.actors.SearchOnGraph.{GetGraph, Graph, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.SearchOnGraphActor.{GetGraph, Graph, SearchOnGraphEvent}
 import com.github.julkw.dnsg.util.{LocalData, dNSGSerializable}
 
 import scala.language.postfixOps
@@ -44,7 +44,7 @@ object DataHolder {
   // TODO this message is not really being handled at the moment
   final case class SaveGraphToFile(filename: String, graphHolders: Set[ActorRef[SearchOnGraphEvent]], k: Int) extends LoadDataEvent
 
-  final case class WrappedSearchOnGraphEvent(event: SearchOnGraph.SearchOnGraphEvent) extends LoadDataEvent
+  final case class WrappedSearchOnGraphEvent(event: SearchOnGraphActor.SearchOnGraphEvent) extends LoadDataEvent
 
   val dataHolderServiceKey: ServiceKey[DataHolder.LoadDataEvent] = ServiceKey[LoadDataEvent]("dataService")
 
@@ -220,7 +220,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
 
       case SaveGraphToFile(filename, graphHolders, k) =>
         // TODO create file so it can be appended with the graph
-        val searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent] =
+        val searchOnGraphEventAdapter: ActorRef[SearchOnGraphActor.SearchOnGraphEvent] =
           ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
         graphHolders.foreach(gh => gh ! GetGraph(searchOnGraphEventAdapter))
         saveToFile(filename, graphHolders, k, searchOnGraphEventAdapter, data, dataHolders)
@@ -251,7 +251,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
   def saveToFile(filename: String,
                  remainingGraphHolders: Set[ActorRef[SearchOnGraphEvent]],
                  k: Int,
-                 searchOnGraphEventAdapter: ActorRef[SearchOnGraph.SearchOnGraphEvent],
+                 searchOnGraphEventAdapter: ActorRef[SearchOnGraphActor.SearchOnGraphEvent],
                  data: LocalData[Float],
                  dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessage {
