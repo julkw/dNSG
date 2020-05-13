@@ -209,10 +209,6 @@ class KnngWorker(data: LocalData[Float],
     graph.foreach{ case (index, neighbors) =>
       // do the initial local joins through messages to self to prevent Heartbeat problems
       ctx.self ! CompleteLocalJoin(index)
-      // send all reverse neighbors to the correct actors
-      neighbors.foreach{case (neighborIndex, _) =>
-        nodeLocator.findResponsibleActor(neighborIndex) ! AddReverseNeighbor(neighborIndex, index)
-      }
     }
     // setup timer used to determine when the graph is done
     timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
@@ -234,6 +230,10 @@ class KnngWorker(data: LocalData[Float],
         // prevent timeouts in the initial phase of graph nnDescent
         timers.cancel(NNDescentTimerKey)
         val neighbors = graph(g_node)
+        // send all reverse neighbors to the correct actors
+        neighbors.foreach{case (neighborIndex, _) =>
+          nodeLocator.findResponsibleActor(neighborIndex) ! AddReverseNeighbor(neighborIndex, g_node)
+        }
         joinNeighbors(neighbors, nodeLocator, g_node)
         // if this is the last inital join, the timer is needed from now on
         timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
