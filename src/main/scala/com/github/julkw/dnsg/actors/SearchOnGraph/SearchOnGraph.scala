@@ -9,7 +9,7 @@ import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator, WaitingOnLo
 
 import scala.collection.mutable
 
-abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends Distance {
+abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], waitingOnLocation: WaitingOnLocation, ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends Distance {
   // data type for more readable code
   protected case class QueryCandidate(index: Int, distance: Double, var processed: Boolean)
   // TODO rename to something that includes all information contained
@@ -52,7 +52,6 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
                        processedIndex: Int,
                        potentialNewCandidates: Seq[Int],
                        nodeLocator: NodeLocator[SearchOnGraphEvent],
-                       waitingOnLocations: WaitingOnLocation,
                        data: LocalData[Float]): Unit = {
     val oldCandidates = queryInfo.candidates
     val processedCandidate = oldCandidates.find(query => query.index == processedIndex)
@@ -72,7 +71,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
         // candidates for which we don't have the location have to ask for it first
         val remoteCandidates = potentialNewCandidates.diff(currentCandidateIndices)
           .filter(candidateIndex => !data.isLocal(candidateIndex))
-        remoteCandidates.foreach(candidate => askForLocation(candidate, queryId, queryInfo, nodeLocator, waitingOnLocations))
+        remoteCandidates.foreach(candidate => askForLocation(candidate, queryId, queryInfo, nodeLocator))
 
         val updatedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance).slice(0, queryInfo.neighborsWanted)
         candidate.processed = true
@@ -88,8 +87,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
                            processedIndex: Int,
                            potentialNewCandidates: Seq[Int],
                            responseLocations: QueryResponseLocations[Float],
-                           nodeLocator: NodeLocator[SearchOnGraphEvent],
-                           waitingOnLocations: WaitingOnLocation): Unit = {
+                           nodeLocator: NodeLocator[SearchOnGraphEvent]): Unit = {
     val oldCandidates = queryInfo.candidates
     val processedCandidate = oldCandidates.find(query => query.index == processedIndex)
     // check if I still care about these neighbors or if the node they belong to has already been kicked out of the candidate list
@@ -108,7 +106,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
         // candidates for which we don't have the location have to ask for it first
         val remoteCandidates = potentialNewCandidates.diff(currentCandidateIndices)
           .filter(candidateIndex => !responseLocations.hasLocation(candidateIndex))
-        remoteCandidates.foreach(candidate => askForLocation(candidate, queryId, queryInfo, nodeLocator, waitingOnLocations))
+        remoteCandidates.foreach(candidate => askForLocation(candidate, queryId, queryInfo, nodeLocator))
 
         val mergedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance)
         // update responseLocations
@@ -128,7 +126,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
     }
   }
 
-  def askForLocation(remoteIndex: Int, queryId: Int, queryInfo: QueryInfo, nodeLocator: NodeLocator[SearchOnGraphEvent], waitingOnLocation: WaitingOnLocation): Unit = {
+  def askForLocation(remoteIndex: Int, queryId: Int, queryInfo: QueryInfo, nodeLocator: NodeLocator[SearchOnGraphEvent]): Unit = {
     if (!waitingOnLocation.alreadyIn(remoteIndex, queryId)) {
       queryInfo.waitingOn += 1
       val askForLocation = waitingOnLocation.insert(remoteIndex, queryId)
@@ -147,10 +145,10 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
     val currentCandidates = queryInfo.candidates
     val allProcessed = !currentCandidates.exists(_.processed == false)
     val dist = euclideanDist(queryInfo.query, candidateLocation)
-    // if the starting node wasn't local, current candidates is empty
     val closeEnough =
-      if (currentCandidates.nonEmpty) {
-        currentCandidates(currentCandidates.length-1).distance > dist
+      if (currentCandidates.length >= queryInfo.neighborsWanted) {
+        val lastCandidateToBeat = math.min(currentCandidates.length - 1, queryInfo.neighborsWanted - 1)
+        currentCandidates(lastCandidateToBeat).distance > dist
       } else { true }
     val usableCandidate = closeEnough && !currentCandidates.exists(candidate => candidate.index == candidateId)
     if (usableCandidate) {
@@ -172,6 +170,6 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
     }
     respondTo ! SortedCheckedNodes(queryId, checkedNodes)
     queryInfo.candidates.foreach(candidate => responseLocations.removedFromCandidateList(candidate.index))
-    ctx.log.info("responseLocations size: {}", responseLocations.size())
+    //ctx.log.info("responseLocations size: {}", responseLocations.size())
   }
 }

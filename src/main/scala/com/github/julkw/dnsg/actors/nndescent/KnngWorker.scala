@@ -110,6 +110,12 @@ class KnngWorker(data: LocalData[Float],
         ctx.log.info("Finished building kdTree")
         waitForDistributionInfo(kdTree, responsibility)
       }
+
+    case BuildApproximateGraph(nodeLocator, workers) =>
+      // this should not happen
+      ctx.log.info("Somehow got distribution info too early")
+      ctx.self ! BuildApproximateGraph(nodeLocator, workers)
+      buildDistributionTree()
   }
 
   def waitForDistributionInfo(kdTree: IndexTree,
@@ -220,7 +226,7 @@ class KnngWorker(data: LocalData[Float],
   def nnDescent(nodeLocator: NodeLocator[BuildGraphEvent],
                 graph: Map[Int, Seq[(Int, Double)]],
                 reverseNeighbors: Map[Int, Set[Int]]): Behavior[BuildGraphEvent] =
-    Behaviors.receiveMessage {
+    Behaviors.receiveMessagePartial {
       case StartNNDescent =>
         // already done, so do nothing
         nnDescent(nodeLocator, graph, reverseNeighbors)
