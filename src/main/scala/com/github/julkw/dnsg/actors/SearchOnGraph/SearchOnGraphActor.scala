@@ -5,7 +5,7 @@ import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.ClusterCoordinator._
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, Responsibility}
-import com.github.julkw.dnsg.util.Data.LocalData
+import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
 import com.github.julkw.dnsg.util._
 
 import scala.collection.mutable
@@ -67,12 +67,13 @@ object SearchOnGraphActor {
   def apply(supervisor: ActorRef[CoordinationEvent],
             data: LocalData[Float]): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
     //ctx.log.info("Started SearchOnGraph")
-     new SearchOnGraphActor(supervisor, data, new WaitingOnLocation, ctx).waitForLocalGraph()
+    val settings = Settings(ctx.system.settings.config)
+     new SearchOnGraphActor(supervisor, CacheData(settings.cacheSize, data), new WaitingOnLocation, ctx).waitForLocalGraph()
   }
 }
 
 class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
-                         data: LocalData[Float],
+                         data: CacheData[Float],
                          waitingOnLocation: WaitingOnLocation,
                          ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends SearchOnGraph(supervisor, waitingOnLocation, ctx) {
   import SearchOnGraphActor._

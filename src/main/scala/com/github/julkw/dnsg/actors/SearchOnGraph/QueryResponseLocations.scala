@@ -1,8 +1,8 @@
 package com.github.julkw.dnsg.actors.SearchOnGraph
 
-import com.github.julkw.dnsg.util.Data.LocalData
+import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
 
-case class QueryResponseLocations[T](data: LocalData[T]) {
+case class QueryResponseLocations[T](data: CacheData[T]) {
   protected case class ResponseLocation(location: Seq[T], var usedBy: Int)
   private var responseLocations: Map[Int, ResponseLocation] = Map.empty
 

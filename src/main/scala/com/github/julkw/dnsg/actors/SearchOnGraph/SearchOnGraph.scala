@@ -5,7 +5,7 @@ import akka.actor.typed.scaladsl.ActorContext
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, FinishedUpdatingConnectivity}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{DoneConnectingChildren, GetLocation, GetNeighbors, IsConnected, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, SortedCheckedNodes}
-import com.github.julkw.dnsg.util.Data.LocalData
+import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, WaitingOnLocation}
 
 import scala.collection.mutable
@@ -53,7 +53,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], waitingOnL
                        processedIndex: Int,
                        potentialNewCandidates: Seq[Int],
                        nodeLocator: NodeLocator[SearchOnGraphEvent],
-                       data: LocalData[Float]): Unit = {
+                       data: CacheData[Float]): Unit = {
     val oldCandidates = queryInfo.candidates
     val processedCandidate = oldCandidates.find(query => query.index == processedIndex)
     // check if I still care about these neighbors or if the node they belong to has already been kicked out of the candidate list

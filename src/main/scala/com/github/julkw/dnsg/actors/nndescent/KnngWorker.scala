@@ -9,9 +9,9 @@ import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, Corre
 import com.github.julkw.dnsg.actors.NodeCoordinator.{LocalKnngWorker, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{Graph, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.Data.LocalData
+import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
 import com.github.julkw.dnsg.util.KdTree.{IndexTree, KdTree, SplitNode, TreeBuilder, TreeNode}
-import com.github.julkw.dnsg.util.{NodeLocator, WaitingOnLocation, dNSGSerializable}
+import com.github.julkw.dnsg.util.{NodeLocator, Settings, WaitingOnLocation, dNSGSerializable}
 
 import scala.language.postfixOps
 
@@ -69,36 +69,35 @@ object KnngWorker {
 
   def apply(data: LocalData[Float],
             maxResponsibility: Int,
-            k: Int,
-            sampleRate: Double,
             clusterCoordinator: ActorRef[CoordinationEvent],
             localCoordinator: ActorRef[NodeCoordinationEvent]): Behavior[BuildGraphEvent] = Behaviors.setup { ctx =>
     //ctx.log.info("Started KnngWorker")
     localCoordinator ! LocalKnngWorker(ctx.self)
+    val settings = Settings(ctx.system.settings.config)
     Behaviors.withTimers(timers =>
-      new KnngWorker(data, new WaitingOnLocation, maxResponsibility, k, sampleRate, clusterCoordinator, localCoordinator, timers, ctx).buildDistributionTree()
+      new KnngWorker(CacheData(settings.cacheSize, data),
+        new WaitingOnLocation, maxResponsibility, settings, clusterCoordinator, localCoordinator, timers, ctx).buildDistributionTree()
     )
   }
 }
 
-class KnngWorker(data: LocalData[Float],
+class KnngWorker(data: CacheData[Float],
                  waitingOnLocation: WaitingOnLocation,
                  maxResponsibility: Int,
-                 k: Int,
-                 sampleRate: Double,
+                 settings: Settings,
                  clusterCoordinator: ActorRef[CoordinationEvent],
                  localCoordinator: ActorRef[NodeCoordinationEvent],
                  timers: TimerScheduler[KnngWorker.BuildGraphEvent],
-                 ctx: ActorContext[KnngWorker.BuildGraphEvent]) extends Joiner(sampleRate, data) {
+                 ctx: ActorContext[KnngWorker.BuildGraphEvent]) extends Joiner(settings.sampleRate, data) {
   import KnngWorker._
 
   def buildDistributionTree(): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
     case ResponsibleFor(responsibility, treeDepth) =>
-      val treeBuilder: TreeBuilder = TreeBuilder(data, k)
+      val treeBuilder: TreeBuilder = TreeBuilder(data.data, settings.k)
       if(responsibility.length > maxResponsibility) {
         // further split the data
         val splitNode: SplitNode[Seq[Int]] = treeBuilder.oneLevelSplit(responsibility)
-        val right = ctx.spawn(KnngWorker(data, maxResponsibility, k, sampleRate, clusterCoordinator, localCoordinator), "KnngWorker" + treeDepth.toString)
+        val right = ctx.spawn(KnngWorker(data.data, maxResponsibility, clusterCoordinator, localCoordinator), "KnngWorker" + treeDepth.toString)
         ctx.self ! ResponsibleFor(splitNode.left.data, treeDepth + 1)
         right ! ResponsibleFor(splitNode.right.data, treeDepth + 1)
         buildDistributionTree()
@@ -108,7 +107,7 @@ class KnngWorker(data: LocalData[Float],
         clusterCoordinator ! KnngDistributionInfo(responsibility, ctx.self)
 
         // Build local tree while waiting on DistributionTree message
-        val treeBuilder: TreeBuilder = TreeBuilder(data, k)
+        val treeBuilder: TreeBuilder = TreeBuilder(data.data, settings.k)
         val kdTree: IndexTree = treeBuilder.construct(responsibility)
         ctx.log.info("Finished building kdTree")
         waitForDistributionInfo(kdTree, responsibility)
@@ -180,7 +179,7 @@ class KnngWorker(data: LocalData[Float],
         val oldCandidates = candidates(responsibilityIndex)
         val mergedCandidates = (oldCandidates ++ newCandidates).sortBy(_._2)
         val skipSelf = if (mergedCandidates(0)._1 == graphIndex) 1 else 0
-        candidates(responsibilityIndex) = mergedCandidates.slice(skipSelf, k + skipSelf)
+        candidates(responsibilityIndex) = mergedCandidates.slice(skipSelf, settings.k + skipSelf)
         awaitingAnswer(responsibilityIndex) -= 1
         if (awaitingAnswer(responsibilityIndex) == 0) {
           val updatedGraph = graph + (graphIndex -> candidates(responsibilityIndex))
@@ -214,7 +213,7 @@ class KnngWorker(data: LocalData[Float],
                      graph: Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] = {
     //ctx.log.info("Starting nnDescent")
     // for debugging
-    ctx.log.info("Average distance in graph before nndescent: {}", averageGraphDist(graph, k))
+    ctx.log.info("Average distance in graph before nndescent: {}", averageGraphDist(graph, settings.k))
     graph.foreach{ case (index, neighbors) =>
       // do the initial local joins through messages to self to prevent Heartbeat problems
       ctx.self ! CompleteLocalJoin(index)
@@ -295,7 +294,7 @@ class KnngWorker(data: LocalData[Float],
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
       case MoveGraph(graphHolder) =>
-        ctx.log.info("Average distance in graph after nndescent: {}", averageGraphDist(graph, k))
+        ctx.log.info("Average distance in graph after nndescent: {}", averageGraphDist(graph, settings.k))
         // all nodes are done with NNDescent, nothing will change with the graph anymore, so it is moved to SearchOnGraph actors
         val cleanedGraph: Map[Int, Seq[Int]] = graph.map{case (index, neighbors) => index -> neighbors.map(_._1)}
         val searchOnGraphEventAdapter: ActorRef[SearchOnGraphActor.SearchOnGraphEvent] =
@@ -314,12 +313,12 @@ class KnngWorker(data: LocalData[Float],
       val newCandidates = currentDataNode.inverseQueryChild(query).queryLeaf(query).data.map(index =>
         (index, euclideanDist(data.get(index), query))
       )
-      localCandidates = (localCandidates ++ newCandidates).sortBy(_._2).slice(0, k)
+      localCandidates = (localCandidates ++ newCandidates).sortBy(_._2).slice(0, settings.k)
       currentDataNode = currentDataNode.queryChild(query)
     }
     localCandidates = localCandidates ++ currentDataNode.data.map(index =>
       (index, euclideanDist(data.get(index), query))
-    ).sortBy(_._2).slice(0, k)
+    ).sortBy(_._2).slice(0, settings.k)
     localCandidates
   }
 
@@ -340,10 +339,10 @@ class KnngWorker(data: LocalData[Float],
         // if the timer is inactive, it has already run out and the actor has mistakenly told its supervisor that it is done
         clusterCoordinator ! CorrectFinishedNNDescent
       }
-      joinNewNeighbor(currentNeighbors.slice(0, k-1), currentReverseNeighbors, potentialNeighbor._1, nodeLocator)
+      joinNewNeighbor(currentNeighbors.slice(0, settings.k-1), currentReverseNeighbors, potentialNeighbor._1, nodeLocator)
       val removedNeighbor = currentNeighbors(currentNeighbors.length - 1)._1
       nodeLocator.findResponsibleActor(removedNeighbor) ! RemoveReverseNeighbor(removedNeighbor, g_node)
-      val updatedNeighbors = (currentNeighbors :+ potentialNeighbor).sortBy(_._2).slice(0, k)
+      val updatedNeighbors = (currentNeighbors :+ potentialNeighbor).sortBy(_._2).slice(0, settings.k)
       timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
       graph + (g_node -> updatedNeighbors)
     } else {

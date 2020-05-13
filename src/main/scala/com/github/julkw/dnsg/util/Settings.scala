@@ -20,6 +20,8 @@ case class Settings(config: Config) {
 
   val nodesExpected: Int = config.getInt(s"$namespace.nodes-expected")
 
+  val cacheSize: Int = config.getInt(s"$namespace.cache-size")
+
   // for testing
   val queryFilePath: String = config.getString(s"$namespace.query-testing.query-file")
 

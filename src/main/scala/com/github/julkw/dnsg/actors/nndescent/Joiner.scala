@@ -1,11 +1,11 @@
 package com.github.julkw.dnsg.actors.nndescent
 
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildGraphEvent, JoinNodes, PotentialNeighbor}
-import com.github.julkw.dnsg.util.Data.LocalData
+import com.github.julkw.dnsg.util.Data.{CacheData}
 import com.github.julkw.dnsg.util.{Distance, NodeLocator}
 
 
-abstract class Joiner(sampleRate: Double, data: LocalData[Float]) extends Distance {
+abstract class Joiner(sampleRate: Double, data: CacheData[Float]) extends Distance {
 
   def joinLocals(n1Index: Int, n1Data: Seq[Float], n2Index: Int, n2Data: Seq[Float], nodeLocator: NodeLocator[BuildGraphEvent]): Unit = {
     val dist = euclideanDist(n1Data, n2Data)
