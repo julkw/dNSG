@@ -249,18 +249,18 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
         waitingOnLocation(index).foreach {queryId =>
           if (pathQueries.contains(queryId)){
             val queryInfo = pathQueries(queryId)
-            //val oldNumberOfCandidates = queryInfo.candidates.length
+            val oldNumberOfCandidates = queryInfo.candidates.length
             val queryFinished = addCandidate(queryId, index, location, pathQueries, nodeLocator)
-            responseLocations.addedToCandidateList(index, location)
-            //if (queryInfo.candidates.length > oldNumberOfCandidates) { // the candidate has been added
-            //}
+            if (queryInfo.candidates.length > oldNumberOfCandidates) { // the candidate has been added
+              responseLocations.addedToCandidateList(index, location)
+            }
             if (queryFinished) {
               removedQueries = removedQueries + queryId
               sendResults(queryId, queryInfo, responseLocations, respondTo(queryId))
             }
           }
         }
-        searchOnGraphForNSG(graph, nodeLocator, pathQueries, respondTo, responseLocations, waitingOnLocation - index)
+        searchOnGraphForNSG(graph, nodeLocator, pathQueries -- removedQueries, respondTo -- removedQueries, responseLocations, waitingOnLocation - index)
 
       case GetNSGFrom(nsgMerger) =>
         //ctx.log.info("Asking NSG Merger for my part of the NSG")
@@ -276,7 +276,6 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
         establishConnectivity(graph, nodeLocator, ConnectivityInfo(mutable.Set.empty, mutable.Map.empty))
     }
 
-  // TODO enter and exit this state
   def establishConnectivity(graph: Map[Int, Seq[Int]],
                             nodeLocator: NodeLocator[SearchOnGraphEvent],
                             connectivityInfo: ConnectivityInfo): Behavior[SearchOnGraphEvent] =
