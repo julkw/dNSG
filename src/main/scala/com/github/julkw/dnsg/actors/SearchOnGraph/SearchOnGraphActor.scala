@@ -1,11 +1,12 @@
-package com.github.julkw.dnsg.actors
+package com.github.julkw.dnsg.actors.SearchOnGraph
 
-import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import com.github.julkw.dnsg.actors.ClusterCoordinator.{AllConnected, BackToSearch, CoordinationEvent, FinishedUpdatingConnectivity, KNearestNeighbors, SearchOnGraphDistributionInfo, UnconnectedNode, UpdatedToNSG}
+import akka.actor.typed.{ActorRef, Behavior}
+import com.github.julkw.dnsg.actors.ClusterCoordinator._
+import com.github.julkw.dnsg.actors.SearchOnGraph
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, Responsibility}
-import com.github.julkw.dnsg.util.{LocalData, NodeLocator, QueryResponseLocations, SearchOnGraph, dNSGSerializable}
+import com.github.julkw.dnsg.util._
 
 import scala.collection.mutable
 import scala.language.postfixOps
@@ -181,7 +182,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
 
       case SendResponsibleIndicesTo(nsgWorker) =>
         nsgWorker ! Responsibility(graph.keys.toSeq)
-        searchOnGraphForNSG(graph, nodeLocator, Map.empty, Map.empty, QueryResponseLocations(data), mutable.Map.empty)
+        searchOnGraphForNSG(graph, nodeLocator, Map.empty, Map.empty, SearchOnGraph.QueryResponseLocations(data), mutable.Map.empty)
     }
 
   def searchOnGraphForNSG(graph: Map[Int, Seq[Int]],

@@ -5,7 +5,8 @@ import akka.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import akka.cluster.typed.{ClusterSingleton, SingletonActor}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, NodeCoordinatorIntroduction}
 import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, LoadPartialDataFromFile}
-import com.github.julkw.dnsg.actors.SearchOnGraphActor.{GetNSGFrom, SearchOnGraphEvent, SendResponsibleIndicesTo}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetNSGFrom, SearchOnGraphEvent, SendResponsibleIndicesTo}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker

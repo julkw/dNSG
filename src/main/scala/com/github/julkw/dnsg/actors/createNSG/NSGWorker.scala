@@ -3,7 +3,7 @@ package com.github.julkw.dnsg.actors.createNSG
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.CoordinationEvent
-import com.github.julkw.dnsg.actors.SearchOnGraphActor.{CheckedNodesOnSearch, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{CheckedNodesOnSearch, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, ReverseNeighbors}
 import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator, dNSGSerializable}
 

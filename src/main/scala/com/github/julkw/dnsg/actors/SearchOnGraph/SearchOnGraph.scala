@@ -1,11 +1,11 @@
-package com.github.julkw.dnsg.util
+package com.github.julkw.dnsg.actors.SearchOnGraph
 
 import akka.actor.typed.ActorRef
 import akka.actor.typed.scaladsl.ActorContext
-import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, FinishedUpdatingConnectivity, KNearestNeighbors}
-import com.github.julkw.dnsg.actors.SearchOnGraphActor
-import com.github.julkw.dnsg.actors.SearchOnGraphActor.{DoneConnectingChildren, GetLocation, GetNeighbors, IsConnected, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, FinishedUpdatingConnectivity}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{DoneConnectingChildren, GetLocation, GetNeighbors, IsConnected, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, SortedCheckedNodes}
+import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator}
 
 import scala.collection.mutable
 
