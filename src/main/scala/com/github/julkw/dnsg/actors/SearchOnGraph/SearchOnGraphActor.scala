@@ -87,7 +87,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
   def waitForDistributionInfo(graph: Map[Int, Seq[Int]]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case GraphDistribution(nodeLocator) =>
-        searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, -1, mutable.Map.empty)
+        searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, -1, new WaitingOnLocation)
     }
 
   def searchOnGraph(graph: Map[Int, Seq[Int]],
@@ -95,7 +95,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
                     neighborQueries: Map[Int, QueryInfo],
                     respondTo: Map[Int, ActorRef[CoordinationEvent]],
                     lastIdUsed: Int,
-                    waitingOnLocation: mutable.Map[Int, Set[Int]]): Behavior[SearchOnGraphEvent] =
+                    waitingOnLocation: WaitingOnLocation): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial {
       case FindNearestNeighbors(query, k, asker) =>
         ctx.log.info("Asked to find navigating node")
@@ -114,13 +114,9 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
           nodeLocator.findResponsibleActor(startingPoint) ! GetNeighbors(startingPoint, queryId, ctx.self)
           QueryInfo(query, k, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false)), 0)
         } else {
-          if (waitingOnLocation.contains(startingPoint)) {
-            waitingOnLocation += startingPoint -> (waitingOnLocation(startingPoint) + queryId)
-          } else {
-            nodeLocator.findResponsibleActor(startingPoint) ! GetLocation(startingPoint, ctx.self)
-            waitingOnLocation += startingPoint -> Set(queryId)
-          }
-          QueryInfo(query, k, Seq.empty, 1)
+          val qi = QueryInfo(query, k, Seq.empty, 0)
+          askForLocation(startingPoint, queryId, qi, nodeLocator, waitingOnLocation)
+          qi
         }
         nodeLocator.findResponsibleActor(startingPoint) ! GetNeighbors(startingPoint, queryId, ctx.self)
         searchOnGraph(graph, nodeLocator, neighborQueries + (queryId -> queryInfo), respondTo + (queryId -> asker), queryId, waitingOnLocation)
@@ -162,18 +158,19 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
       case Location(index, location) =>
         var removedQueries: Set[Int] = Set.empty
         data.add(index, location)
-        waitingOnLocation(index).foreach {queryId =>
+        waitingOnLocation.received(index).foreach {queryId =>
           if (neighborQueries.contains(queryId)) {
-            val queryFinished = addCandidate(queryId, index, location, neighborQueries, nodeLocator)
+            val queryInfo = neighborQueries(queryId)
+            queryInfo.waitingOn -= 1
+            val queryFinished = addCandidate(queryInfo, queryId, index, location, nodeLocator)
             if (queryFinished) {
-              val queryInfo = neighborQueries(queryId)
               val finalNeighbors = queryInfo.candidates.map(_.index)
               respondTo(queryId) ! KNearestNeighbors(queryInfo.query, finalNeighbors)
               removedQueries = removedQueries + queryId
             }
           }
         }
-        searchOnGraph(graph, nodeLocator, neighborQueries -- removedQueries, respondTo -- removedQueries, lastIdUsed, waitingOnLocation - index)
+        searchOnGraph(graph, nodeLocator, neighborQueries -- removedQueries, respondTo -- removedQueries, lastIdUsed, waitingOnLocation)
 
       case GetGraph(sender) =>
         //ctx.log.info("Asked for graph info")
@@ -182,7 +179,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
 
       case SendResponsibleIndicesTo(nsgWorker) =>
         nsgWorker ! Responsibility(graph.keys.toSeq)
-        searchOnGraphForNSG(graph, nodeLocator, Map.empty, Map.empty, SearchOnGraph.QueryResponseLocations(data), mutable.Map.empty)
+        searchOnGraphForNSG(graph, nodeLocator, Map.empty, Map.empty, SearchOnGraph.QueryResponseLocations(data), new WaitingOnLocation)
     }
 
   def searchOnGraphForNSG(graph: Map[Int, Seq[Int]],
@@ -190,29 +187,25 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
                           pathQueries: Map[Int, QueryInfo],
                           respondTo: Map[Int, ActorRef[BuildNSGEvent]],
                           responseLocations: QueryResponseLocations[Float],
-                          waitingOnLocation: mutable.Map[Int, Set[Int]]): Behavior[SearchOnGraphEvent] =
+                          waitingOnLocation: WaitingOnLocation): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial {
       case CheckedNodesOnSearch(endPoint, startingPoint, neighborsWanted, asker) =>
         // the end point should always be local, because that is how the SoG Actor is chosen
         val query = data.get(endPoint)
         val queryId = endPoint
         // starting point is navigating node, so as of yet not always local
-        val candidateList = if (responseLocations.hasLocation(startingPoint)) {
+        val pathQueryInfo = if (responseLocations.hasLocation(startingPoint)) {
           val location = responseLocations.location(startingPoint)
           responseLocations.addedToCandidateList(startingPoint, location)
           nodeLocator.findResponsibleActor(startingPoint) ! GetNeighbors(startingPoint, queryId, ctx.self)
           QueryInfo(query, neighborsWanted, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false)), 0)
         } else {
-          if (waitingOnLocation.contains(startingPoint)) {
-            waitingOnLocation += startingPoint -> (waitingOnLocation(startingPoint) + queryId)
-          } else {
-            nodeLocator.findResponsibleActor(startingPoint) ! GetLocation(startingPoint, ctx.self)
-            waitingOnLocation += startingPoint -> Set(queryId)
-          }
-          QueryInfo(query, neighborsWanted, Seq.empty, 1)
+          val queryInfo = QueryInfo(query, neighborsWanted, Seq.empty, 0)
+          askForLocation(startingPoint, queryId, queryInfo, nodeLocator, waitingOnLocation)
+          queryInfo
         }
         searchOnGraphForNSG(graph, nodeLocator,
-          pathQueries + (queryId -> candidateList),
+          pathQueries + (queryId -> pathQueryInfo),
           respondTo  + (queryId -> asker),
           responseLocations,
           waitingOnLocation)
@@ -247,11 +240,12 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
 
       case Location(index, location) =>
         var removedQueries: Set[Int] = Set.empty
-        waitingOnLocation(index).foreach {queryId =>
+        waitingOnLocation.received(index).foreach {queryId =>
           if (pathQueries.contains(queryId)){
             val queryInfo = pathQueries(queryId)
+            queryInfo.waitingOn -= 1
             val oldNumberOfCandidates = queryInfo.candidates.length
-            val queryFinished = addCandidate(queryId, index, location, pathQueries, nodeLocator)
+            val queryFinished = addCandidate(queryInfo, queryId, index, location, nodeLocator)
             if (queryInfo.candidates.length > oldNumberOfCandidates) { // the candidate has been added
               responseLocations.addedToCandidateList(index, location)
             }
@@ -261,7 +255,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
             }
           }
         }
-        searchOnGraphForNSG(graph, nodeLocator, pathQueries -- removedQueries, respondTo -- removedQueries, responseLocations, waitingOnLocation - index)
+        searchOnGraphForNSG(graph, nodeLocator, pathQueries -- removedQueries, respondTo -- removedQueries, responseLocations, waitingOnLocation)
 
       case GetNSGFrom(nsgMerger) =>
         //ctx.log.info("Asking NSG Merger for my part of the NSG")
@@ -336,7 +330,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
 
       case GraphConnected(sender) =>
         sender ! BackToSearch
-        searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, -1, mutable.Map.empty)
+        searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, -1, new WaitingOnLocation)
     }
 }
 

@@ -5,7 +5,7 @@ import akka.actor.typed.scaladsl.ActorContext
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, FinishedUpdatingConnectivity}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{DoneConnectingChildren, GetLocation, GetNeighbors, IsConnected, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, SortedCheckedNodes}
-import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator}
+import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator, WaitingOnLocation}
 
 import scala.collection.mutable
 
@@ -52,7 +52,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
                        processedIndex: Int,
                        potentialNewCandidates: Seq[Int],
                        nodeLocator: NodeLocator[SearchOnGraphEvent],
-                       waitingOnLocations: mutable.Map[Int, Set[Int]],
+                       waitingOnLocations: WaitingOnLocation,
                        data: LocalData[Float]): Unit = {
     val oldCandidates = queryInfo.candidates
     val processedCandidate = oldCandidates.find(query => query.index == processedIndex)
@@ -72,7 +72,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
         // candidates for which we don't have the location have to ask for it first
         val remoteCandidates = potentialNewCandidates.diff(currentCandidateIndices)
           .filter(candidateIndex => !data.isLocal(candidateIndex))
-        askForLocations(remoteCandidates, queryId, queryInfo, nodeLocator, waitingOnLocations)
+        remoteCandidates.foreach(candidate => askForLocation(candidate, queryId, queryInfo, nodeLocator, waitingOnLocations))
 
         val updatedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance).slice(0, queryInfo.neighborsWanted)
         candidate.processed = true
@@ -89,7 +89,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
                            potentialNewCandidates: Seq[Int],
                            responseLocations: QueryResponseLocations[Float],
                            nodeLocator: NodeLocator[SearchOnGraphEvent],
-                           waitingOnLocations: mutable.Map[Int, Set[Int]]): Unit = {
+                           waitingOnLocations: WaitingOnLocation): Unit = {
     val oldCandidates = queryInfo.candidates
     val processedCandidate = oldCandidates.find(query => query.index == processedIndex)
     // check if I still care about these neighbors or if the node they belong to has already been kicked out of the candidate list
@@ -108,7 +108,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
         // candidates for which we don't have the location have to ask for it first
         val remoteCandidates = potentialNewCandidates.diff(currentCandidateIndices)
           .filter(candidateIndex => !responseLocations.hasLocation(candidateIndex))
-        askForLocations(remoteCandidates, queryId, queryInfo, nodeLocator, waitingOnLocations)
+        remoteCandidates.foreach(candidate => askForLocation(candidate, queryId, queryInfo, nodeLocator, waitingOnLocations))
 
         val mergedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance)
         // update responseLocations
@@ -128,38 +128,25 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
     }
   }
 
-  def askForLocations(remoteCandidates: Seq[Int],
-                      queryId: Int,
-                      queryInfo: QueryInfo,
-                      nodeLocator: NodeLocator[SearchOnGraphEvent],
-                      waitingOnLocation: mutable.Map[Int, Set[Int]]): Unit = {
-    // update for locations we have already asked for
-    waitingOnLocation ++= remoteCandidates.filter(candidate => waitingOnLocation.contains(candidate))
-      .map { candidate =>
-        if (!waitingOnLocation(candidate).contains(queryId)) {
-          queryInfo.waitingOn += 1
-        }
-        candidate -> (waitingOnLocation(candidate) + queryId)
+  def askForLocation(remoteIndex: Int, queryId: Int, queryInfo: QueryInfo, nodeLocator: NodeLocator[SearchOnGraphEvent], waitingOnLocation: WaitingOnLocation): Unit = {
+    if (!waitingOnLocation.alreadyIn(remoteIndex, queryId)) {
+      queryInfo.waitingOn += 1
+      val askForLocation = waitingOnLocation.insert(remoteIndex, queryId)
+      if (askForLocation) {
+        nodeLocator.findResponsibleActor(remoteIndex) ! GetLocation(remoteIndex, ctx.self)
       }
-    // add locations that we are just now asking for
-    waitingOnLocation ++= remoteCandidates.filter(candidate => !waitingOnLocation.contains(candidate))
-      .map { candidate =>
-        nodeLocator.findResponsibleActor(candidate) ! GetLocation(candidate, ctx.self)
-        candidate -> Set(queryId)
-      }
+    }
   }
 
-  def addCandidate(queryId: Int,
+  def addCandidate(queryInfo: QueryInfo,
+                   queryId: Int,
                    candidateId: Int,
                    candidateLocation: Seq[Float],
-                   queries: Map[Int, QueryInfo],
                    nodeLocator: NodeLocator[SearchOnGraphEvent]): Boolean = {
-    // return if the means the query is finished
-    val queryInfo = queries(queryId)
-    queryInfo.waitingOn -= 1
+    // return if this means the query is finished
     val currentCandidates = queryInfo.candidates
     val allProcessed = !currentCandidates.exists(_.processed == false)
-    val dist = euclideanDist(queries(queryId).query, candidateLocation)
+    val dist = euclideanDist(queryInfo.query, candidateLocation)
     // if the starting node wasn't local, current candidates is empty
     val closeEnough =
       if (currentCandidates.nonEmpty) {
@@ -185,5 +172,6 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
     }
     respondTo ! SortedCheckedNodes(queryId, checkedNodes)
     queryInfo.candidates.foreach(candidate => responseLocations.removedFromCandidateList(candidate.index))
+    ctx.log.info("responseLocations size: {}", responseLocations.size())
   }
 }
