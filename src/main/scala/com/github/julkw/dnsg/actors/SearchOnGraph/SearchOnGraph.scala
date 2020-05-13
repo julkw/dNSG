@@ -131,6 +131,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], waitingOnL
       queryInfo.waitingOn += 1
       val askForLocation = waitingOnLocation.insert(remoteIndex, queryId)
       if (askForLocation) {
+        // TODO add timer to guarantee response (resend if not gotten one)
         nodeLocator.findResponsibleActor(remoteIndex) ! GetLocation(remoteIndex, ctx.self)
       }
     }

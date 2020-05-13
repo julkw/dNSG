@@ -22,6 +22,16 @@ class WaitingOnLocation {
     }
   }
 
+  def insertMultiple(locationIndex: Int, needLocationIndex: Set[Int]): Boolean = {
+    if (waitingOnLocation.contains(locationIndex)) {
+      waitingOnLocation = waitingOnLocation + (locationIndex -> (waitingOnLocation(locationIndex) ++ needLocationIndex))
+      false
+    } else {
+      waitingOnLocation = waitingOnLocation + (locationIndex -> needLocationIndex)
+      true
+    }
+  }
+
   def received(locationIndex: Int): Set[Int] = {
     if (waitingOnLocation.contains(locationIndex)) {
       val stuffToProcess = waitingOnLocation(locationIndex)
