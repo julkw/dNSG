@@ -1,16 +1,20 @@
 package com.github.julkw.dnsg.actors.SearchOnGraph
 
+import scala.concurrent.duration._
 import akka.actor.typed.ActorRef
-import akka.actor.typed.scaladsl.ActorContext
+import akka.actor.typed.scaladsl.{ActorContext, TimerScheduler}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, FinishedUpdatingConnectivity}
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{DoneConnectingChildren, GetLocation, GetNeighbors, IsConnected, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{DoneConnectingChildren, GetLocation, GetNeighbors, IsConnected, ReaskForLocation, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, SortedCheckedNodes}
-import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
+import com.github.julkw.dnsg.util.Data.CacheData
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, WaitingOnLocation}
 
 import scala.collection.mutable
 
-abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], waitingOnLocation: WaitingOnLocation, ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends Distance {
+abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
+                             waitingOnLocation: WaitingOnLocation,
+                             timers: TimerScheduler[SearchOnGraphEvent],
+                             ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends Distance {
   // data type for more readable code
   protected case class QueryCandidate(index: Int, distance: Double, var processed: Boolean)
   // TODO rename to something that includes all information contained
@@ -23,6 +27,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], waitingOnL
 
   protected case class ConnectivityInfo(connectedNodes: mutable.Set[Int], messageTracker: mutable.Map[Int, MessageCounter])
 
+  protected case class LocationTimerKey(locationIndex: Int)
 
   def updateNeighborConnectedness(node: Int,
                                   parent: Int,
@@ -132,7 +137,8 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], waitingOnL
       queryInfo.waitingOn += 1
       val askForLocation = waitingOnLocation.insert(remoteIndex, queryId)
       if (askForLocation) {
-        // TODO add timer to guarantee response (resend if not gotten one)
+        // start timer to resend request if one of the messages was dropped
+        timers.startSingleTimer(LocationTimerKey(remoteIndex), ReaskForLocation(remoteIndex), 5.seconds)
         nodeLocator.findResponsibleActor(remoteIndex) ! GetLocation(remoteIndex, ctx.self)
       }
     }

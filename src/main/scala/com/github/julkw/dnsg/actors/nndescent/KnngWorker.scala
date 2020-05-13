@@ -166,11 +166,6 @@ class KnngWorker(data: CacheData[Float],
 
       case GetCandidates(query, index, sender) =>
         val localCandidates = findLocalCandidates(query, kdTree)
-        /* worse quality approximate graph but faster
-        val localCandidates = kdTree.root.queryLeaf(query).data.map(index =>
-          (index, euclideanDist(data.get(index), query))
-        )
-         */
         sender ! Candidates(localCandidates, index)
         buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, knngWorkers, graph)
 
@@ -306,7 +301,6 @@ class KnngWorker(data: CacheData[Float],
 
   def findLocalCandidates(query: Seq[Float], kdTree: KdTree[Seq[Int]]): Seq[(Int, Double)] = {
     // Find candidates on own tree using Efanna method
-    // TODO test how much time this costs and if it improves the graph significantly
     var currentDataNode: TreeNode[Seq[Int]] = kdTree.root
     var localCandidates: Seq[(Int, Double)] = Seq.empty
     while (currentDataNode.inverseQueryChild(query) != currentDataNode) {

@@ -1,6 +1,6 @@
 package com.github.julkw.dnsg.actors.SearchOnGraph
 
-import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
+import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.ClusterCoordinator._
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
@@ -39,6 +39,8 @@ object SearchOnGraphActor {
 
   final case class Location(index: Int, location: Seq[Float]) extends SearchOnGraphEvent
 
+  final case class ReaskForLocation(index: Int) extends SearchOnGraphEvent
+
   // send responsiblities to NSG workers
   final case class SendResponsibleIndicesTo(nsgWorker: ActorRef[BuildNSGEvent]) extends SearchOnGraphEvent
   // get NSG from NSGMerger
@@ -68,14 +70,17 @@ object SearchOnGraphActor {
             data: LocalData[Float]): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
     //ctx.log.info("Started SearchOnGraph")
     val settings = Settings(ctx.system.settings.config)
-     new SearchOnGraphActor(supervisor, CacheData(settings.cacheSize, data), new WaitingOnLocation, ctx).waitForLocalGraph()
+    Behaviors.withTimers(timers =>
+      new SearchOnGraphActor(supervisor, CacheData(settings.cacheSize, data), new WaitingOnLocation, timers, ctx).waitForLocalGraph()
+    )
   }
 }
 
 class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
                          data: CacheData[Float],
                          waitingOnLocation: WaitingOnLocation,
-                         ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends SearchOnGraph(supervisor, waitingOnLocation, ctx) {
+                         timers: TimerScheduler[SearchOnGraphActor.SearchOnGraphEvent],
+                         ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends SearchOnGraph(supervisor, waitingOnLocation, timers, ctx) {
   import SearchOnGraphActor._
 
   def waitForLocalGraph(): Behavior[SearchOnGraphEvent] =
@@ -156,7 +161,13 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
         sender ! Location(index, data.get(index))
         searchOnGraph(graph, nodeLocator, neighborQueries, respondTo, lastIdUsed)
 
+      case ReaskForLocation(index) =>
+        ctx.log.info("Still haven't received the location of {}. Sending another request.", index)
+        nodeLocator.findResponsibleActor(index) ! GetLocation(index, ctx.self)
+        searchOnGraph(graph, nodeLocator, neighborQueries, respondTo, lastIdUsed)
+
       case Location(index, location) =>
+        timers.cancel(LocationTimerKey(index))
         var removedQueries: Set[Int] = Set.empty
         data.add(index, location)
         waitingOnLocation.received(index).foreach {queryId =>
@@ -237,7 +248,13 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
         sender ! Location(index, data.get(index))
         searchOnGraphForNSG(graph, nodeLocator, pathQueries, respondTo, responseLocations)
 
+      case ReaskForLocation(index) =>
+        ctx.log.info("Still haven't received the location of {}. Sending another request.", index)
+        nodeLocator.findResponsibleActor(index) ! GetLocation(index, ctx.self)
+        searchOnGraphForNSG(graph, nodeLocator, pathQueries, respondTo, responseLocations)
+
       case Location(index, location) =>
+        timers.cancel(LocationTimerKey(index))
         var removedQueries: Set[Int] = Set.empty
         waitingOnLocation.received(index).foreach {queryId =>
           if (pathQueries.contains(queryId)){
