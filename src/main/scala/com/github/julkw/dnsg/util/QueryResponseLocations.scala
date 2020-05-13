@@ -8,6 +8,10 @@ case class QueryResponseLocations[T](data: LocalData[T]) {
     data.isLocal(index) || responseLocations.contains(index)
   }
 
+  def size(): Int = {
+    responseLocations.size
+  }
+
   def location(index: Int): Seq[T] = {
     if (data.isLocal(index)) {
       data.get(index)
@@ -17,7 +21,7 @@ case class QueryResponseLocations[T](data: LocalData[T]) {
   }
 
   def addedToCandidateList(index: Int, location: Seq[T]): Unit = {
-    data.add(index, location)
+    //data.add(index, location)
     if(responseLocations.contains(index)) {
       responseLocations(index).usedBy += 1
     } else if (!data.isPermanentlyLocal(index)) {

@@ -190,7 +190,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
           finishedNsgMergers.foreach { merger => merger ! NSGToSearchOnGraph}
           nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraph)
         }
-        waitOnNSG(finishedNsgMergers, movedToSog, navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
+        waitOnNSG(updatedMergers, movedToSog, navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
 
       case UpdatedToNSG =>
         if (movedToSog + 1 == graphHolders.size) {

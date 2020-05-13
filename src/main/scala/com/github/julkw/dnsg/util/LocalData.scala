@@ -2,7 +2,7 @@ package com.github.julkw.dnsg.util
 
 // this class let's the local data pretend to be global, so the workers can continue working with global indices
 case class LocalData[T] (data: Seq[Seq[T]], localOffset: Int) {
-  val cacheSize: Int = 100
+  val cacheSize: Int = 0
   protected val cache: NodeCacheLRU[T] = NodeCacheLRU(cacheSize)
 
   def get(globalIndex: Int): Seq[T] = {

@@ -112,13 +112,14 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
 
         val mergedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance)
         //remove unprocessed candidates from behind neighborsWanted (they will not be needed for response)
-        // do this for all so I can take all behin wantedNeighbors out without worrying
+        // do this for all so I can take all after wantedNeighbors out without worrying
         // TODO?
         newCandidates.foreach(candidate => responseLocations.addedToCandidateList(candidate.index, responseLocations.location(candidate.index)))
         val updatedCandidates = mergedCandidates.slice(0, queryInfo.neighborsWanted) ++
           mergedCandidates.slice(queryInfo.neighborsWanted, mergedCandidates.length).filter { candidate =>
             if (!candidate.processed) {
               // candidate can be removed as it is needed neither in the response nor in the search
+              // TODO HOW IN THE WORLD DOES THIS REMOVE TOO MUCH? WHERE DO I FORGET TO ADD???
               responseLocations.removedFromCandidateList(candidate.index)
             }
             candidate.processed
@@ -190,13 +191,10 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent], ctx: Actor
 
   def sendResults(queryId: Int, queryInfo: QueryInfo, responseLocations: QueryResponseLocations[Float], respondTo: ActorRef[BuildNSGEvent]): Unit = {
     val checkedNodes = queryInfo.candidates.map { candidate =>
-      if (!responseLocations.hasLocation(candidate.index)) {
-        // TODO WHYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
-        val dabug = 2
-      }
       (candidate.index, responseLocations.location(candidate.index))
     }
     queryInfo.candidates.foreach(candidate => responseLocations.removedFromCandidateList(candidate.index))
+    ctx.log.info("Left in responseLocations: {}", responseLocations.size())
     respondTo ! SortedCheckedNodes(queryId, checkedNodes)
   }
 }

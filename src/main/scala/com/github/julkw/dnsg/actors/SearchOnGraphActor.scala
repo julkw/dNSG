@@ -249,7 +249,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
         waitingOnLocation(index).foreach {queryId =>
           if (pathQueries.contains(queryId)){
             val queryInfo = pathQueries(queryId)
-            val oldNumberOfCandidates = queryInfo.candidates.length
+            //val oldNumberOfCandidates = queryInfo.candidates.length
             val queryFinished = addCandidate(queryId, index, location, pathQueries, nodeLocator)
             responseLocations.addedToCandidateList(index, location)
             //if (queryInfo.candidates.length > oldNumberOfCandidates) { // the candidate has been added
