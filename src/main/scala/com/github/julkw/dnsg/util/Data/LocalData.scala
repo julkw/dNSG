@@ -1,4 +1,4 @@
-package com.github.julkw.dnsg.util
+package com.github.julkw.dnsg.util.Data
 
 // this class let's the local data pretend to be global, so the workers can continue working with global indices
 case class LocalData[T] (data: Seq[Seq[T]], localOffset: Int) {

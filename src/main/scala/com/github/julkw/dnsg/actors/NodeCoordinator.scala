@@ -11,7 +11,8 @@ import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildGraphEvent, MoveGraph, ResponsibleFor}
-import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator, Settings, dNSGSerializable}
+import com.github.julkw.dnsg.util.Data.LocalData
+import com.github.julkw.dnsg.util.{Distance, NodeLocator, Settings, dNSGSerializable}
 
 object NodeCoordinator {
 

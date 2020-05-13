@@ -1,7 +1,8 @@
 package com.github.julkw.dnsg.actors.nndescent
 
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildGraphEvent, JoinNodes, PotentialNeighbor}
-import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator}
+import com.github.julkw.dnsg.util.Data.LocalData
+import com.github.julkw.dnsg.util.{Distance, NodeLocator}
 
 
 abstract class Joiner(sampleRate: Double, data: LocalData[Float]) extends Distance {
@@ -22,8 +23,8 @@ abstract class Joiner(sampleRate: Double, data: LocalData[Float]) extends Distan
       }
     }
     else {
-      neighbors.groupBy(neighbor => nodeLocator.findResponsibleActor(neighbor)).foreach { case (actor, neighbors) =>
-        actor ! JoinNodes(neighbors, node)
+      neighbors.groupBy(neighbor => nodeLocator.findResponsibleActor(neighbor)).foreach { case (actor, groupedNeighbors) =>
+        actor ! JoinNodes(groupedNeighbors, node)
       }
     }
   }

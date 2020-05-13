@@ -1,4 +1,4 @@
-package com.github.julkw.dnsg.util
+package com.github.julkw.dnsg.util.Data
 
 trait NodeCache[T] {
   def insert(index: Int, data: Seq[T])

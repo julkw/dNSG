@@ -5,7 +5,8 @@ import akka.actor.typed.scaladsl.ActorContext
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, FinishedUpdatingConnectivity}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{DoneConnectingChildren, GetLocation, GetNeighbors, IsConnected, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, SortedCheckedNodes}
-import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator, WaitingOnLocation}
+import com.github.julkw.dnsg.util.Data.LocalData
+import com.github.julkw.dnsg.util.{Distance, NodeLocator, WaitingOnLocation}
 
 import scala.collection.mutable
 

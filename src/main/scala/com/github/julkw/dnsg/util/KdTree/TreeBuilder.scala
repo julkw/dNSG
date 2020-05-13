@@ -1,4 +1,6 @@
-package com.github.julkw.dnsg.util
+package com.github.julkw.dnsg.util.KdTree
+
+import com.github.julkw.dnsg.util.Data.LocalData
 
 import scala.collection.mutable
 import scala.collection.mutable.Queue

@@ -5,7 +5,8 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.CoordinationEvent
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{CheckedNodesOnSearch, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, ReverseNeighbors}
-import com.github.julkw.dnsg.util.{Distance, LocalData, NodeLocator, dNSGSerializable}
+import com.github.julkw.dnsg.util.Data.LocalData
+import com.github.julkw.dnsg.util.{Distance, NodeLocator, dNSGSerializable}
 
 import scala.language.postfixOps
 

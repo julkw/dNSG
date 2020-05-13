@@ -1,6 +1,6 @@
 package com.github.julkw.dnsg.actors.SearchOnGraph
 
-import com.github.julkw.dnsg.util.LocalData
+import com.github.julkw.dnsg.util.Data.LocalData
 
 case class QueryResponseLocations[T](data: LocalData[T]) {
   protected case class ResponseLocation(location: Seq[T], var usedBy: Int)

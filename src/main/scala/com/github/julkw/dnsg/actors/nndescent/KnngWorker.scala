@@ -9,7 +9,9 @@ import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, Corre
 import com.github.julkw.dnsg.actors.NodeCoordinator.{LocalKnngWorker, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{Graph, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.{IndexTree, KdTree, LocalData, NodeLocator, SplitNode, TreeBuilder, TreeNode, WaitingOnLocation, dNSGSerializable}
+import com.github.julkw.dnsg.util.Data.LocalData
+import com.github.julkw.dnsg.util.KdTree.{IndexTree, KdTree, SplitNode, TreeBuilder, TreeNode}
+import com.github.julkw.dnsg.util.{NodeLocator, WaitingOnLocation, dNSGSerializable}
 
 import scala.language.postfixOps
 

@@ -5,6 +5,7 @@ import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.ClusterCoordinator._
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, Responsibility}
+import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util._
 
 import scala.collection.mutable

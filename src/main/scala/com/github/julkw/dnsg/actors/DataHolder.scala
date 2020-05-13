@@ -13,7 +13,8 @@ import com.github.julkw.dnsg.actors.ClusterCoordinator.{AverageValue, Coordinati
 import com.github.julkw.dnsg.actors.NodeCoordinator.{DataRef, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetGraph, Graph, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.{LocalData, dNSGSerializable}
+import com.github.julkw.dnsg.util.Data.LocalData
+import com.github.julkw.dnsg.util.dNSGSerializable
 
 import scala.language.postfixOps
 
