@@ -37,6 +37,8 @@ object KnngWorker {
 
   final case class CompleteLocalJoin(g_node: Int) extends BuildGraphEvent
 
+  final case class SendReverseNeighbors(g_node: Int) extends BuildGraphEvent
+
   final case class PotentialNeighbor(g_node: Int, potentialNeighbor: (Int, Double)) extends BuildGraphEvent
 
   final case class JoinNodes(g_nodes: Seq[Int], potentialNeighborIndex: Int) extends BuildGraphEvent
@@ -209,9 +211,10 @@ class KnngWorker(data: CacheData[Float],
     //ctx.log.info("Starting nnDescent")
     // for debugging
     ctx.log.info("Average distance in graph before nndescent: {}", averageGraphDist(graph, settings.k))
-    graph.foreach{ case (index, neighbors) =>
+    graph.keys.foreach{ g_node =>
       // do the initial local joins through messages to self to prevent Heartbeat problems
-      ctx.self ! CompleteLocalJoin(index)
+      ctx.self ! SendReverseNeighbors(g_node)
+      ctx.self ! CompleteLocalJoin(g_node)
     }
     // setup timer used to determine when the graph is done
     timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
@@ -228,15 +231,18 @@ class KnngWorker(data: CacheData[Float],
         // already done, so do nothing
         nnDescent(nodeLocator, graph, reverseNeighbors)
 
+      case SendReverseNeighbors(g_node) =>
+        val neighbors = graph(g_node)
+        neighbors.foreach{case (neighborIndex, _) =>
+          nodeLocator.findResponsibleActor(neighborIndex) ! AddReverseNeighbor(neighborIndex, g_node)
+        }
+        nnDescent(nodeLocator, graph, reverseNeighbors)
+
       case CompleteLocalJoin(g_node) =>
         //ctx.log.info("local join")
         // prevent timeouts in the initial phase of graph nnDescent
         timers.cancel(NNDescentTimerKey)
         val neighbors = graph(g_node)
-        // send all reverse neighbors to the correct actors
-        neighbors.foreach{case (neighborIndex, _) =>
-          nodeLocator.findResponsibleActor(neighborIndex) ! AddReverseNeighbor(neighborIndex, g_node)
-        }
         joinNeighbors(neighbors, nodeLocator)
         // if this is the last inital join, the timer is needed from now on
         timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
