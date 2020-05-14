@@ -28,6 +28,8 @@ object NodeCoordinator {
 
   final case class LocalKnngWorker(worker: ActorRef[BuildGraphEvent]) extends NodeCoordinationEvent
 
+  final case object AllDone extends NodeCoordinationEvent
+
   def apply(fileName: Option[String]): Behavior[NodeCoordinationEvent] = Behaviors.setup { ctx =>
     val settings = Settings(ctx.system.settings.config)
 
@@ -127,7 +129,14 @@ class NodeCoordinator(settings: Settings,
     Behaviors.receiveMessagePartial{
       case StartSearchOnGraph =>
         graphHolders.foreach(graphHolder => graphHolder ! GetNSGFrom(nsgMerger))
-        Behaviors.empty
+        waitForShutdown()
+    }
+
+  def waitForShutdown(): Behavior[NodeCoordinationEvent] =
+    Behaviors.receiveMessagePartial {
+      case AllDone =>
+        ctx.system.terminate()
+        Behaviors.stopped
     }
 
 }
