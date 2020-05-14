@@ -15,10 +15,11 @@ abstract class Joiner(sampleRate: Double, data: CacheData[Float]) extends Distan
   def joinNode(node: Int, neighbors: Seq[Int], nodeLocator: NodeLocator[BuildGraphEvent]): Unit = {
     if (data.isLocal(node)) {
       val newData = data.get(node)
-      neighbors.filter(neighbor => data.isLocal(neighbor)).foreach(neighbor =>
+      val (localNeighbors, remoteNeighbors) = neighbors.partition(neighbor => data.isLocal(neighbor))
+      localNeighbors.foreach(neighbor =>
         joinLocals(node, newData, neighbor, data.get(neighbor), nodeLocator)
       )
-      neighbors.filter(neighbor => !data.isLocal(neighbor)).groupBy(neighbor => nodeLocator.findResponsibleActor(neighbor)).foreach { case (actor, oldNeighbors) =>
+      remoteNeighbors.groupBy(neighbor => nodeLocator.findResponsibleActor(neighbor)).foreach { case (actor, oldNeighbors) =>
         actor ! JoinNodes(oldNeighbors, node)
       }
     }

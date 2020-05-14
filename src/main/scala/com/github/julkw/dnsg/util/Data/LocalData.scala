@@ -4,6 +4,7 @@ package com.github.julkw.dnsg.util.Data
 case class LocalData[T] (data: Seq[Seq[T]], localOffset: Int) {
   val cacheSize: Int = 0
   protected val cache: NodeCacheLRU[T] = NodeCacheLRU(cacheSize)
+  protected val permanentDataSize: Int = data.length
 
   def get(globalIndex: Int): Seq[T] = {
     // this assumes, that whoever called this method checked isLocal first
@@ -13,11 +14,11 @@ case class LocalData[T] (data: Seq[Seq[T]], localOffset: Int) {
 
   def isPermanentlyLocal(globalIndex: Int): Boolean = {
     val index = localIndex(globalIndex)
-    0 <= index && index < data.length
+    0 <= index && index < permanentDataSize
   }
 
   def localDataSize: Int = {
-    data.length
+    permanentDataSize
   }
 
   def dimension: Int = {
@@ -26,7 +27,7 @@ case class LocalData[T] (data: Seq[Seq[T]], localOffset: Int) {
 
   // TODO this return the global indices for the local data. Maybe rename as this might get confusing
   def localIndices: Seq[Int] = {
-    localOffset until localOffset + data.length
+    localOffset until localOffset + permanentDataSize
   }
 
   def localIndex(globalIndex: Int): Int = {

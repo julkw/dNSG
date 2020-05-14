@@ -68,16 +68,13 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
         val currentCandidateIndices = oldCandidates.map(_.index)
         // only add candidates that are not already in the candidateList
         // candidates for which we have the location can be added immediately
-        val newCandidates = potentialNewCandidates.diff(currentCandidateIndices)
-          .filter(candidateIndex => data.isLocal(candidateIndex))
-          .map { candidateIndex =>
+        val (localCandidates, remoteCandidates) = potentialNewCandidates.diff(currentCandidateIndices).partition(potentialCandidate => data.isLocal(potentialCandidate))
+        val newCandidates = localCandidates.map { candidateIndex =>
             val location = data.get(candidateIndex)
             QueryCandidate(candidateIndex, euclideanDist(queryInfo.query, location), processed = false)
           }
         // candidates for which we don't have the location have to ask for it first
-        val remoteCandidates = potentialNewCandidates.diff(currentCandidateIndices)
-          .filter(candidateIndex => !data.isLocal(candidateIndex))
-        remoteCandidates.foreach(candidate => askForLocation(candidate, queryId, queryInfo, nodeLocator))
+        remoteCandidates.foreach(remoteNeighbor => askForLocation(remoteNeighbor, queryId, queryInfo, nodeLocator))
 
         val updatedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance).slice(0, queryInfo.neighborsWanted)
         candidate.processed = true
@@ -103,20 +100,19 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
         val currentCandidateIndices = oldCandidates.map(_.index)
         // only add candidates that are not already in the candidateList
         // candidates for which we have the location can be added immediately
-        val newCandidates = potentialNewCandidates.diff(currentCandidateIndices)
-          .filter(candidateIndex => responseLocations.hasLocation(candidateIndex))
-          .map { candidateIndex =>
+        val (localCandidates, remoteCandidates) = potentialNewCandidates.diff(currentCandidateIndices).partition(candidateIndex =>
+          responseLocations.hasLocation(candidateIndex)
+        )
+        val newCandidates = localCandidates.map { candidateIndex =>
             val location = responseLocations.location(candidateIndex)
+            responseLocations.addedToCandidateList(candidateIndex, location)
             QueryCandidate(candidateIndex, euclideanDist(queryInfo.query, location), processed = false)
           }
         // candidates for which we don't have the location have to ask for it first
-        val remoteCandidates = potentialNewCandidates.diff(currentCandidateIndices)
-          .filter(candidateIndex => !responseLocations.hasLocation(candidateIndex))
-        remoteCandidates.foreach(candidate => askForLocation(candidate, queryId, queryInfo, nodeLocator))
+        remoteCandidates.foreach(remoteCandidate => askForLocation(remoteCandidate, queryId, queryInfo, nodeLocator))
 
         val mergedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance)
         // update responseLocations
-        newCandidates.foreach(newCandidate => responseLocations.addedToCandidateList(newCandidate.index, responseLocations.location(newCandidate.index)))
         val updatedCandidates = mergedCandidates.slice(0, queryInfo.neighborsWanted) ++
           mergedCandidates.slice(queryInfo.neighborsWanted, mergedCandidates.length).filter { mergedCandidate =>
             if (!mergedCandidate.processed) {
