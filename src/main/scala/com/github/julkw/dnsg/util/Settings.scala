@@ -1,7 +1,7 @@
 package com.github.julkw.dnsg.util
 
 import akka.actor.typed.scaladsl.ActorContext
-import com.github.julkw.dnsg.actors.Coordinator
+import com.github.julkw.dnsg.actors.{ClusterCoordinator}
 import com.typesafe.config.Config
 
 case class Settings(config: Config) {
@@ -18,6 +18,10 @@ case class Settings(config: Config) {
 
   val workers: Int = config.getInt(s"$namespace.workers")
 
+  val nodesExpected: Int = config.getInt(s"$namespace.nodes-expected")
+
+  val cacheSize: Int = config.getInt(s"$namespace.cache-size")
+
   // for testing
   val queryFilePath: String = config.getString(s"$namespace.query-testing.query-file")
 
@@ -29,7 +33,7 @@ case class Settings(config: Config) {
 
   val dimensions: Int = config.getInt(s"$namespace.query-testing.dimensions")
 
-  def printSettings(ctx: ActorContext[Coordinator.CoordinationEvent]): Unit = {
+  def printSettings(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]): Unit = {
     ctx.log.info("inputFile: {}", inputFilePath)
     ctx.log.info("k: {}", k)
     ctx.log.info("sampleRate: {}", sampleRate)

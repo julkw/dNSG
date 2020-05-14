@@ -1,38 +1,59 @@
 package com.github.julkw.dnsg
 import akka.actor.typed.scaladsl.Behaviors
-import akka.actor.typed.ActorSystem
-import akka.actor.typed.Behavior
-import com.github.julkw.dnsg.actors.Coordinator
+import akka.actor.typed.{ActorSystem, Behavior}
+import akka.cluster.typed.{Cluster, Join}
+import com.github.julkw.dnsg.actors.NodeCoordinator
 import com.typesafe.config.ConfigFactory
 
 object Main {
 
   object RootBehavior {
-    def apply(): Behavior[Nothing] = Behaviors.setup[Nothing] { context =>
+    def apply(filename: Option[String]): Behavior[Nothing] = Behaviors.setup[Nothing] { context =>
       context.log.info("Started up dNSG app")
-      // Create an actor that handles cluster domain events
-      //context.spawn(ClusterListener(), "ClusterListener")
-      context.spawn(Coordinator(), name="Coordinator")
+      context.spawn(NodeCoordinator(filename), name="NodeCoordinator")
       Behaviors.empty
     }
   }
 
   def main(args: Array[String]): Unit = {
-    // Remnants from copied example
-    val ports = Seq(25251)
+    val arguments = parseArgs(args)
+    val port = arguments._1
+    val filename = arguments._2
 
-    ports.foreach(startup)
-  }
-
-  def startup(port: Int): Unit = {
-    // Override the configuration of the port
-    val config = ConfigFactory.parseString(s"""
-      akka.remote.artery.canonical.port=$port
+    val config = port match {
+      case Some(inputPort) =>
+        ConfigFactory.parseString(s"""
+      akka.remote.artery.canonical.port=$inputPort
       """).withFallback(ConfigFactory.load())
+      case None =>
+        ConfigFactory.load()
+    }
 
     // Create an Akka system
-    val system = ActorSystem[Nothing](RootBehavior(), "ClusterSystem", config)
+    val system = ActorSystem[Nothing](RootBehavior(filename), "dNSGSystem", config)
     // TODO add Reaper
+  }
+
+  def parseArgs(args: Array[String]): (Option[Int], Option[String]) = {
+    // TODO: maybe add seed-port over arguments as well?
+    var port: Option[Int] = None
+    var filename: Option[String] = None
+
+    def nextOption(list: List[String]): Unit = {
+      list match {
+        case Nil =>
+        case "--port" :: value :: tail =>
+          port = Some(value.toInt)
+          nextOption(tail)
+        case "--filename" :: value :: tail =>
+          filename = Some(value)
+          nextOption(tail)
+      }
+    }
+
+    val argList = args.toList.flatMap(arg => arg.split("="))
+    nextOption(argList)
+    (port, filename)
   }
 
 

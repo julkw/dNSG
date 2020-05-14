@@ -1,4 +1,4 @@
-package com.github.julkw.dnsg.util
+package com.github.julkw.dnsg.util.KdTree
 
 import akka.actor.typed.ActorRef
 

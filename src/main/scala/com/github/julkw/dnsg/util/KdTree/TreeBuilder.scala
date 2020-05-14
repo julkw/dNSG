@@ -1,11 +1,13 @@
-package com.github.julkw.dnsg.util
+package com.github.julkw.dnsg.util.KdTree
+
+import com.github.julkw.dnsg.util.Data.LocalData
 
 import scala.collection.mutable
 import scala.collection.mutable.Queue
 
-case class TreeBuilder (data: Seq[Seq[Float]], k: Int) {
+case class TreeBuilder (data: LocalData[Float], k: Int) {
 
-  def construct(indices:Seq[Int]): IndexTree = {
+  def construct(indices: Seq[Int]): IndexTree = {
     val node: LeafNode[Seq[Int]] = LeafNode(indices)
     if (indices.length <= k) {
       IndexTree(node)
@@ -33,15 +35,16 @@ case class TreeBuilder (data: Seq[Seq[Float]], k: Int) {
 
   def oneLevelSplit(indices: Seq[Int]): SplitNode[Seq[Int]] = {
     val r = scala.util.Random
-    val maxDimension = data(0).length
+    val maxDimension = data.dimension
     val splittingDimension = r.nextInt(maxDimension)
     // TODO replace with better median implementation
     // https://stackoverflow.com/questions/4662292/scala-median-implementation
-    val sortedValues: Seq[Float] = indices.map(index => data(index)(splittingDimension)).sorted
-    val median: Float = sortedValues(indices.length / 2)
 
-    val leftIndices = indices.filter(index => data(index)(splittingDimension) < median)
-    val rightIndices = indices.filter(index => data(index)(splittingDimension) >= median)
+    val sortedValues = indices.map(index => data.get(index)(splittingDimension)).sorted
+    val median = sortedValues(indices.length / 2)
+
+    val leftIndices = indices.filter(index => data.get(index)(splittingDimension) < median)
+    val rightIndices = indices.filter(index => data.get(index)(splittingDimension) >= median)
 
     val leftNode: LeafNode[Seq[Int]] = LeafNode[Seq[Int]](leftIndices)
     val rightNode: LeafNode[Seq[Int]] = LeafNode[Seq[Int]](rightIndices)

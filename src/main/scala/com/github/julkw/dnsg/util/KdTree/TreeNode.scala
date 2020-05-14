@@ -1,5 +1,4 @@
-package com.github.julkw.dnsg.util
-
+package com.github.julkw.dnsg.util.KdTree
 
 trait TreeNode[dataType] {
   def queryLeaf(query: Seq[Float]): LeafNode[dataType]
