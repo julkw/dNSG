@@ -3,12 +3,13 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.ClusterCoordinator._
+import com.github.julkw.dnsg.actors.createNSG.GraphConnector
+import com.github.julkw.dnsg.actors.createNSG.GraphConnector.{ConnectGraphEvent, GraphToConnect, UpdatedGraphReceived}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, Responsibility}
 import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
 import com.github.julkw.dnsg.util._
 
-import scala.collection.mutable
 import scala.language.postfixOps
 
 
@@ -41,26 +42,16 @@ object SearchOnGraphActor {
 
   final case class ReaskForLocation(index: Int) extends SearchOnGraphEvent
 
+  // connectivity
+
+  final case class UpdateGraph(updatedGraph: Map[Int, Seq[Int]], sendAckTo: ActorRef[ConnectGraphEvent]) extends SearchOnGraphEvent
+
   // send responsiblities to NSG workers
   final case class SendResponsibleIndicesTo(nsgWorker: ActorRef[BuildNSGEvent]) extends SearchOnGraphEvent
   // get NSG from NSGMerger
   final case class GetNSGFrom(nsgMerger: ActorRef[MergeNSGEvent]) extends SearchOnGraphEvent
 
   final case class PartialNSG(graph: Map[Int, Seq[Int]]) extends SearchOnGraphEvent
-
-  // TODO move to other actor?
-  // check for Connectivity
-  final case class UpdateConnectivity(root: Int) extends SearchOnGraphEvent
-
-  final case class IsConnected(connectedNode: Int, parent: Int) extends SearchOnGraphEvent
-
-  final case class DoneConnectingChildren(nodeAwaitingAnswer: Int) extends SearchOnGraphEvent
-
-  final case class FindUnconnectedNode(sendTo: ActorRef[CoordinationEvent], notAskedYet: Set[ActorRef[SearchOnGraphEvent]]) extends SearchOnGraphEvent
-
-  final case class AddToGraph(startNode: Int, endNode: Int) extends SearchOnGraphEvent
-
-  final case class GraphConnected(sender: ActorRef[CoordinationEvent]) extends SearchOnGraphEvent
 
   // safe knng to file
   final case class GetGraph(sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
@@ -184,6 +175,11 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
         }
         searchOnGraph(graph, nodeLocator, neighborQueries -- removedQueries, respondTo -- removedQueries, lastIdUsed)
 
+      case UpdateGraph(updatedGraph, graphConnector) =>
+        graphConnector ! UpdatedGraphReceived
+        supervisor ! UpdatedGraph
+        searchOnGraph(updatedGraph, nodeLocator, neighborQueries, respondTo, lastIdUsed)
+
       case GetGraph(sender) =>
         //ctx.log.info("Asked for graph info")
         sender ! Graph(graph, ctx.self)
@@ -283,71 +279,11 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
     Behaviors.receiveMessagePartial{
       case PartialNSG(graph) =>
         ctx.log.info("Received nsg, ready for queries/establishing connectivity")
-        supervisor ! UpdatedToNSG
-        establishConnectivity(graph, nodeLocator, ConnectivityInfo(mutable.Set.empty, mutable.Map.empty))
-    }
-
-  def establishConnectivity(graph: Map[Int, Seq[Int]],
-                            nodeLocator: NodeLocator[SearchOnGraphEvent],
-                            connectivityInfo: ConnectivityInfo): Behavior[SearchOnGraphEvent] =
-    Behaviors.receiveMessagePartial {
-      case UpdateConnectivity(root) =>
-        ctx.log.info("Updating connectivity")
-        connectivityInfo.connectedNodes.add(root)
-        updateNeighborConnectedness(root, root, connectivityInfo, graph, nodeLocator)
-        establishConnectivity(graph, nodeLocator, connectivityInfo)
-
-      case IsConnected(connectedNode, parent) =>
-        // in case the parent is placed on another node this might not be known here
-        connectivityInfo.connectedNodes.add(parent)
-        if (connectivityInfo.connectedNodes.contains(connectedNode)) {
-          nodeLocator.findResponsibleActor(parent) ! DoneConnectingChildren(parent)
-        } else {
-          connectivityInfo.connectedNodes.add(connectedNode)
-          updateNeighborConnectedness(connectedNode, parent, connectivityInfo, graph, nodeLocator)
-        }
-        establishConnectivity(graph, nodeLocator, connectivityInfo)
-
-      case DoneConnectingChildren(nodeAwaitingAnswer) =>
-        val messageCounter = connectivityInfo.messageTracker(nodeAwaitingAnswer)
-        messageCounter.waitingForMessages -= 1
-        if (messageCounter.waitingForMessages == 0) {
-          if (messageCounter.parentNode == nodeAwaitingAnswer) {
-            supervisor ! FinishedUpdatingConnectivity
-            ctx.log.info("Done with updating connectivity")
-          } else {
-            nodeLocator.findResponsibleActor(messageCounter.parentNode) !
-              DoneConnectingChildren(messageCounter.parentNode)
-            connectivityInfo.messageTracker -= nodeAwaitingAnswer
-          }
-        }
-        establishConnectivity(graph, nodeLocator, connectivityInfo)
-
-      case FindUnconnectedNode(sendTo, notAskedYet) =>
-        val unconnectedNodes = graph.keys.toSet -- connectivityInfo.connectedNodes
-        if (unconnectedNodes.isEmpty) {
-          // no unconnected nodes in this actor, ask others
-          if (notAskedYet.nonEmpty) {
-            notAskedYet.head ! FindUnconnectedNode(sendTo, notAskedYet - ctx.self)
-          } else {
-            // there are no unconnected nodes
-            supervisor ! AllConnected
-          }
-        } else {
-          // send one of the unconnected nodes
-          sendTo ! UnconnectedNode(unconnectedNodes.head, data.get(unconnectedNodes.head))
-        }
-        establishConnectivity(graph, nodeLocator, connectivityInfo)
-
-      case AddToGraph(startNode, endNode) =>
-        ctx.log.info("Add edge to graph to ensure connectivity")
-        val updatedNeighbors = graph(startNode) :+ endNode
-        establishConnectivity(graph + (startNode -> updatedNeighbors), nodeLocator, connectivityInfo)
-
-      case GraphConnected(sender) =>
-        sender ! BackToSearch
+        val graphConnector =  ctx.spawn(GraphConnector(data, supervisor, ctx.self), name="graphConnector")
+        graphConnector ! GraphToConnect(graph)
         searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, -1)
     }
+
 }
 
 
