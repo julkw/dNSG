@@ -102,6 +102,7 @@ class NodeCoordinator(settings: Settings,
 
   def waitForNavigatingNode(data: LocalData[Float], graphHolders: Set[ActorRef[SearchOnGraphEvent]]): Behavior[NodeCoordinationEvent] =
     Behaviors.receiveMessagePartial {
+      // TODO this was unhandled in one runthrough
       case StartBuildingNSG(navigatingNode, nodeLocator) =>
         // TODO this is where data redistribution would take place
         startBuildingNSG(data, nodeLocator, graphHolders, navigatingNode)

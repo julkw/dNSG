@@ -73,10 +73,18 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       val updatedNodeCoordinators = nodeCoordinators + nodeCoordinator
       if (settings.nodesExpected == updatedNodeCoordinators.size) {
         updatedNodeCoordinators.foreach(nc => nc ! StartDistributingData)
+        ctx.log.info("All expected nodes found, start distributing data.")
       }
       setUp(updatedNodeCoordinators)
+
     case DataSize(dataSize, dataHolder) =>
       distributeDataForKnng(NodeLocatorBuilder(dataSize), Set.empty, nodeCoordinators, dataHolder)
+
+    case KnngDistributionInfo(responsibility, worker) =>
+      // TODO this is not very nice
+      ctx.log.info("Got distribution info too early, forwarding to self")
+      ctx.self ! KnngDistributionInfo(responsibility, worker)
+      setUp(nodeCoordinators)
   }
 
   def distributeDataForKnng(nodeLocatorBuilder: NodeLocatorBuilder[BuildGraphEvent],
