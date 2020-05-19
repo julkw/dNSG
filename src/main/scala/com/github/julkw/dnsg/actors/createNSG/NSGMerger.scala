@@ -34,7 +34,7 @@ object NSGMerger {
 
   private case class ListingResponse(listing: Receptionist.Listing) extends MergeNSGEvent
 
-  def apply(supervisor: ActorRef[CoordinationEvent], responsibility: Seq[Int], nodesExpected: Int, nodeLocator: NodeLocator[SearchOnGraphEvent]): Behavior[MergeNSGEvent] = Behaviors.setup { ctx =>
+  def apply(supervisor: ActorRef[CoordinationEvent], responsibility: Seq[Int], nodesExpected: Int, nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]): Behavior[MergeNSGEvent] = Behaviors.setup { ctx =>
     ctx.log.info("Started NSGMerger")
     val listingResponseAdapter = ctx.messageAdapter[Receptionist.Listing](ListingResponse)
     Behaviors.setup { ctx =>
@@ -46,7 +46,7 @@ object NSGMerger {
 
 class NSGMerger(supervisor: ActorRef[CoordinationEvent],
                 nodesExpected: Int,
-                nodeLocator: NodeLocator[SearchOnGraphEvent],
+                nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                 timers: TimerScheduler[MergeNSGEvent],
                 ctx: ActorContext[MergeNSGEvent]) {
   import NSGMerger._

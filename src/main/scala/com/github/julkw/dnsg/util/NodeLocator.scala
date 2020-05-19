@@ -1,15 +1,23 @@
 package com.github.julkw.dnsg.util
 
-import akka.actor.typed.ActorRef
-
-
 case class NodeLocatorBuilder[T](dataLength: Int) {
-  val nodeMap: Array[Option[ActorRef[T]]] = Array.fill(dataLength){None}
+  protected val nodeMap: Array[Option[T]] = Array.fill(dataLength){None}
 
-  def addLocations(indices: Seq[Int], location: ActorRef[T]): Option[NodeLocator[T]] = {
+  def addLocation(indices: Seq[Int], location: T): Option[NodeLocator[T]] = {
     indices.foreach { index =>
       nodeMap(index) = Some(location)
     }
+    checkIfFull()
+  }
+
+  def addFromMap(locations: Map[Int, T]): Option[NodeLocator[T]] = {
+    locations.foreach { case (nodeIndex, location) =>
+      nodeMap(nodeIndex) = Some(location)
+    }
+    checkIfFull()
+  }
+
+  protected def checkIfFull(): Option[NodeLocator[T]] = {
     if (nodeMap.contains(None)) {
       None
     } else {
@@ -18,12 +26,14 @@ case class NodeLocatorBuilder[T](dataLength: Int) {
   }
 }
 
-case class NodeLocator[T](locationData: Array[ActorRef[T]]) {
-  def findResponsibleActor (absolutIndex: Int): ActorRef[T] = {
-   locationData(absolutIndex)
+case class NodeLocator[T](locationData: Array[T]) {
+  val graphSize = locationData.length
+
+  def findResponsibleActor (nodeIndex: Int): T = {
+   locationData(nodeIndex)
   }
 
-  def graphSize: Int = {
-    locationData.length
+  def allActors(): Set[T] = {
+    locationData.toSet
   }
 }

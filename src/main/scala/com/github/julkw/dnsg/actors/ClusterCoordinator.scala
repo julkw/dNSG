@@ -3,7 +3,7 @@ package com.github.julkw.dnsg.actors
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries}
-import com.github.julkw.dnsg.actors.GraphRedistributer.RedistributionEvent
+import com.github.julkw.dnsg.actors.GraphRedistributer.{DistributeData, NoReplication, RedistributionEvent}
 import com.github.julkw.dnsg.actors.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, SearchOnGraphEvent}
@@ -36,6 +36,10 @@ object ClusterCoordinator {
 
   // redistributing the graph
   final case class RedistributerDistributionInfo(responsibility: Seq[Int], sender: ActorRef[RedistributionEvent]) extends CoordinationEvent
+
+  final case class RedistributionNodeAssignments(nodeAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]]) extends CoordinationEvent
+
+  final case object DoneWithRedistribution extends CoordinationEvent
 
   // building the NSG
 
@@ -94,14 +98,14 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       setUp(nodeCoordinators)
   }
 
-  def distributeDataForKnng(nodeLocatorBuilder: NodeLocatorBuilder[BuildGraphEvent],
+  def distributeDataForKnng(nodeLocatorBuilder: NodeLocatorBuilder[ActorRef[BuildGraphEvent]],
                             knngWorkers: Set[ActorRef[BuildGraphEvent]],
                             nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                             dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
         case KnngDistributionInfo(responsibility, worker) =>
           val updatedKnngWorkers = knngWorkers + worker
-          nodeLocatorBuilder.addLocations(responsibility, worker) match {
+          nodeLocatorBuilder.addLocation(responsibility, worker) match {
             case Some(nodeLocator) =>
               ctx.log.info("Data distribution done, start building approximate graph")
               updatedKnngWorkers.foreach{ worker =>
@@ -109,6 +113,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
               }
               buildApproximateKnng(updatedKnngWorkers, 0, nodeLocator.graphSize, nodeCoordinators, dataHolder)
             case None =>
+              ctx.log.info("Got distribution info from {} workers, still waiting for rest", updatedKnngWorkers.size)
               // not yet collected all distributionInfo
               distributeDataForKnng(nodeLocatorBuilder, updatedKnngWorkers, nodeCoordinators, dataHolder)
           }
@@ -151,14 +156,14 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         waitForNnDescent(knngWorkers, workersDone - 1, graphSize, nodeCoordinators, dataHolder)
     }
 
-  def waitOnSearchOnGraphDistributionInfo(nodeLocatorBuilder: NodeLocatorBuilder[SearchOnGraphEvent],
+  def waitOnSearchOnGraphDistributionInfo(nodeLocatorBuilder: NodeLocatorBuilder[ActorRef[SearchOnGraphEvent]],
                                           graphHolders: Set[ActorRef[SearchOnGraphEvent]],
                                           nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                                           dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case SearchOnGraphDistributionInfo(indices, actorRef) =>
         val updatedSogActors = graphHolders + actorRef
-        nodeLocatorBuilder.addLocations(indices, actorRef) match {
+        nodeLocatorBuilder.addLocation(indices, actorRef) match {
           case Some (nodeLocator) =>
             ctx.log.info("All graphs now with SearchOnGraph actors")
             dataHolder ! GetAverageValue(ctx.self)
@@ -170,7 +175,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         }
     }
 
-  def searchOnKnng(nodeLocator: NodeLocator[SearchOnGraphEvent],
+  def searchOnKnng(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                    graphHolders: Set[ActorRef[SearchOnGraphEvent]],
                    nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                    dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
@@ -190,9 +195,64 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         waitOnNSG(Set.empty, navigatingNode, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
     }
 
+  def waitOnRedistributionDistributionInfo(navigatingNodeIndex: Int,
+                                           redistributers: Set[ActorRef[RedistributionEvent]],
+                                           redistributionLocations: NodeLocatorBuilder[ActorRef[RedistributionEvent]],
+                                           sogNodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                                           graphHolders: Set[ActorRef[SearchOnGraphEvent]],
+                                           nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
+                                           dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
+    Behaviors.receiveMessagePartial {
+      case RedistributerDistributionInfo(responsibilities, redistributer) =>
+        val updatedRedistributers = redistributers + redistributer
+        redistributionLocations.addLocation(responsibilities, redistributer) match {
+          case Some(redistributionLocator) =>
+            // TODO take replicationMode from settings
+            updatedRedistributers.foreach(graphRedistributer => graphRedistributer ! DistributeData(navigatingNodeIndex, graphHolders, NoReplication, redistributionLocator))
+            waitOnRedistributionAssignments(navigatingNodeIndex, NodeLocatorBuilder(sogNodeLocator.graphSize), sogNodeLocator, graphHolders, nodeCoordinators, dataHolder)
+          case None =>
+            waitOnRedistributionDistributionInfo(navigatingNodeIndex, updatedRedistributers, redistributionLocations, sogNodeLocator, graphHolders, nodeCoordinators, dataHolder)
+        }
+    }
+
+  def waitOnRedistributionAssignments(navigatingNodeIndex: Int,
+                                      redistributionAssignments: NodeLocatorBuilder[Set[ActorRef[SearchOnGraphEvent]]],
+                                      sogNodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                                      graphHolders: Set[ActorRef[SearchOnGraphEvent]],
+                                      nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
+                                      dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
+    Behaviors.receiveMessagePartial {
+      case RedistributionNodeAssignments(assignments) =>
+        redistributionAssignments.addFromMap(assignments) match {
+          case Some(redostribtutionAssignments) =>
+            // TODO send to SearchOnGraph Actors and dataHolders and then wait for them to finish moving data around
+            val simplifiedLocator = NodeLocator(redostribtutionAssignments.locationData.map(_.head))
+            waitForRedistribution(navigatingNodeIndex, 0, simplifiedLocator, graphHolders, nodeCoordinators, dataHolder)
+          case None =>
+            waitOnRedistributionAssignments(navigatingNodeIndex, redistributionAssignments, sogNodeLocator, graphHolders, nodeCoordinators, dataHolder)
+        }
+    }
+
+  // TODO don't build new locator here, we already have one. Just wait for a DoneWithRedistribution message
+  def waitForRedistribution(navigatingNode: Int,
+                            finishedWorkers: Int,
+                            nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                            graphHolders: Set[ActorRef[SearchOnGraphEvent]],
+                            nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
+                            dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
+    Behaviors.receiveMessagePartial {
+      case DoneWithRedistribution =>
+        if (finishedWorkers + 1 == graphHolders.size) {
+          ctx.log.info("Done with data redistribution, starting with NSG")
+          nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
+          waitOnNSG(Set.empty, navigatingNode, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
+        }
+        waitForRedistribution(navigatingNode, finishedWorkers + 1, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
+    }
+
   def waitOnNSG(finishedNsgMergers: Set[ActorRef[MergeNSGEvent]],
                 navigatingNodeIndex: Int,
-                nodeLocator: NodeLocator[SearchOnGraphEvent],
+                nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                 graphHolders: Set[ActorRef[SearchOnGraphEvent]],
                 nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                 dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
@@ -204,23 +264,23 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
           ctx.log.info("Initial NSG seems to be done")
           finishedNsgMergers.foreach { merger => merger ! NSGToSearchOnGraph}
           nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraph)
-          waitForGraphConnectors(navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder, Set.empty, NodeLocatorBuilder[ConnectGraphEvent](nodeLocator.graphSize))
+          waitForGraphConnectors(navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder, Set.empty, NodeLocatorBuilder[ActorRef[ConnectGraphEvent]](nodeLocator.graphSize))
         } else {
           waitOnNSG(updatedMergers, navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
         }
     }
 
   def waitForGraphConnectors(navigatingNodeIndex: Int,
-                             nodeLocator: NodeLocator[SearchOnGraphEvent],
+                             nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                              graphHolders: Set[ActorRef[SearchOnGraphEvent]],
                              nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                              dataHolder: ActorRef[LoadDataEvent],
                              graphConnectors: Set[ActorRef[ConnectGraphEvent]],
-                             graphConnectorLocator: NodeLocatorBuilder[ConnectGraphEvent]): Behavior[CoordinationEvent] =
+                             graphConnectorLocator: NodeLocatorBuilder[ActorRef[ConnectGraphEvent]]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case GraphConnectorDistributionInfo(responsibility, graphConnector) =>
         val updatedConnectors = graphConnectors + graphConnector
-        val gcLocator = graphConnectorLocator.addLocations(responsibility, graphConnector)
+        val gcLocator = graphConnectorLocator.addLocation(responsibility, graphConnector)
         gcLocator match {
           case Some(newLocator) =>
             updatedConnectors.foreach(connector => connector ! ConnectorDistributionInfo(newLocator))
@@ -232,9 +292,9 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
     }
 
   def connectNSG(navigatingNodeIndex: Int,
-                 sogLocator: NodeLocator[SearchOnGraphEvent],
+                 sogLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                  graphHolders: Set[ActorRef[SearchOnGraphEvent]],
-                 gcLocator: NodeLocator[ConnectGraphEvent],
+                 gcLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
                  graphConnectors: Set[ActorRef[ConnectGraphEvent]],
                  nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                  dataHolder: ActorRef[LoadDataEvent],
@@ -269,7 +329,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
     }
 
     def waitForUpdatedGraphs(navigatingNodeIndex: Int,
-                             nodeLocator: NodeLocator[SearchOnGraphEvent],
+                             nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                              graphHolders: Set[ActorRef[SearchOnGraphEvent]],
                              nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                              dataHolder: ActorRef[LoadDataEvent],
@@ -287,7 +347,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       }
 
     def testNSG(navigatingNodeIndex: Int,
-                nodeLocator: NodeLocator[SearchOnGraphEvent],
+                nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                 graphHolders: Set[ActorRef[SearchOnGraphEvent]],
                 nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                 queries: Map[Seq[Float], Seq[Int]],

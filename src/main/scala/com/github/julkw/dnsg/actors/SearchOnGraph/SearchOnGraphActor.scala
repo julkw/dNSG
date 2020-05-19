@@ -18,11 +18,17 @@ object SearchOnGraphActor {
   sealed trait SearchOnGraphEvent extends dNSGSerializable
 
   // setup
-  final case class Graph(graph: Map[Int, Seq[Int]], sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
+  // TODO send data like this so it can be changed in future
+  final case class Graph(graph: Map[Int, Seq[Int]], data: CacheData[Float], sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
   final case class GraphReceived(graphHolder: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
-  final case class GraphDistribution(nodeLocator: NodeLocator[SearchOnGraphEvent]) extends SearchOnGraphEvent
+  final case class GraphDistribution(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]) extends SearchOnGraphEvent
+
+  // TODO call and use these two
+  final case class RedistributeGraph(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends SearchOnGraphEvent
+
+  final case class UpdatedData(data: LocalData[Float])
 
   // queries
   final case class FindNearestNeighbors(query: Seq[Float], k: Int, asker: ActorRef[CoordinationEvent]) extends SearchOnGraphEvent
@@ -89,7 +95,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
     }
 
   def searchOnGraph(graph: Map[Int, Seq[Int]],
-                    nodeLocator: NodeLocator[SearchOnGraphEvent],
+                    nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                     neighborQueries: Map[Int, QueryInfo],
                     respondTo: Map[Int, ActorRef[CoordinationEvent]],
                     lastIdUsed: Int): Behavior[SearchOnGraphEvent] =
@@ -191,7 +197,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
     }
 
   def searchOnGraphForNSG(graph: Map[Int, Seq[Int]],
-                          nodeLocator: NodeLocator[SearchOnGraphEvent],
+                          nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                           pathQueries: Map[Int, QueryInfo],
                           respondTo: Map[Int, ActorRef[BuildNSGEvent]],
                           responseLocations: QueryResponseLocations[Float]): Behavior[SearchOnGraphEvent] =
@@ -275,7 +281,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
         waitForNSG(nodeLocator)
     }
 
-  def waitForNSG(nodeLocator: NodeLocator[SearchOnGraphEvent]): Behavior[SearchOnGraphEvent] =
+  def waitForNSG(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case PartialNSG(graph) =>
         ctx.log.info("Received nsg, ready for queries/establishing connectivity")

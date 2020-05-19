@@ -33,7 +33,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
                        queryId: Int,
                        processedIndex: Int,
                        potentialNewCandidates: Seq[Int],
-                       nodeLocator: NodeLocator[SearchOnGraphEvent],
+                       nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                        data: CacheData[Float]): Unit = {
     val oldCandidates = queryInfo.candidates
     val processedCandidate = oldCandidates.find(query => query.index == processedIndex)
@@ -66,7 +66,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
                            processedIndex: Int,
                            potentialNewCandidates: Seq[Int],
                            responseLocations: QueryResponseLocations[Float],
-                           nodeLocator: NodeLocator[SearchOnGraphEvent]): Unit = {
+                           nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]): Unit = {
     val oldCandidates = queryInfo.candidates
     val processedCandidate = oldCandidates.find(query => query.index == processedIndex)
     // check if I still care about these neighbors or if the node they belong to has already been kicked out of the candidate list
@@ -104,7 +104,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
     }
   }
 
-  def askForLocation(remoteIndex: Int, queryId: Int, queryInfo: QueryInfo, nodeLocator: NodeLocator[SearchOnGraphEvent]): Unit = {
+  def askForLocation(remoteIndex: Int, queryId: Int, queryInfo: QueryInfo, nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]): Unit = {
     if (!waitingOnLocation.alreadyIn(remoteIndex, queryId)) {
       queryInfo.waitingOn += 1
       val askForLocation = waitingOnLocation.insert(remoteIndex, queryId)
@@ -120,7 +120,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
                    queryId: Int,
                    candidateId: Int,
                    candidateLocation: Seq[Float],
-                   nodeLocator: NodeLocator[SearchOnGraphEvent]): Boolean = {
+                   nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]): Boolean = {
     // return if this means the query is finished
     val currentCandidates = queryInfo.candidates
     val allProcessed = !currentCandidates.exists(_.processed == false)

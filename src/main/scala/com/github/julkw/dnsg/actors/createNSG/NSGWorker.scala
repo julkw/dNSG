@@ -26,7 +26,7 @@ object NSGWorker {
             navigatingNode: Int,
             k: Int,
             maxReverseNeighbors: Int,
-            nodeLocator: NodeLocator[SearchOnGraphEvent],
+            nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
             nsgMerger: ActorRef[MergeNSGEvent]): Behavior[BuildNSGEvent] = Behaviors.setup { ctx =>
     //ctx.log.info("Started NSGWorker")
     Behaviors.setup(ctx =>
@@ -39,7 +39,7 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
                 navigatingNode: Int,
                 k: Int,
                 maxReverseNeighbors: Int,
-                nodeLocator: NodeLocator[SearchOnGraphEvent],
+                nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                 nsgMerger: ActorRef[MergeNSGEvent],
                 ctx: ActorContext[NSGWorker.BuildNSGEvent]) extends Distance {
 

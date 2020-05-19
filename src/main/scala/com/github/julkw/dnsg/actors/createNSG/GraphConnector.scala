@@ -14,7 +14,7 @@ object GraphConnector {
 
   final case class GraphToConnect(graph: Map[Int, Seq[Int]]) extends ConnectGraphEvent
 
-  final case class ConnectorDistributionInfo(nodeLocator: NodeLocator[ConnectGraphEvent]) extends ConnectGraphEvent
+  final case class ConnectorDistributionInfo(nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]]) extends ConnectGraphEvent
 
   final case class UpdateConnectivity(root: Int) extends ConnectGraphEvent
 
@@ -66,7 +66,7 @@ class GraphConnector(data: CacheData[Float],
   }
 
   def establishConnectivity(graph: Map[Int, Seq[Int]],
-                            nodeLocator: NodeLocator[ConnectGraphEvent],
+                            nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
                             connectivityInfo: ConnectivityInfo): Behavior[ConnectGraphEvent] =
     Behaviors.receiveMessagePartial {
       case UpdateConnectivity(root) =>
@@ -138,7 +138,7 @@ class GraphConnector(data: CacheData[Float],
                                   connectivityInfo: ConnectivityInfo,
                                   graph: Map[Int, Seq[Int]],
                                   sendResultTo: ActorRef[CoordinationEvent],
-                                  nodeLocator: NodeLocator[ConnectGraphEvent]): Unit = {
+                                  nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]]): Unit = {
     var sendMessages = 0
     // tell all neighbors they are connected
     graph(node).foreach { neighborIndex =>

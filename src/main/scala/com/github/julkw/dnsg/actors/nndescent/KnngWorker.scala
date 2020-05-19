@@ -23,7 +23,7 @@ object KnngWorker {
   // setup
   final case class ResponsibleFor(responsibility: Seq[Int], treeDepth: Int) extends BuildGraphEvent
 
-  final case class BuildApproximateGraph(nodeLocator: NodeLocator[BuildGraphEvent], workers: Set[ActorRef[BuildGraphEvent]]) extends BuildGraphEvent
+  final case class BuildApproximateGraph(nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]], workers: Set[ActorRef[BuildGraphEvent]]) extends BuildGraphEvent
 
   // build approximate graph
   final case class FindCandidates(index: Int) extends BuildGraphEvent
@@ -64,8 +64,6 @@ object KnngWorker {
 
   final case class SOGDistributionInfo(treeNode: TreeNode[ActorRef[SearchOnGraphEvent]], sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
 
-
-  val knngServiceKey: ServiceKey[BuildGraphEvent] = ServiceKey[BuildGraphEvent]("knngWorker")
   // TODO do over input
   val timeoutAfter = 3.second
 
@@ -105,7 +103,6 @@ class KnngWorker(data: CacheData[Float],
         buildDistributionTree()
       } else {
         // this is a leaf node for data distribution
-        ctx.system.receptionist ! Receptionist.Register(knngServiceKey, ctx.self)
         clusterCoordinator ! KnngDistributionInfo(responsibility, ctx.self)
 
         // Build local tree while waiting on DistributionTree message
@@ -143,7 +140,7 @@ class KnngWorker(data: CacheData[Float],
                             responsibility: Seq[Int],
                             candidates: Array[Seq[(Int, Double)]],
                             awaitingAnswer: Array[Int],
-                            nodeLocator: NodeLocator[BuildGraphEvent],
+                            nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]],
                             knngWorkers: Set[ActorRef[BuildGraphEvent]],
                             graph:Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
@@ -206,7 +203,7 @@ class KnngWorker(data: CacheData[Float],
         startNNDescent(nodeLocator, graph)
     }
 
-  def startNNDescent(nodeLocator: NodeLocator[BuildGraphEvent],
+  def startNNDescent(nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]],
                      graph: Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] = {
     //ctx.log.info("Starting nnDescent")
     // for debugging
@@ -223,7 +220,7 @@ class KnngWorker(data: CacheData[Float],
     nnDescent(nodeLocator, graph, reverseNeighbors)
   }
 
-  def nnDescent(nodeLocator: NodeLocator[BuildGraphEvent],
+  def nnDescent(nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]],
                 graph: Map[Int, Seq[(Int, Double)]],
                 reverseNeighbors: Map[Int, Set[Int]]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
@@ -326,7 +323,7 @@ class KnngWorker(data: CacheData[Float],
                               potentialNeighbor: (Int, Double),
                               graph: Map[Int, Seq[(Int, Double)]],
                               reverseNeighbors: Map[Int, Set[Int]],
-                              nodeLocator: NodeLocator[BuildGraphEvent]): Map[Int, Seq[(Int, Double)]] = {
+                              nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]]): Map[Int, Seq[(Int, Double)]] = {
     val currentNeighbors = graph(g_node)
     val currentReverseNeighbors = reverseNeighbors(g_node)
     val currentMaxDist = currentNeighbors(currentNeighbors.length - 1)._2
@@ -350,7 +347,7 @@ class KnngWorker(data: CacheData[Float],
     }
   }
 
-  def sendForLocation(nodeLocator: NodeLocator[BuildGraphEvent], remoteIndex: Int, waitingNodes: Seq[Int]): Unit = {
+  def sendForLocation(nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]], remoteIndex: Int, waitingNodes: Seq[Int]): Unit = {
     val sendForLocation = waitingOnLocation.insertMultiple(remoteIndex, waitingNodes.toSet)
     if (sendForLocation) {
       nodeLocator.findResponsibleActor(remoteIndex) ! SendLocation(remoteIndex, ctx.self)

@@ -14,7 +14,7 @@ import com.github.julkw.dnsg.actors.NodeCoordinator.{DataRef, NodeCoordinationEv
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetGraph, Graph, SearchOnGraphEvent}
 import com.github.julkw.dnsg.util.Data.LocalData
-import com.github.julkw.dnsg.util.dNSGSerializable
+import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}
 
 import scala.language.postfixOps
 
@@ -33,6 +33,10 @@ object DataHolder {
   final case class PartialData(partialData: Seq[Seq[Float]], dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
   final case class GetNext(alreadyReceived: Int, dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
+
+  // TODO map from searchonGraphActor to correct dataHolder and send over the data while also receiving the now redistributed data
+  // TODO Once it has all been received, send to SearchOnGraphActor and NodeCoordinator
+  final case class RedistributeData(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
 
   // other stuff
   final case class GetAverageValue(replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
