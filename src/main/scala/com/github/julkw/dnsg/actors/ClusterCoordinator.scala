@@ -3,6 +3,7 @@ package com.github.julkw.dnsg.actors
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries}
+import com.github.julkw.dnsg.actors.GraphRedistributer.RedistributionEvent
 import com.github.julkw.dnsg.actors.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, SearchOnGraphEvent}
@@ -32,6 +33,9 @@ object ClusterCoordinator {
   final case object CorrectFinishedNNDescent extends CoordinationEvent
 
   final case class WrappedSearchOnGraphEvent(event: SearchOnGraphActor.SearchOnGraphEvent) extends CoordinationEvent
+
+  // redistributing the graph
+  final case class RedistributerDistributionInfo(responsibility: Seq[Int], sender: ActorRef[RedistributionEvent]) extends CoordinationEvent
 
   // building the NSG
 
