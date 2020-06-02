@@ -1,6 +1,9 @@
 package com.github.julkw.dnsg.util
 
-case class NodeLocatorBuilder[T](dataLength: Int) {
+import scala.reflect.ClassTag
+import scala.reflect.runtime.universe._
+
+case class NodeLocatorBuilder[T:ClassTag](dataLength: Int) {
   protected val nodeMap: Array[Option[T]] = Array.fill(dataLength){None}
 
   def addLocation(indices: Seq[Int], location: T): Option[NodeLocator[T]] = {
@@ -10,7 +13,7 @@ case class NodeLocatorBuilder[T](dataLength: Int) {
     checkIfFull()
   }
 
-  def addFromMap(locations: Map[Int, T]): Option[NodeLocator[T]] = {
+  def addFromMap(locations: Map[Int, T])(implicit tag: TypeTag[T]): Option[NodeLocator[T]] = {
     locations.foreach { case (nodeIndex, location) =>
       nodeMap(nodeIndex) = Some(location)
     }
