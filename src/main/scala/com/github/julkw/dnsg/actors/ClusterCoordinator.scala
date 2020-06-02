@@ -224,9 +224,9 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
     Behaviors.receiveMessagePartial {
       case RedistributionNodeAssignments(assignments) =>
         redistributionAssignments.addFromMap(assignments) match {
-          case Some(redostribtutionAssignments) =>
+          case Some(redistributionAssignments) =>
             // TODO send to SearchOnGraph Actors and dataHolders and then wait for them to finish moving data around
-            val simplifiedLocator = NodeLocator(redostribtutionAssignments.locationData.map(_.head))
+            val simplifiedLocator = NodeLocator(redistributionAssignments.locationData.map(_.head))
             waitForRedistribution(navigatingNodeIndex, 0, simplifiedLocator, graphHolders, nodeCoordinators, dataHolder)
           case None =>
             waitOnRedistributionAssignments(navigatingNodeIndex, redistributionAssignments, sogNodeLocator, graphHolders, nodeCoordinators, dataHolder)

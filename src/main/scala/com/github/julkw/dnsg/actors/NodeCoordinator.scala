@@ -26,6 +26,7 @@ object NodeCoordinator {
 
   final case class StartBuildingNSG(navigatingNode: Int, nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]) extends NodeCoordinationEvent
 
+
   final case class LocalKnngWorker(worker: ActorRef[BuildGraphEvent]) extends NodeCoordinationEvent
 
   final case object AllDone extends NodeCoordinationEvent

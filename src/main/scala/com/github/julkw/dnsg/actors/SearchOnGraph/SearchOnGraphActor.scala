@@ -19,13 +19,15 @@ object SearchOnGraphActor {
 
   // setup
   // TODO send data like this so it can be changed in future
-  final case class Graph(graph: Map[Int, Seq[Int]], data: CacheData[Float], sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
+  final case class Graph(graph: Map[Int, Seq[Int]], sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
   final case class GraphReceived(graphHolder: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
   final case class GraphDistribution(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]) extends SearchOnGraphEvent
 
-  // TODO call and use these two
+  // TODO call and use these three
+  final case object StartGraphRedistribution extends SearchOnGraphEvent
+
   final case class RedistributeGraph(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends SearchOnGraphEvent
 
   final case class UpdatedData(data: LocalData[Float])

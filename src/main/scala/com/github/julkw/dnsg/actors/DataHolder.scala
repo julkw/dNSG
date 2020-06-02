@@ -13,7 +13,7 @@ import com.github.julkw.dnsg.actors.ClusterCoordinator.{AverageValue, Coordinati
 import com.github.julkw.dnsg.actors.NodeCoordinator.{DataRef, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetGraph, Graph, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.Data.LocalData
+import com.github.julkw.dnsg.util.Data.{LocalData, LocalSequentialData}
 import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}
 
 import scala.language.postfixOps
@@ -34,8 +34,10 @@ object DataHolder {
 
   final case class GetNext(alreadyReceived: Int, dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
-  // TODO map from searchonGraphActor to correct dataHolder and send over the data while also receiving the now redistributed data
+  // TODO map from searchOnGraphActor to correct dataHolder and send over the data while also receiving the now redistributed data
   // TODO Once it has all been received, send to SearchOnGraphActor and NodeCoordinator
+  final case class StartRedistributingData(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
+
   final case class RedistributeData(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
 
   // other stuff
@@ -89,7 +91,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
         clusterCoordinator ! DataSize(data.length, ctx.self)
         if (expectedNodes == 1) {
           // I am the only node in the cluster
-          val localData = LocalData(data, 0)
+          val localData = LocalSequentialData(data, 0)
           nodeCoordinator ! DataRef(localData)
           holdData(localData, dataHolders)
         } else if (dataHolders.size < expectedNodes) {
@@ -106,7 +108,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
         clusterCoordinator ! DataSize(data.length, ctx.self)
         if (expectedNodes == 1) {
           // I am the only node in the cluster
-          val localData = LocalData(data, 0)
+          val localData = LocalSequentialData(data, 0)
           nodeCoordinator ! DataRef(localData)
           holdData(localData, dataHolders)
         } else if (dataHolders.size < expectedNodes) {
@@ -161,7 +163,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
             ctx.log.info("Done distributing data")
             val localOffset = remainingPartitionInfo(ctx.self)._1
             val localDataSize = remainingPartitionInfo(ctx.self)._2
-            val localData = LocalData(data.slice(localOffset, localDataSize), localOffset)
+            val localData = LocalSequentialData(data.slice(localOffset, localDataSize), localOffset)
             nodeCoordinator ! DataRef(localData)
             holdData(localData, dataHolders)
           } else {
@@ -184,7 +186,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
         val updatedPointsReceived = pointsReceived + partialData.length
         if (updatedPointsReceived == expectedDataSize) {
           // all data received
-          val localData: LocalData[Float] = LocalData(updatedData, localOffset)
+          val localData: LocalData[Float] = LocalSequentialData(updatedData, localOffset)
           nodeCoordinator ! DataRef(localData)
           ctx.log.info("got all my data")
           holdData(localData, dataHolders)
@@ -192,6 +194,10 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
           dataHolder ! GetNext(updatedPointsReceived, ctx.self)
           receiveData(updatedData, expectedDataSize, localOffset, updatedPointsReceived, dataHolders)
         }
+
+      case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
+        ctx.log.info("{} dataHolders found", listings.size)
+        receiveData(data, expectedDataSize, localOffset, pointsReceived, listings)
     }
 
   def holdData(data: LocalData[Float], dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
@@ -203,7 +209,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
           }
         }
         val averageValue: Seq[Float] = (0 until data.dimension).map{ index =>
-          data.data.map(value => value(index)).sum / data.localDataSize
+          data.rawData.map(value => value(index)).sum / data.localDataSize
         }
         if (dataHolders.size > 1) {
           calculateAverages(data, dataHolders, averageValue, data.localDataSize, dataHolders.size - 1, replyTo)
@@ -214,10 +220,27 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
 
       case GetLocalAverage(replyTo) =>
         val averageValue: Seq[Float] = (0 until data.dimension).map{ index =>
-          data.data.map(value => value(index)).sum / data.localDataSize
+          data.rawData.map(value => value(index)).sum / data.localDataSize
         }
         replyTo ! LocalAverage(averageValue, data.localDataSize)
         holdData(data, dataHolders)
+
+      case StartRedistributingData(nodeAssignments) =>
+        dataHolders.foreach(dataHolder => dataHolder ! RedistributeData(nodeAssignments))
+        holdData(data, dataHolders)
+
+      case RedistributeData(nodeAssignments) =>
+        val toGet = nodeAssignments.locationData.zipWithIndex.count(assignments => assignments._1.exists(worker => worker.path.root == ctx.self.path.root))
+        val toSend = data.localIndices.groupBy(index => nodeAssignments.findResponsibleActor(index))
+        val toSendTo = dataHolders.map { dataHolder =>
+          val sendToDH = toSend.filter { assignments =>
+            assignments._1.exists(actor => actor.path.root == dataHolder.path.root)
+          }.values.flatten.toSeq
+          dataHolder -> sendToDH
+        }
+        // TODO send data to other dataHolders in chunks
+        // Keep track of who send me how much like in initial dataDistribution?
+        redistributeData(data, Map.empty, toGet, dataHolders)
 
       case ReadTestQueries(filename, replyTo) =>
         val queries = readQueries(filename)
@@ -230,7 +253,18 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
           ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
         graphHolders.foreach(gh => gh ! GetGraph(searchOnGraphEventAdapter))
         saveToFile(filename, graphHolders, k, searchOnGraphEventAdapter, data, dataHolders)
+
+      case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
+        ctx.log.info("{} dataHolders found", listings.size)
+        holdData(data, listings)
     }
+
+  def redistributeData(oldData: LocalData[Float], newData: Map[Int, Seq[Int]], expectedNewData: Int, dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
+    Behaviors.receiveMessagePartial {
+      case _ =>
+        Behaviors.same
+    }
+
 
   def calculateAverages(data: LocalData[Float],
                         dataHolders: Set[ActorRef[LoadDataEvent]],
