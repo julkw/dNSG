@@ -3,6 +3,7 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.ClusterCoordinator._
+import com.github.julkw.dnsg.actors.GraphRedistributer
 import com.github.julkw.dnsg.actors.createNSG.GraphConnector
 import com.github.julkw.dnsg.actors.createNSG.GraphConnector.{ConnectGraphEvent, GraphToConnect, UpdatedGraphReceived}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
@@ -18,8 +19,9 @@ object SearchOnGraphActor {
   sealed trait SearchOnGraphEvent extends dNSGSerializable
 
   // setup
-  // TODO send data like this so it can be changed in future
   final case class Graph(graph: Map[Int, Seq[Int]], sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
+
+  final case class GraphAndData(graph: Map[Int, Seq[Int]], cacheData: CacheData[Float], sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
   final case class GraphReceived(graphHolder: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
@@ -30,7 +32,9 @@ object SearchOnGraphActor {
 
   final case class RedistributeGraph(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends SearchOnGraphEvent
 
-  final case class UpdatedData(data: LocalData[Float])
+  final case class PartialGraph(partialGraph: Map[Int, Seq[Int]]) extends SearchOnGraphEvent
+
+  final case class UpdatedLocalData(data: LocalData[Float]) extends  SearchOnGraphEvent
 
   // queries
   final case class FindNearestNeighbors(query: Seq[Float], k: Int, asker: ActorRef[CoordinationEvent]) extends SearchOnGraphEvent
@@ -65,18 +69,14 @@ object SearchOnGraphActor {
   final case class GetGraph(sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
 
-  def apply(supervisor: ActorRef[CoordinationEvent],
-            data: LocalData[Float]): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
-    //ctx.log.info("Started SearchOnGraph")
-    val settings = Settings(ctx.system.settings.config)
+  def apply(supervisor: ActorRef[CoordinationEvent]): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
     Behaviors.withTimers(timers =>
-      new SearchOnGraphActor(supervisor, CacheData(settings.cacheSize, data), new WaitingOnLocation, timers, ctx).waitForLocalGraph()
+      new SearchOnGraphActor(supervisor, new WaitingOnLocation, timers, ctx).waitForLocalGraph()
     )
   }
 }
 
 class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
-                         data: CacheData[Float],
                          waitingOnLocation: WaitingOnLocation,
                          timers: TimerScheduler[SearchOnGraphActor.SearchOnGraphEvent],
                          ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends SearchOnGraph(supervisor, waitingOnLocation, timers, ctx) {
@@ -84,19 +84,20 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
 
   def waitForLocalGraph(): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
-      case Graph(graph, sender) =>
+      case GraphAndData(graph, localData, sender) =>
         //sender ! GraphReceived(ctx.self)
         supervisor ! SearchOnGraphDistributionInfo(graph.keys.toSeq, ctx.self)
-        waitForDistributionInfo(graph)
+        waitForDistributionInfo(graph, localData)
     }
 
-  def waitForDistributionInfo(graph: Map[Int, Seq[Int]]): Behavior[SearchOnGraphEvent] =
+  def waitForDistributionInfo(graph: Map[Int, Seq[Int]], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case GraphDistribution(nodeLocator) =>
-        searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, -1)
+        searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, -1)
     }
 
   def searchOnGraph(graph: Map[Int, Seq[Int]],
+                    data: CacheData[Float],
                     nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                     neighborQueries: Map[Int, QueryInfo],
                     respondTo: Map[Int, ActorRef[CoordinationEvent]],
@@ -110,7 +111,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
         val queryId = lastIdUsed + 1
         // since this node is located locally, just ask self
         ctx.self ! GetNeighbors(startingNodeIndex, queryId, ctx.self)
-        searchOnGraph(graph, nodeLocator, neighborQueries + (queryId -> queryInfo), respondTo + (queryId -> asker), queryId)
+        searchOnGraph(graph, data, nodeLocator, neighborQueries + (queryId -> queryInfo), respondTo + (queryId -> asker), queryId)
 
       case FindNearestNeighborsStartingFrom(query, startingPoint, k, asker) =>
         val queryId = lastIdUsed + 1
@@ -124,11 +125,11 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
           qi
         }
         nodeLocator.findResponsibleActor(startingPoint) ! GetNeighbors(startingPoint, queryId, ctx.self)
-        searchOnGraph(graph, nodeLocator, neighborQueries + (queryId -> queryInfo), respondTo + (queryId -> asker), queryId)
+        searchOnGraph(graph, data, nodeLocator, neighborQueries + (queryId -> queryInfo), respondTo + (queryId -> asker), queryId)
 
       case GetNeighbors(index, queryId, sender) =>
         sender ! Neighbors(queryId, index, graph(index))
-        searchOnGraph(graph, nodeLocator, neighborQueries, respondTo, lastIdUsed)
+        searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
 
       case Neighbors(queryId, processedIndex, neighbors) =>
         if (neighborQueries.contains(queryId)) {
@@ -140,30 +141,30 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
             case Some(nextCandidate) =>
               // find the neighbors of the next candidate to be processed and update queries
               nodeLocator.findResponsibleActor(nextCandidate.index) ! GetNeighbors(nextCandidate.index, queryId, ctx.self)
-              searchOnGraph(graph, nodeLocator, neighborQueries, respondTo, lastIdUsed)
+              searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
             case None =>
               if (neighborQueries(queryId).waitingOn > 0) {
                 // do nothing for now
-                searchOnGraph(graph, nodeLocator, neighborQueries, respondTo, lastIdUsed)
+                searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
               } else {
                 val finalNeighbors = queryInfo.candidates.map(_.index)
                 respondTo(queryId) ! KNearestNeighbors(queryInfo.query, finalNeighbors)
-                searchOnGraph(graph, nodeLocator, neighborQueries - queryId, respondTo - queryId, lastIdUsed)
+                searchOnGraph(graph, data, nodeLocator, neighborQueries - queryId, respondTo - queryId, lastIdUsed)
               }
           }
         } else {
           // already done with this query, can ignore this message
-          searchOnGraph(graph, nodeLocator, neighborQueries, respondTo, lastIdUsed)
+          searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
         }
 
       case GetLocation(index, sender) =>
         sender ! Location(index, data.get(index))
-        searchOnGraph(graph, nodeLocator, neighborQueries, respondTo, lastIdUsed)
+        searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
 
       case ReaskForLocation(index) =>
         ctx.log.info("Still haven't received the location of {}. Sending another request.", index)
         nodeLocator.findResponsibleActor(index) ! GetLocation(index, ctx.self)
-        searchOnGraph(graph, nodeLocator, neighborQueries, respondTo, lastIdUsed)
+        searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
 
       case Location(index, location) =>
         timers.cancel(LocationTimerKey(index))
@@ -181,24 +182,68 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
             }
           }
         }
-        searchOnGraph(graph, nodeLocator, neighborQueries -- removedQueries, respondTo -- removedQueries, lastIdUsed)
+        searchOnGraph(graph, data, nodeLocator, neighborQueries -- removedQueries, respondTo -- removedQueries, lastIdUsed)
 
       case UpdateGraph(updatedGraph, graphConnector) =>
         graphConnector ! UpdatedGraphReceived
         supervisor ! UpdatedGraph
-        searchOnGraph(updatedGraph, nodeLocator, neighborQueries, respondTo, lastIdUsed)
+        searchOnGraph(updatedGraph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
 
       case GetGraph(sender) =>
         //ctx.log.info("Asked for graph info")
         sender ! Graph(graph, ctx.self)
-        searchOnGraph(graph, nodeLocator, neighborQueries, respondTo, lastIdUsed)
+        searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
 
       case SendResponsibleIndicesTo(nsgWorker) =>
         nsgWorker ! Responsibility(graph.keys.toSeq)
-        searchOnGraphForNSG(graph, nodeLocator, Map.empty, Map.empty, QueryResponseLocations(data))
+        searchOnGraphForNSG(graph, data, nodeLocator, Map.empty, Map.empty, QueryResponseLocations(data))
+
+      case StartGraphRedistribution =>
+        ctx.spawn(GraphRedistributer(graph, supervisor), name="GraphRedistributer")
+        waitForRedistributionResults(graph, data)
     }
 
+  def waitForRedistributionResults(oldGraph: Map[Int, Seq[Int]], oldData: CacheData[Float]): Behavior[SearchOnGraphEvent] =
+    Behaviors.receiveMessagePartial {
+      case RedistributeGraph(nodeAssignments) =>
+        val nodesExpected = nodeAssignments.locationData.count(assignees => assignees.contains(ctx.self))
+        // TODO send out partialGraphs in more steps?
+        oldGraph.keys.groupBy(index => nodeAssignments.findResponsibleActor(index)).foreach { case (assignees, nodes) =>
+          val partialGraph = nodes.map(node => node -> oldGraph(node)).toMap
+          assignees.foreach(searchOnGraphActor => searchOnGraphActor ! PartialGraph(partialGraph))
+        }
+        // TODO use something other(more random) than head / if self in set use self?
+        val nodeLocator = NodeLocator(nodeAssignments.locationData.map(_.head))
+        redistributeGraph(oldGraph, nodeLocator, Map.empty, nodesExpected, oldData, false)
+    }
+
+  def redistributeGraph(oldGraph: Map[Int, Seq[Int]],
+                        nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                        newGraph: Map[Int, Seq[Int]],
+                        nodesExpected: Int,
+                        data: CacheData[Float],
+                        dataUpdated: Boolean): Behavior[SearchOnGraphEvent] =
+    Behaviors.receiveMessagePartial {
+      case UpdatedLocalData(newData) =>
+        // TODO Cache size from settings?
+      if (newGraph.size == nodesExpected) {
+          supervisor ! DoneWithRedistribution
+          searchOnGraph(newGraph, CacheData(0, newData), nodeLocator, Map.empty, Map.empty, -1)
+        } else {
+        redistributeGraph(oldGraph, nodeLocator, newGraph, nodesExpected, CacheData(0, newData), true)
+      }
+
+      case PartialGraph(partialGraph) =>
+        val updatedGraph = newGraph ++ partialGraph
+        if (updatedGraph.size == nodesExpected && dataUpdated) {
+          supervisor ! DoneWithRedistribution
+          searchOnGraph(updatedGraph, data, nodeLocator, Map.empty, Map.empty, -1)
+        }
+        redistributeGraph(oldGraph, nodeLocator, updatedGraph, nodesExpected, data, dataUpdated)
+  }
+
   def searchOnGraphForNSG(graph: Map[Int, Seq[Int]],
+                          data: CacheData[Float],
                           nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                           pathQueries: Map[Int, QueryInfo],
                           respondTo: Map[Int, ActorRef[BuildNSGEvent]],
@@ -219,14 +264,14 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
           askForLocation(startingPoint, queryId, queryInfo, nodeLocator)
           queryInfo
         }
-        searchOnGraphForNSG(graph, nodeLocator,
+        searchOnGraphForNSG(graph, data, nodeLocator,
           pathQueries + (queryId -> pathQueryInfo),
           respondTo  + (queryId -> asker),
           responseLocations)
 
       case GetNeighbors(index, query, sender) =>
         sender ! Neighbors(query, index, graph(index))
-        searchOnGraphForNSG(graph, nodeLocator, pathQueries, respondTo, responseLocations)
+        searchOnGraphForNSG(graph, data, nodeLocator, pathQueries, respondTo, responseLocations)
 
       case Neighbors(queryId, processedIndex, neighbors) =>
         val queryInfo = pathQueries(queryId)
@@ -237,25 +282,25 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
           case Some(nextCandidate) =>
             // find the neighbors of the next candidate to be processed and update queries
             nodeLocator.findResponsibleActor(nextCandidate.index) ! GetNeighbors(nextCandidate.index, queryId, ctx.self)
-            searchOnGraphForNSG(graph, nodeLocator, pathQueries, respondTo, responseLocations)
+            searchOnGraphForNSG(graph, data, nodeLocator, pathQueries, respondTo, responseLocations)
           case None =>
             if (pathQueries(queryId).waitingOn > 0) {
               // do nothing for now
-              searchOnGraphForNSG(graph, nodeLocator, pathQueries, respondTo, responseLocations)
+              searchOnGraphForNSG(graph, data, nodeLocator, pathQueries, respondTo, responseLocations)
             } else {
               sendResults(queryId, queryInfo, responseLocations, respondTo(queryId))
-              searchOnGraphForNSG(graph, nodeLocator, pathQueries - queryId, respondTo - queryId, responseLocations)
+              searchOnGraphForNSG(graph, data, nodeLocator, pathQueries - queryId, respondTo - queryId, responseLocations)
             }
         }
 
       case GetLocation(index, sender) =>
         sender ! Location(index, data.get(index))
-        searchOnGraphForNSG(graph, nodeLocator, pathQueries, respondTo, responseLocations)
+        searchOnGraphForNSG(graph, data, nodeLocator, pathQueries, respondTo, responseLocations)
 
       case ReaskForLocation(index) =>
         ctx.log.info("Still haven't received the location of {}. Sending another request.", index)
         nodeLocator.findResponsibleActor(index) ! GetLocation(index, ctx.self)
-        searchOnGraphForNSG(graph, nodeLocator, pathQueries, respondTo, responseLocations)
+        searchOnGraphForNSG(graph, data, nodeLocator, pathQueries, respondTo, responseLocations)
 
       case Location(index, location) =>
         timers.cancel(LocationTimerKey(index))
@@ -275,21 +320,21 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
             }
           }
         }
-        searchOnGraphForNSG(graph, nodeLocator, pathQueries -- removedQueries, respondTo -- removedQueries, responseLocations)
+        searchOnGraphForNSG(graph, data, nodeLocator, pathQueries -- removedQueries, respondTo -- removedQueries, responseLocations)
 
       case GetNSGFrom(nsgMerger) =>
         //ctx.log.info("Asking NSG Merger for my part of the NSG")
         nsgMerger ! GetPartialGraph(graph.keys.toSet, ctx.self)
-        waitForNSG(nodeLocator)
+        waitForNSG(nodeLocator, data)
     }
 
-  def waitForNSG(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]): Behavior[SearchOnGraphEvent] =
+  def waitForNSG(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case PartialNSG(graph) =>
         ctx.log.info("Received nsg, ready for queries/establishing connectivity")
         val graphConnector =  ctx.spawn(GraphConnector(data, supervisor, ctx.self), name="graphConnector")
         graphConnector ! GraphToConnect(graph)
-        searchOnGraph(graph, nodeLocator, Map.empty, Map.empty, -1)
+        searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, -1)
     }
 
 }

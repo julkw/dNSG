@@ -6,7 +6,7 @@ import akka.cluster.typed.{ClusterSingleton, SingletonActor}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, NodeCoordinatorIntroduction}
 import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, LoadPartialDataFromFile}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetNSGFrom, SearchOnGraphEvent, SendResponsibleIndicesTo}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetNSGFrom, SearchOnGraphEvent, SendResponsibleIndicesTo, UpdatedLocalData}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker
@@ -93,7 +93,7 @@ class NodeCoordinator(settings: Settings,
   def moveKnngToSearchOnGraph(knngWorkers: Set[ActorRef[BuildGraphEvent]], data: LocalData[Float]): Behavior[NodeCoordinationEvent] = {
     var sogIndex = 0
     val graphHolders = knngWorkers.map { worker =>
-      val nsgw = ctx.spawn(SearchOnGraphActor(clusterCoordinator, data), name = "SearchOnGraph" + sogIndex.toString)
+      val nsgw = ctx.spawn(SearchOnGraphActor(clusterCoordinator), name = "SearchOnGraph" + sogIndex.toString)
       sogIndex += 1
       worker ! MoveGraph(nsgw)
       nsgw
@@ -103,11 +103,14 @@ class NodeCoordinator(settings: Settings,
 
   def waitForNavigatingNode(data: LocalData[Float], graphHolders: Set[ActorRef[SearchOnGraphEvent]]): Behavior[NodeCoordinationEvent] =
     Behaviors.receiveMessagePartial {
+      // In case of data redistribution
+      case DataRef(newData) =>
+        graphHolders.foreach(graphHolder=> graphHolder ! UpdatedLocalData(newData))
+        waitForNavigatingNode(newData, graphHolders)
+
       // TODO this was unhandled in one runthrough
       case StartBuildingNSG(navigatingNode, nodeLocator) =>
-        // TODO this is where data redistribution would take place
         startBuildingNSG(data, nodeLocator, graphHolders, navigatingNode)
-
     }
 
   def startBuildingNSG(data: LocalData[Float],

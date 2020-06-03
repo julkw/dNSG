@@ -2,11 +2,11 @@ package com.github.julkw.dnsg.actors
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries}
+import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries, StartRedistributingData}
 import com.github.julkw.dnsg.actors.GraphRedistributer.{DistributeData, NoReplication, RedistributionEvent}
 import com.github.julkw.dnsg.actors.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, RedistributeGraph, SearchOnGraphEvent, StartGraphRedistribution}
 import com.github.julkw.dnsg.actors.createNSG.GraphConnector.{AddToGraph, ConnectGraphEvent, ConnectorDistributionInfo, FindUnconnectedNode, GraphConnected, UpdateConnectivity}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, NSGToSearchOnGraph}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
@@ -191,8 +191,11 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         val navigatingNode = neighbors.head
         ctx.log.info("The navigating node has the index: {}", navigatingNode)
         // TODO do some kind of data redistribution with the knowledge of the navigating node, updating the nodeLocator in the process
-        nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
-        waitOnNSG(Set.empty, navigatingNode, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
+        graphHolders.foreach(graphHolder => graphHolder ! StartGraphRedistribution)
+        ctx.log.info("Start graph redistribution")
+        waitOnRedistributionDistributionInfo(neighbors.head, Set.empty, NodeLocatorBuilder(nodeLocator.graphSize), nodeLocator, graphHolders, nodeCoordinators, dataHolder)
+        //nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
+        //waitOnNSG(Set.empty, navigatingNode, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
     }
 
   def waitOnRedistributionDistributionInfo(navigatingNodeIndex: Int,
@@ -208,6 +211,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         redistributionLocations.addLocation(responsibilities, redistributer) match {
           case Some(redistributionLocator) =>
             // TODO take replicationMode from settings
+            ctx.log.info("All redistributers started")
             updatedRedistributers.foreach(graphRedistributer => graphRedistributer ! DistributeData(navigatingNodeIndex, graphHolders, NoReplication, redistributionLocator))
             waitOnRedistributionAssignments(navigatingNodeIndex, NodeLocatorBuilder(sogNodeLocator.graphSize), sogNodeLocator, graphHolders, nodeCoordinators, dataHolder)
           case None =>
@@ -226,6 +230,9 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         redistributionAssignments.addFromMap(assignments) match {
           case Some(redistributionAssignments) =>
             // TODO send to SearchOnGraph Actors and dataHolders and then wait for them to finish moving data around
+            ctx.log.info("Calculated redistribution, now telling actors to do it")
+            graphHolders.foreach(graphHolder => graphHolder ! RedistributeGraph(redistributionAssignments))
+            dataHolder ! StartRedistributingData(redistributionAssignments)
             val simplifiedLocator = NodeLocator(redistributionAssignments.locationData.map(_.head))
             waitForRedistribution(navigatingNodeIndex, 0, simplifiedLocator, graphHolders, nodeCoordinators, dataHolder)
           case None =>

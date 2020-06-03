@@ -13,7 +13,7 @@ import com.github.julkw.dnsg.actors.ClusterCoordinator.{AverageValue, Coordinati
 import com.github.julkw.dnsg.actors.NodeCoordinator.{DataRef, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetGraph, Graph, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.Data.{LocalData, LocalSequentialData}
+import com.github.julkw.dnsg.util.Data.{LocalData, LocalSequentialData, LocalUnorderedData}
 import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}
 
 import scala.language.postfixOps
@@ -39,6 +39,12 @@ object DataHolder {
   final case class StartRedistributingData(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
 
   final case class RedistributeData(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
+
+  final case class PrepareForRedistributedData(sender: ActorRef[LoadDataEvent]) extends LoadDataEvent
+
+  final case class GetRedistributedData(sender: ActorRef[LoadDataEvent]) extends LoadDataEvent
+
+  final case class PartialRedistributedData(data: Map[Int, Seq[Float]], sender: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
   // other stuff
   final case class GetAverageValue(replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
@@ -230,17 +236,22 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
         holdData(data, dataHolders)
 
       case RedistributeData(nodeAssignments) =>
-        val toGet = nodeAssignments.locationData.zipWithIndex.count(assignments => assignments._1.exists(worker => worker.path.root == ctx.self.path.root))
+        val toGet = nodeAssignments.locationData.count(assignments => assignments.exists(worker => worker.path.root == ctx.self.path.root))
         val toSend = data.localIndices.groupBy(index => nodeAssignments.findResponsibleActor(index))
         val toSendTo = dataHolders.map { dataHolder =>
           val sendToDH = toSend.filter { assignments =>
             assignments._1.exists(actor => actor.path.root == dataHolder.path.root)
           }.values.flatten.toSeq
           dataHolder -> sendToDH
-        }
+        }.filter(_._2.nonEmpty).toMap
+        toSendTo.keys.foreach(dataHolder => dataHolder ! PrepareForRedistributedData(ctx.self))
         // TODO send data to other dataHolders in chunks
         // Keep track of who send me how much like in initial dataDistribution?
-        redistributeData(data, Map.empty, toGet, dataHolders)
+        redistributeData(data, Map.empty, toGet, toSendTo, dataHolders)
+
+      case PrepareForRedistributedData(sender) =>
+        ctx.self ! PrepareForRedistributedData(sender)
+        holdData(data, dataHolders)
 
       case ReadTestQueries(filename, replyTo) =>
         val queries = readQueries(filename)
@@ -259,10 +270,40 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
         holdData(data, listings)
     }
 
-  def redistributeData(oldData: LocalData[Float], newData: Map[Int, Seq[Int]], expectedNewData: Int, dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
+  def redistributeData(oldData: LocalData[Float],
+                       newData: Map[Int, Seq[Float]],
+                       expectedNewData: Int,
+                       toSend: Map[ActorRef[LoadDataEvent], Seq[Int]],
+                       dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial {
-      case _ =>
-        Behaviors.same
+      case PrepareForRedistributedData(sender) =>
+        sender ! GetRedistributedData(ctx.self)
+        redistributeData(oldData, newData, expectedNewData, toSend, dataHolders)
+
+      case GetRedistributedData(sender) =>
+        val indicesToSend = toSend(sender)
+        if (indicesToSend.nonEmpty) {
+          val dataToSend = indicesToSend.slice(0, dataMessageSize).map(index => index -> oldData.get(index)).toMap
+          sender ! PartialRedistributedData(dataToSend, ctx.self)
+          redistributeData(oldData, newData, expectedNewData, toSend + (sender -> indicesToSend.slice(dataMessageSize, indicesToSend.length)), dataHolders)
+        } else if (toSend.size == 1 && newData.size == expectedNewData) {
+          val localData = LocalUnorderedData(newData)
+          nodeCoordinator ! DataRef(localData)
+          holdData(localData, dataHolders)
+        } else {
+          redistributeData(oldData, newData, expectedNewData, toSend - sender, dataHolders)
+        }
+
+      case PartialRedistributedData(data, sender) =>
+        sender ! GetRedistributedData(ctx.self)
+        val updatedData = newData ++ data
+        if (updatedData.size == expectedNewData && toSend.isEmpty) {
+          val localData = LocalUnorderedData(updatedData)
+          nodeCoordinator ! DataRef(localData)
+          holdData(localData, dataHolders)
+        } else {
+          redistributeData(oldData, updatedData, expectedNewData, toSend, dataHolders)
+        }
     }
 
 

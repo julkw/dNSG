@@ -2,7 +2,7 @@ package com.github.julkw.dnsg.util.Data
 
 trait LocalData[T] {
   def get(globalIndex: Int): Seq[T]
-  def isPermanentlyLocal(globalIndex: Int): Boolean
+  def isLocal(globalIndex: Int): Boolean
   def localDataSize: Int
   def dimension: Int
   // TODO this returns the global indices for the local data. Maybe rename as this might get confusing
@@ -25,7 +25,7 @@ case class LocalSequentialData[T] (data: Seq[Seq[T]], localOffset: Int) extends 
     data
   }
 
-  def isPermanentlyLocal(globalIndex: Int): Boolean = {
+  def isLocal(globalIndex: Int): Boolean = {
     val index = localIndex(globalIndex)
     0 <= index && index < permanentDataSize
   }
@@ -47,7 +47,7 @@ case class LocalSequentialData[T] (data: Seq[Seq[T]], localOffset: Int) extends 
   }
 }
 
-case class LocalUnorderedData[T] (data: Map[Int, Seq[T]], localOffset: Int) extends LocalData[T] {
+case class LocalUnorderedData[T] (data: Map[Int, Seq[T]]) extends LocalData[T] {
   protected val permanentDataSize: Int = data.size
 
   def get(globalIndex: Int): Seq[T] = {
@@ -59,7 +59,7 @@ case class LocalUnorderedData[T] (data: Map[Int, Seq[T]], localOffset: Int) exte
     data.values.toSeq
   }
 
-  def isPermanentlyLocal(globalIndex: Int): Boolean = {
+  def isLocal(globalIndex: Int): Boolean = {
     data.contains(globalIndex)
   }
 

@@ -1,6 +1,6 @@
 package com.github.julkw.dnsg.actors.nndescent
 
-import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
+import akka.actor.typed.receptionist.Receptionist
 
 import scala.concurrent.duration._
 import akka.actor.typed.{ActorRef, Behavior}
@@ -8,7 +8,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, CorrectFinishedNNDescent, FinishedApproximateGraph, FinishedNNDescent, KnngDistributionInfo}
 import com.github.julkw.dnsg.actors.NodeCoordinator.{LocalKnngWorker, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{Graph, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GraphAndData, SearchOnGraphEvent}
 import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
 import com.github.julkw.dnsg.util.KdTree.{IndexTree, KdTree, SplitNode, TreeBuilder, TreeNode}
 import com.github.julkw.dnsg.util.{NodeLocator, Settings, WaitingOnLocation, dNSGSerializable}
@@ -297,7 +297,7 @@ class KnngWorker(data: CacheData[Float],
         val cleanedGraph: Map[Int, Seq[Int]] = graph.map{case (index, neighbors) => index -> neighbors.map(_._1)}
         val searchOnGraphEventAdapter: ActorRef[SearchOnGraphActor.SearchOnGraphEvent] =
           ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
-        graphHolder ! Graph(cleanedGraph, searchOnGraphEventAdapter)
+        graphHolder ! GraphAndData(cleanedGraph, data, searchOnGraphEventAdapter)
         // TODO add some kind of check to ensure the arrival of the graph?
         Behaviors.empty
     }
