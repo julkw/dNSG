@@ -4,7 +4,7 @@ import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, InitialNSGDone}
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{PartialNSG, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{PartialGraph, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}
 
@@ -21,8 +21,6 @@ object NSGMerger {
   final case class AddNeighbor(nodeIndex: Int, neighborIndex: Int, sendAckTo: ActorRef[MergeNSGEvent]) extends MergeNSGEvent
 
   final case object NeighborReceived extends MergeNSGEvent
-
-  final case object NSGToSearchOnGraph extends MergeNSGEvent
 
   final case object LocalNSGDone extends MergeNSGEvent
 
@@ -128,9 +126,6 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       }
       buildGraph(graph, messagesReceived, messagesExpected, awaitingNeighborAcks - 1, mergers)
 
-    case NSGToSearchOnGraph =>
-      distributeGraph(graph.toMap)
-
     case GetPartialGraph(nodes, sender) =>
       // should only get this message after all NSGMergers told the NodeCoordinator that they are done
       ctx.log.info("Asked for graph before being told by the ClusterCoordinator that the NSG is done. Assuming it is and switching states")
@@ -139,15 +134,11 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
   }
 
   def distributeGraph(graph: Map[Int, Seq[Int]]): Behavior[MergeNSGEvent] = Behaviors.receiveMessagePartial {
-    case NSGToSearchOnGraph =>
-      // If I switch when I get GetPartialGraph, this message should follow soon after
-      distributeGraph(graph)
-
     case GetPartialGraph(nodes, sender) =>
       val partialGraph = graph.filter{case(node, _) =>
         nodes.contains(node)
       }
-      sender ! PartialNSG(partialGraph)
+      sender ! PartialGraph(partialGraph)
       distributeGraph(graph)
 
     case NSGDistributed =>

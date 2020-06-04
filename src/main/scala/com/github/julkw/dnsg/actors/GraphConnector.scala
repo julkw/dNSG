@@ -2,7 +2,8 @@ package com.github.julkw.dnsg.actors
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{AllConnected, CoordinationEvent, FinishedUpdatingConnectivity, GraphConnectorDistributionInfo, UnconnectedNode}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.CoordinationEvent
+import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{AllConnected, ConnectionCoordinationEvent, FinishedUpdatingConnectivity, GraphConnectorDistributionInfo, UnconnectedNode, UpdatedGraph}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{SearchOnGraphEvent, UpdateGraph}
 import com.github.julkw.dnsg.util.Data.CacheData
 import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}
@@ -22,7 +23,7 @@ object GraphConnector {
 
   final case class DoneConnectingChildren(nodeAwaitingAnswer: Int) extends ConnectGraphEvent
 
-  final case class FindUnconnectedNode(sendTo: ActorRef[CoordinationEvent], notAskedYet: Set[ActorRef[ConnectGraphEvent]]) extends ConnectGraphEvent
+  final case class FindUnconnectedNode(sendTo: ActorRef[ConnectionCoordinationEvent], notAskedYet: Set[ActorRef[ConnectGraphEvent]]) extends ConnectGraphEvent
 
   final case object GraphConnected extends ConnectGraphEvent
 
@@ -36,22 +37,22 @@ object GraphConnector {
   protected case class ConnectivityInfo(connectedNodes: mutable.Set[Int], messageTracker: mutable.Map[Int, MessageCounter])
 
   def apply(data: CacheData[Float],
-            clusterCoordinator: ActorRef[CoordinationEvent],
+            supervisor: ActorRef[ConnectionCoordinationEvent],
             searchOnGraphActor: ActorRef[SearchOnGraphEvent]): Behavior[ConnectGraphEvent] = Behaviors.setup(ctx =>
-    new GraphConnector(data, clusterCoordinator, searchOnGraphActor, ctx).setup()
+    new GraphConnector(data, supervisor, searchOnGraphActor, ctx).setup()
   )
 
 }
 
 class GraphConnector(data: CacheData[Float],
-                     clusterCoordinator: ActorRef[CoordinationEvent],
+                     supervisor: ActorRef[ConnectionCoordinationEvent],
                      searchOnGraphActor: ActorRef[SearchOnGraphEvent],
                      ctx: ActorContext[GraphConnector.ConnectGraphEvent]) {
   import GraphConnector._
 
   def setup(): Behavior[ConnectGraphEvent] = Behaviors.receiveMessagePartial {
     case GraphToConnect(graph) =>
-      clusterCoordinator ! GraphConnectorDistributionInfo(graph.keys.toSeq, ctx.self)
+      supervisor ! GraphConnectorDistributionInfo(graph.keys.toSeq, ctx.self)
       waitForDistInfo(graph)
   }
 
@@ -65,6 +66,7 @@ class GraphConnector(data: CacheData[Float],
       Behaviors.same
   }
 
+  // TODO replace graph with responsibility and a list of edges to prevent holding the graph twice on the same node
   def establishConnectivity(graph: Map[Int, Seq[Int]],
                             nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
                             connectivityInfo: ConnectivityInfo): Behavior[ConnectGraphEvent] =
@@ -72,7 +74,7 @@ class GraphConnector(data: CacheData[Float],
       case UpdateConnectivity(root) =>
         ctx.log.info("Updating connectivity")
         connectivityInfo.connectedNodes.add(root)
-        updateNeighborConnectedness(root, root, connectivityInfo, graph, clusterCoordinator, nodeLocator)
+        updateNeighborConnectedness(root, root, connectivityInfo, graph, supervisor, nodeLocator)
         establishConnectivity(graph, nodeLocator, connectivityInfo)
 
       case IsConnected(connectedNode, parent) =>
@@ -82,7 +84,7 @@ class GraphConnector(data: CacheData[Float],
           nodeLocator.findResponsibleActor(parent) ! DoneConnectingChildren(parent)
         } else {
           connectivityInfo.connectedNodes.add(connectedNode)
-          updateNeighborConnectedness(connectedNode, parent, connectivityInfo, graph, clusterCoordinator, nodeLocator)
+          updateNeighborConnectedness(connectedNode, parent, connectivityInfo, graph, supervisor, nodeLocator)
         }
         establishConnectivity(graph, nodeLocator, connectivityInfo)
 
@@ -91,7 +93,7 @@ class GraphConnector(data: CacheData[Float],
         messageCounter.waitingForMessages -= 1
         if (messageCounter.waitingForMessages == 0) {
           if (messageCounter.parentNode == nodeAwaitingAnswer) {
-            clusterCoordinator ! FinishedUpdatingConnectivity
+            supervisor ! FinishedUpdatingConnectivity
             ctx.log.info("Done with updating connectivity")
           } else {
             nodeLocator.findResponsibleActor(messageCounter.parentNode) !
@@ -130,6 +132,7 @@ class GraphConnector(data: CacheData[Float],
 
   def waitForShutdown(): Behavior[ConnectGraphEvent] = Behaviors.receiveMessagePartial {
     case UpdatedGraphReceived =>
+      supervisor ! UpdatedGraph
       Behaviors.stopped
   }
 
@@ -137,7 +140,7 @@ class GraphConnector(data: CacheData[Float],
                                   parent: Int,
                                   connectivityInfo: ConnectivityInfo,
                                   graph: Map[Int, Seq[Int]],
-                                  sendResultTo: ActorRef[CoordinationEvent],
+                                  sendResultTo: ActorRef[ConnectionCoordinationEvent],
                                   nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]]): Unit = {
     var sendMessages = 0
     // tell all neighbors they are connected

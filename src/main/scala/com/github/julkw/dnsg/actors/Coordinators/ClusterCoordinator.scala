@@ -2,13 +2,13 @@ package com.github.julkw.dnsg.actors.Coordinators
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
+import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph, StartSearchOnGraphAndConnect}
 import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries, StartRedistributingData}
 import com.github.julkw.dnsg.actors.GraphConnector.{AddToGraph, ConnectGraphEvent, ConnectorDistributionInfo, FindUnconnectedNode, GraphConnected, UpdateConnectivity}
 import com.github.julkw.dnsg.actors.GraphRedistributer.{DistributeData, NoReplication, RedistributionEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, RedistributeGraph, SearchOnGraphEvent, StartGraphRedistribution}
-import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, NSGToSearchOnGraph}
+import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
 import com.github.julkw.dnsg.util._
 
@@ -32,14 +32,15 @@ object ClusterCoordinator {
 
   final case object CorrectFinishedNNDescent extends CoordinationEvent
 
-  final case class WrappedSearchOnGraphEvent(event: SearchOnGraphActor.SearchOnGraphEvent) extends CoordinationEvent
-
   // redistributing the graph
   final case class RedistributerDistributionInfo(responsibility: Seq[Int], sender: ActorRef[RedistributionEvent]) extends CoordinationEvent
 
   final case class RedistributionNodeAssignments(nodeAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]]) extends CoordinationEvent
 
   final case object DoneWithRedistribution extends CoordinationEvent
+
+  // connecting the graph
+  final case object ConnectionAchieved extends CoordinationEvent
 
   // building the NSG
 
@@ -48,18 +49,6 @@ object ClusterCoordinator {
   final case class KNearestNeighbors(query: Seq[Float], neighbors: Seq[Int]) extends CoordinationEvent
 
   final case class InitialNSGDone(nsgMergers: ActorRef[MergeNSGEvent]) extends CoordinationEvent
-
-  // connecting the NSG
-
-  final case class GraphConnectorDistributionInfo(responsibility: Seq[Int], sender: ActorRef[ConnectGraphEvent]) extends CoordinationEvent
-
-  final case object FinishedUpdatingConnectivity extends CoordinationEvent
-
-  final case class UnconnectedNode(nodeIndex: Int, nodeData: Seq[Float]) extends CoordinationEvent
-
-  final case object AllConnected extends CoordinationEvent
-
-  final case object UpdatedGraph extends CoordinationEvent
 
   // testing the graph
   final case class TestQueries(queries: Seq[(Seq[Float], Seq[Int])]) extends CoordinationEvent
@@ -191,11 +180,13 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         val navigatingNode = neighbors.head
         ctx.log.info("The navigating node has the index: {}", navigatingNode)
         // TODO do some kind of data redistribution with the knowledge of the navigating node, updating the nodeLocator in the process
+        /*
         graphHolders.foreach(graphHolder => graphHolder ! StartGraphRedistribution)
         ctx.log.info("Start graph redistribution")
         waitOnRedistributionDistributionInfo(neighbors.head, Set.empty, NodeLocatorBuilder(nodeLocator.graphSize), nodeLocator, graphHolders, nodeCoordinators, dataHolder)
-        //nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
-        //waitOnNSG(Set.empty, navigatingNode, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
+         */
+        nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
+        waitOnNSG(Set.empty, navigatingNode, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
     }
 
   def waitOnRedistributionDistributionInfo(navigatingNodeIndex: Int,
@@ -269,84 +260,25 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         val updatedMergers = finishedNsgMergers + nsgMerger
         if (updatedMergers.size == settings.nodesExpected) {
           ctx.log.info("Initial NSG seems to be done")
-          finishedNsgMergers.foreach { merger => merger ! NSGToSearchOnGraph}
-          nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraph)
-          waitForGraphConnectors(navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder, Set.empty, NodeLocatorBuilder[ActorRef[ConnectGraphEvent]](nodeLocator.graphSize))
+          val connectorCoordinator = ctx.spawn(GraphConnectorCoordinator(navigatingNodeIndex, nodeLocator, ctx.self), name="GraphConnectorCoordinator")
+          nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraphAndConnect(connectorCoordinator))
+          waitForConnectedGraphs(navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
         } else {
           waitOnNSG(updatedMergers, navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
         }
     }
 
-  def waitForGraphConnectors(navigatingNodeIndex: Int,
-                             nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
-                             graphHolders: Set[ActorRef[SearchOnGraphEvent]],
-                             nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
-                             dataHolder: ActorRef[LoadDataEvent],
-                             graphConnectors: Set[ActorRef[ConnectGraphEvent]],
-                             graphConnectorLocator: NodeLocatorBuilder[ActorRef[ConnectGraphEvent]]): Behavior[CoordinationEvent] =
-    Behaviors.receiveMessagePartial {
-      case GraphConnectorDistributionInfo(responsibility, graphConnector) =>
-        val updatedConnectors = graphConnectors + graphConnector
-        val gcLocator = graphConnectorLocator.addLocation(responsibility, graphConnector)
-        gcLocator match {
-          case Some(newLocator) =>
-            updatedConnectors.foreach(connector => connector ! ConnectorDistributionInfo(newLocator))
-            newLocator.findResponsibleActor(navigatingNodeIndex) ! UpdateConnectivity(navigatingNodeIndex)
-            connectNSG(navigatingNodeIndex, nodeLocator, graphHolders, newLocator, updatedConnectors, nodeCoordinators, dataHolder, -1)
-          case None =>
-            waitForGraphConnectors(navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder, updatedConnectors, graphConnectorLocator)
-        }
-    }
-
-  def connectNSG(navigatingNodeIndex: Int,
-                 sogLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
-                 graphHolders: Set[ActorRef[SearchOnGraphEvent]],
-                 gcLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
-                 graphConnectors: Set[ActorRef[ConnectGraphEvent]],
-                 nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
-                 dataHolder: ActorRef[LoadDataEvent],
-                 latestUnconnectedNodeIndex: Int) : Behavior[CoordinationEvent] =
-    Behaviors.receiveMessagePartial{
-      case FinishedUpdatingConnectivity =>
-        // find out if there is still an unconnected node and connect it
-        val startingNode = graphConnectors.head
-        startingNode ! FindUnconnectedNode(ctx.self, graphConnectors)
-        connectNSG(navigatingNodeIndex, sogLocator, graphHolders, gcLocator, graphConnectors, nodeCoordinators, dataHolder, latestUnconnectedNodeIndex)
-
-      case UnconnectedNode(nodeIndex, nodeData) =>
-        ctx.log.info("found an unconnected node")
-        sogLocator.findResponsibleActor(nodeIndex) !
-          FindNearestNeighborsStartingFrom(nodeData, navigatingNodeIndex, settings.k, ctx.self)
-        connectNSG(navigatingNodeIndex, sogLocator, graphHolders, gcLocator, graphConnectors, nodeCoordinators, dataHolder, nodeIndex)
-
-      case KNearestNeighbors(query, neighbors) =>
-        // Right now the only query being asked for is to connect unconnected nodes
-        gcLocator.findResponsibleActor(neighbors.head) ! AddToGraph(neighbors.head, latestUnconnectedNodeIndex)
-        gcLocator.findResponsibleActor(latestUnconnectedNodeIndex) ! UpdateConnectivity(latestUnconnectedNodeIndex)
-        connectNSG(navigatingNodeIndex, sogLocator, graphHolders, gcLocator, graphConnectors, nodeCoordinators, dataHolder, -1)
-
-      case AllConnected =>
-        ctx.log.info("NSG now fully connected")
-        graphConnectors.foreach(graphConnector => graphConnector ! GraphConnected)
-        waitForUpdatedGraphs(navigatingNodeIndex, sogLocator, graphHolders, nodeCoordinators, dataHolder, 0)
-    }
-
-    def waitForUpdatedGraphs(navigatingNodeIndex: Int,
-                             nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
-                             graphHolders: Set[ActorRef[SearchOnGraphEvent]],
-                             nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
-                             dataHolder: ActorRef[LoadDataEvent],
-                             responses: Int): Behavior[CoordinationEvent] =
+    def waitForConnectedGraphs(navigatingNodeIndex: Int,
+                               nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                               graphHolders: Set[ActorRef[SearchOnGraphEvent]],
+                               nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
+                               dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial {
-        case UpdatedGraph =>
-          if (responses + 1 == graphHolders.size) {
-            ctx.log.info("All Search on Graph actors updated to connected graph, can start search now")
-            val settings = Settings(ctx.system.settings.config)
-            dataHolder ! ReadTestQueries(settings.queryFilePath, ctx.self)
-            testNSG(navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, Map.empty, 0)
-          } else {
-            waitForUpdatedGraphs(navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder, responses + 1)
-          }
+        case ConnectionAchieved =>
+          ctx.log.info("All Search on Graph actors updated to connected graph, can start search now")
+          val settings = Settings(ctx.system.settings.config)
+          dataHolder ! ReadTestQueries(settings.queryFilePath, ctx.self)
+          testNSG(navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, Map.empty, 0)
       }
 
     def testNSG(navigatingNodeIndex: Int,

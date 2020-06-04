@@ -3,7 +3,8 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, DoneWithRedistribution, KNearestNeighbors, SearchOnGraphDistributionInfo, UpdatedGraph}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, DoneWithRedistribution, KNearestNeighbors, SearchOnGraphDistributionInfo}
+import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.ConnectionCoordinationEvent
 import com.github.julkw.dnsg.actors.{GraphConnector, GraphRedistributer}
 import com.github.julkw.dnsg.actors.GraphConnector.{ConnectGraphEvent, GraphToConnect, UpdatedGraphReceived}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
@@ -56,14 +57,14 @@ object SearchOnGraphActor {
 
   // connectivity
 
+  final case class ConnectGraph(graphConnectorSupervisor: ActorRef[ConnectionCoordinationEvent]) extends SearchOnGraphEvent
+
   final case class UpdateGraph(updatedGraph: Map[Int, Seq[Int]], sendAckTo: ActorRef[ConnectGraphEvent]) extends SearchOnGraphEvent
 
   // send responsiblities to NSG workers
   final case class SendResponsibleIndicesTo(nsgWorker: ActorRef[BuildNSGEvent]) extends SearchOnGraphEvent
   // get NSG from NSGMerger
-  final case class GetNSGFrom(nsgMerger: ActorRef[MergeNSGEvent]) extends SearchOnGraphEvent
-
-  final case class PartialNSG(graph: Map[Int, Seq[Int]]) extends SearchOnGraphEvent
+  final case class GetNSGFrom(nsgMerger: ActorRef[MergeNSGEvent], connectorCoordinator: ActorRef[ConnectionCoordinationEvent]) extends SearchOnGraphEvent
 
   // safe knng to file
   final case class GetGraph(sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
@@ -186,7 +187,6 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
 
       case UpdateGraph(updatedGraph, graphConnector) =>
         graphConnector ! UpdatedGraphReceived
-        supervisor ! UpdatedGraph
         searchOnGraph(updatedGraph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
 
       case GetGraph(sender) =>
@@ -201,6 +201,12 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
       case StartGraphRedistribution =>
         ctx.spawn(GraphRedistributer(graph, supervisor), name="GraphRedistributer")
         waitForRedistributionResults(graph, data)
+
+      case ConnectGraph(graphConnectorSupervisor) =>
+        ctx.log.info("Told to connect the graph")
+        val graphConnector =  ctx.spawn(GraphConnector(data, graphConnectorSupervisor, ctx.self), name="graphConnector")
+        graphConnector ! GraphToConnect(graph)
+        searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
     }
 
   def waitForRedistributionResults(oldGraph: Map[Int, Seq[Int]], oldData: CacheData[Float]): Behavior[SearchOnGraphEvent] =
@@ -322,17 +328,18 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
         }
         searchOnGraphForNSG(graph, data, nodeLocator, pathQueries -- removedQueries, respondTo -- removedQueries, responseLocations)
 
-      case GetNSGFrom(nsgMerger) =>
+      case GetNSGFrom(nsgMerger, connectorCoordinator) =>
         //ctx.log.info("Asking NSG Merger for my part of the NSG")
         nsgMerger ! GetPartialGraph(graph.keys.toSet, ctx.self)
-        waitForNSG(nodeLocator, data)
+        waitForNSG(nodeLocator, connectorCoordinator, data)
     }
 
-  def waitForNSG(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
+  def waitForNSG(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]], connectorCoordinator: ActorRef[ConnectionCoordinationEvent], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
-      case PartialNSG(graph) =>
+      case PartialGraph(graph) =>
         ctx.log.info("Received nsg, ready for queries/establishing connectivity")
-        val graphConnector =  ctx.spawn(GraphConnector(data, supervisor, ctx.self), name="graphConnector")
+        // TODO change to different command as the graphConnector also calls for this through ConnectGraph
+        val graphConnector =  ctx.spawn(GraphConnector(data, connectorCoordinator, ctx.self), name="graphConnector")
         graphConnector ! GraphToConnect(graph)
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, -1)
     }
