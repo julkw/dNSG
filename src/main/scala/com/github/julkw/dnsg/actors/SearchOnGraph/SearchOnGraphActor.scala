@@ -3,9 +3,8 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.ClusterCoordinator._
-import com.github.julkw.dnsg.actors.GraphRedistributer
-import com.github.julkw.dnsg.actors.createNSG.GraphConnector
-import com.github.julkw.dnsg.actors.createNSG.GraphConnector.{ConnectGraphEvent, GraphToConnect, UpdatedGraphReceived}
+import com.github.julkw.dnsg.actors.{GraphConnector, GraphRedistributer}
+import com.github.julkw.dnsg.actors.GraphConnector.{ConnectGraphEvent, GraphToConnect, UpdatedGraphReceived}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, Responsibility}
 import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}

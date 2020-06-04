@@ -7,7 +7,7 @@ import com.github.julkw.dnsg.actors.GraphRedistributer.{DistributeData, NoReplic
 import com.github.julkw.dnsg.actors.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, RedistributeGraph, SearchOnGraphEvent, StartGraphRedistribution}
-import com.github.julkw.dnsg.actors.createNSG.GraphConnector.{AddToGraph, ConnectGraphEvent, ConnectorDistributionInfo, FindUnconnectedNode, GraphConnected, UpdateConnectivity}
+import com.github.julkw.dnsg.actors.GraphConnector.{AddToGraph, ConnectGraphEvent, ConnectorDistributionInfo, FindUnconnectedNode, GraphConnected, UpdateConnectivity}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, NSGToSearchOnGraph}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, NodeLocatorBuilder, Settings, dNSGSerializable}
@@ -292,7 +292,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
           case Some(newLocator) =>
             updatedConnectors.foreach(connector => connector ! ConnectorDistributionInfo(newLocator))
             newLocator.findResponsibleActor(navigatingNodeIndex) ! UpdateConnectivity(navigatingNodeIndex)
-            connectNSG(navigatingNodeIndex, nodeLocator, graphHolders, newLocator, updatedConnectors, nodeCoordinators, dataHolder, -1, Seq.empty)
+            connectNSG(navigatingNodeIndex, nodeLocator, graphHolders, newLocator, updatedConnectors, nodeCoordinators, dataHolder, -1)
           case None =>
             waitForGraphConnectors(navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder, updatedConnectors, graphConnectorLocator)
         }
@@ -305,29 +305,25 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                  graphConnectors: Set[ActorRef[ConnectGraphEvent]],
                  nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                  dataHolder: ActorRef[LoadDataEvent],
-                 latestUnconnectedNodeIndex: Int,
-                 latestUnconnectedNodeData: Seq[Float]) : Behavior[CoordinationEvent] =
+                 latestUnconnectedNodeIndex: Int) : Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial{
       case FinishedUpdatingConnectivity =>
         // find out if there is still an unconnected node and connect it
         val startingNode = graphConnectors.head
         startingNode ! FindUnconnectedNode(ctx.self, graphConnectors)
-        connectNSG(navigatingNodeIndex, sogLocator, graphHolders, gcLocator, graphConnectors, nodeCoordinators, dataHolder, latestUnconnectedNodeIndex, latestUnconnectedNodeData)
+        connectNSG(navigatingNodeIndex, sogLocator, graphHolders, gcLocator, graphConnectors, nodeCoordinators, dataHolder, latestUnconnectedNodeIndex)
 
       case UnconnectedNode(nodeIndex, nodeData) =>
         ctx.log.info("found an unconnected node")
         sogLocator.findResponsibleActor(nodeIndex) !
           FindNearestNeighborsStartingFrom(nodeData, navigatingNodeIndex, settings.k, ctx.self)
-        connectNSG(navigatingNodeIndex, sogLocator, graphHolders, gcLocator, graphConnectors, nodeCoordinators, dataHolder, nodeIndex, nodeData)
+        connectNSG(navigatingNodeIndex, sogLocator, graphHolders, gcLocator, graphConnectors, nodeCoordinators, dataHolder, nodeIndex)
 
       case KNearestNeighbors(query, neighbors) =>
         // Right now the only query being asked for is to connect unconnected nodes
-        assert(query == latestUnconnectedNodeData)
-        neighbors.foreach(reverseNeighbor =>
-          gcLocator.findResponsibleActor(reverseNeighbor) !
-            AddToGraph(reverseNeighbor, latestUnconnectedNodeIndex))
+        gcLocator.findResponsibleActor(neighbors.head) ! AddToGraph(neighbors.head, latestUnconnectedNodeIndex)
         gcLocator.findResponsibleActor(latestUnconnectedNodeIndex) ! UpdateConnectivity(latestUnconnectedNodeIndex)
-        connectNSG(navigatingNodeIndex, sogLocator, graphHolders, gcLocator, graphConnectors, nodeCoordinators, dataHolder, -1, Seq.empty)
+        connectNSG(navigatingNodeIndex, sogLocator, graphHolders, gcLocator, graphConnectors, nodeCoordinators, dataHolder, -1)
 
       case AllConnected =>
         ctx.log.info("NSG now fully connected")

@@ -51,6 +51,7 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
   import GraphRedistributer._
 
   def setup(): Behavior[RedistributionEvent] = {
+    // TODO add step to ensure connectivity of graph?
     clusterCoordinator ! RedistributerDistributionInfo(graph.keys.toSeq, ctx.self)
     waitForStartSignal()
   }
