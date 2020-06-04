@@ -2,7 +2,7 @@ package com.github.julkw.dnsg.actors
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.ClusterCoordinator.{AllConnected, CoordinationEvent, FinishedUpdatingConnectivity, GraphConnectorDistributionInfo, UnconnectedNode}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{AllConnected, CoordinationEvent, FinishedUpdatingConnectivity, GraphConnectorDistributionInfo, UnconnectedNode}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{SearchOnGraphEvent, UpdateGraph}
 import com.github.julkw.dnsg.util.Data.CacheData
 import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}

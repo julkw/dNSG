@@ -3,7 +3,7 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 import scala.concurrent.duration._
 import akka.actor.typed.ActorRef
 import akka.actor.typed.scaladsl.{ActorContext, TimerScheduler}
-import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetLocation, GetNeighbors, ReaskForLocation, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, SortedCheckedNodes}
 import com.github.julkw.dnsg.util.Data.CacheData

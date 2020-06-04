@@ -1,7 +1,7 @@
 package com.github.julkw.dnsg.util
 
 import akka.actor.typed.scaladsl.ActorContext
-import com.github.julkw.dnsg.actors.{ClusterCoordinator}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator
 import com.typesafe.config.Config
 
 case class Settings(config: Config) {
