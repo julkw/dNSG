@@ -59,6 +59,7 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
   def waitForStartSignal(): Behavior[RedistributionEvent] = Behaviors.receiveMessagePartial {
     case DistributeData(root, workers, dataReplication, nodeLocator) =>
       if (graph.contains(root)) {
+        ctx.log.info("Starting redistribution")
         val rootInfo = createTreeNode(root, root, graph(root), nodeLocator)
         buildTreeForDistribution(Map(root -> rootInfo), workers, dataReplication, nodeLocator)
       } else {

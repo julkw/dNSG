@@ -3,7 +3,6 @@ package com.github.julkw.dnsg.actors.Coordinators
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionAchieved, CoordinationEvent, KNearestNeighbors}
-import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.NodeCoordinationEvent
 import com.github.julkw.dnsg.actors.GraphConnector.{AddToGraph, ConnectGraphEvent, ConnectorDistributionInfo, FindUnconnectedNode, GraphConnected, UpdateConnectivity}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{ConnectGraph, FindNearestNeighborsStartingFrom, SearchOnGraphEvent}
 import com.github.julkw.dnsg.util.{NodeLocator, NodeLocatorBuilder, dNSGSerializable}
@@ -17,6 +16,8 @@ object GraphConnectorCoordinator {
   final case object FinishedUpdatingConnectivity extends ConnectionCoordinationEvent
 
   final case class UnconnectedNode(nodeIndex: Int, nodeData: Seq[Float]) extends ConnectionCoordinationEvent
+
+  final case object ReceivedNewEdge extends ConnectionCoordinationEvent
 
   final case object AllConnected extends ConnectionCoordinationEvent
 
@@ -58,7 +59,7 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
           case Some(newLocator) =>
             updatedConnectors.foreach(connector => connector ! ConnectorDistributionInfo(newLocator))
             newLocator.findResponsibleActor(navigatingNodeIndex) ! UpdateConnectivity(navigatingNodeIndex)
-            connectNSG(newLocator, updatedConnectors, -1)
+            connectNSG(newLocator, updatedConnectors,0, -1, false)
           case None =>
             waitForGraphConnectors(updatedConnectors, graphConnectorLocator)
         }
@@ -66,33 +67,48 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
 
   def connectNSG(connectorLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
                  graphConnectors: Set[ActorRef[ConnectGraphEvent]],
-                 latestUnconnectedNodeIndex: Int) : Behavior[ConnectionCoordinationEvent] =
+                 waitOnNodeAck: Int,
+                 latestUnconnectedNodeIndex: Int,
+                 allConnected: Boolean) : Behavior[ConnectionCoordinationEvent] =
     Behaviors.receiveMessagePartial{
       case FinishedUpdatingConnectivity =>
         // find out if there is still an unconnected node and connect it
         val startingNode = graphConnectors.head
         startingNode ! FindUnconnectedNode(ctx.self, graphConnectors)
-        connectNSG(connectorLocator, graphConnectors, latestUnconnectedNodeIndex)
+        connectNSG(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, allConnected)
 
       case UnconnectedNode(nodeIndex, nodeData) =>
         ctx.log.info("found an unconnected node")
         graphNodeLocator.findResponsibleActor(nodeIndex) !
           FindNearestNeighborsStartingFrom(nodeData, navigatingNodeIndex, 1, coordinationEventAdapter)
-        connectNSG(connectorLocator, graphConnectors, nodeIndex)
+        connectNSG(connectorLocator, graphConnectors, waitOnNodeAck, nodeIndex, allConnected)
 
       case WrappedCoordinationEvent(event) =>
         event match {
           case KNearestNeighbors(query, neighbors) =>
             // Right now the only query being asked for is to connect unconnected nodes
-            connectorLocator.findResponsibleActor(neighbors.head) ! AddToGraph(neighbors.head, latestUnconnectedNodeIndex)
+            // TODO ensure all AddToGraph messages were received to prevent an edge getting lost if the message takes too long
+            connectorLocator.findResponsibleActor(neighbors.head) ! AddToGraph(neighbors.head, latestUnconnectedNodeIndex, ctx.self)
             connectorLocator.findResponsibleActor(latestUnconnectedNodeIndex) ! UpdateConnectivity(latestUnconnectedNodeIndex)
-            connectNSG(connectorLocator, graphConnectors, -1)
+            connectNSG(connectorLocator, graphConnectors, waitOnNodeAck + 1, -1, allConnected)
         }
+
+      case ReceivedNewEdge =>
+        // TODO check if all Connected yet
+        if (allConnected && waitOnNodeAck == 1) {
+          graphConnectors.foreach(graphConnector => graphConnector ! GraphConnected)
+          waitForUpdatedGraphs(graphNodeLocator.allActors().size)
+        }
+        connectNSG(connectorLocator, graphConnectors, waitOnNodeAck - 1, latestUnconnectedNodeIndex, allConnected)
 
       case AllConnected =>
         ctx.log.info("NSG now fully connected")
-        graphConnectors.foreach(graphConnector => graphConnector ! GraphConnected)
-        waitForUpdatedGraphs(graphNodeLocator.allActors().size)
+        if (waitOnNodeAck > 0) {
+          connectNSG(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, true)
+        } else {
+          graphConnectors.foreach(graphConnector => graphConnector ! GraphConnected)
+          waitForUpdatedGraphs(graphNodeLocator.allActors().size)
+        }
     }
 
   def waitForUpdatedGraphs(remainingGraphsToUpdate: Int): Behavior[ConnectionCoordinationEvent] = Behaviors.receiveMessagePartial {

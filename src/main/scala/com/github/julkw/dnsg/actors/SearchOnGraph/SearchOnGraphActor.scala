@@ -6,7 +6,7 @@ import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, DoneWithRedistribution, KNearestNeighbors, SearchOnGraphDistributionInfo}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.ConnectionCoordinationEvent
 import com.github.julkw.dnsg.actors.{GraphConnector, GraphRedistributer}
-import com.github.julkw.dnsg.actors.GraphConnector.{ConnectGraphEvent, GraphToConnect, UpdatedGraphReceived}
+import com.github.julkw.dnsg.actors.GraphConnector.{ConnectGraphEvent, UpdatedGraphReceived}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, Responsibility}
 import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
@@ -59,7 +59,7 @@ object SearchOnGraphActor {
 
   final case class ConnectGraph(graphConnectorSupervisor: ActorRef[ConnectionCoordinationEvent]) extends SearchOnGraphEvent
 
-  final case class UpdateGraph(updatedGraph: Map[Int, Seq[Int]], sendAckTo: ActorRef[ConnectGraphEvent]) extends SearchOnGraphEvent
+  final case class AddEdges(newEdges: Map[Int, Seq[Int]], sendAckTo: ActorRef[ConnectGraphEvent]) extends SearchOnGraphEvent
 
   // send responsiblities to NSG workers
   final case class SendResponsibleIndicesTo(nsgWorker: ActorRef[BuildNSGEvent]) extends SearchOnGraphEvent
@@ -185,8 +185,15 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
         }
         searchOnGraph(graph, data, nodeLocator, neighborQueries -- removedQueries, respondTo -- removedQueries, lastIdUsed)
 
-      case UpdateGraph(updatedGraph, graphConnector) =>
+      case AddEdges(newEdges, graphConnector) =>
         graphConnector ! UpdatedGraphReceived
+        val updatedGraph = graph.transform { (node, neighbors) =>
+          if (newEdges.contains(node)) {
+            neighbors :++ newEdges(node)
+          } else {
+            neighbors
+          }
+        }
         searchOnGraph(updatedGraph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
 
       case GetGraph(sender) =>
@@ -204,8 +211,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
 
       case ConnectGraph(graphConnectorSupervisor) =>
         ctx.log.info("Told to connect the graph")
-        val graphConnector =  ctx.spawn(GraphConnector(data, graphConnectorSupervisor, ctx.self), name="graphConnector")
-        graphConnector ! GraphToConnect(graph)
+        val graphConnector =  ctx.spawn(GraphConnector(data.data, graph, graphConnectorSupervisor, ctx.self), name="graphConnector")
         searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
     }
 
@@ -339,8 +345,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
       case PartialGraph(graph) =>
         ctx.log.info("Received nsg, ready for queries/establishing connectivity")
         // TODO change to different command as the graphConnector also calls for this through ConnectGraph
-        val graphConnector =  ctx.spawn(GraphConnector(data, connectorCoordinator, ctx.self), name="graphConnector")
-        graphConnector ! GraphToConnect(graph)
+        val graphConnector =  ctx.spawn(GraphConnector(data.data, graph, connectorCoordinator, ctx.self), name="graphConnector")
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, -1)
     }
 
