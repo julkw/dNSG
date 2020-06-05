@@ -70,6 +70,7 @@ class GraphConnector(data: LocalData[Float],
 
       case IsConnected(connectedNode, parent) =>
         // in case the parent is placed on another node this might not be known here
+        //ctx.log.info("{} ist connected", connectedNode)
         connectivityInfo.connectedNodes.add(parent)
         if (connectivityInfo.connectedNodes.contains(connectedNode)) {
           nodeLocator.findResponsibleActor(parent) ! DoneConnectingChildren(parent)
@@ -85,7 +86,6 @@ class GraphConnector(data: LocalData[Float],
         if (messageCounter.waitingForMessages == 0) {
           if (messageCounter.parentNode == nodeAwaitingAnswer) {
             supervisor ! FinishedUpdatingConnectivity
-            ctx.log.info("Done with updating connectivity")
           } else {
             nodeLocator.findResponsibleActor(messageCounter.parentNode) !
               DoneConnectingChildren(messageCounter.parentNode)

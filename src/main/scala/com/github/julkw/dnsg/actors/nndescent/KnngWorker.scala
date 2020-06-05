@@ -93,6 +93,7 @@ class KnngWorker(data: CacheData[Float],
 
   def buildDistributionTree(): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
     case ResponsibleFor(responsibility, treeDepth) =>
+      ctx.log.info("Holding {} nodes of max {}", responsibility.length, maxResponsibility)
       val treeBuilder: TreeBuilder = TreeBuilder(data.data, settings.k)
       if(responsibility.length > maxResponsibility) {
         // further split the data
@@ -104,19 +105,12 @@ class KnngWorker(data: CacheData[Float],
       } else {
         // this is a leaf node for data distribution
         clusterCoordinator ! KnngDistributionInfo(responsibility, ctx.self)
-
         // Build local tree while waiting on DistributionTree message
         val treeBuilder: TreeBuilder = TreeBuilder(data.data, settings.k)
         val kdTree: IndexTree = treeBuilder.construct(responsibility)
         ctx.log.info("Finished building kdTree")
         waitForDistributionInfo(kdTree, responsibility)
       }
-
-    case BuildApproximateGraph(nodeLocator, workers) =>
-      // this should not happen
-      ctx.log.info("Somehow got distribution info too early")
-      ctx.self ! BuildApproximateGraph(nodeLocator, workers)
-      buildDistributionTree()
   }
 
   def waitForDistributionInfo(kdTree: IndexTree,
@@ -172,7 +166,7 @@ class KnngWorker(data: CacheData[Float],
         val graphIndex: Int = responsibility(responsibilityIndex)
         val oldCandidates = candidates(responsibilityIndex)
         val mergedCandidates = (oldCandidates ++ newCandidates).sortBy(_._2)
-        val skipSelf = if (mergedCandidates(0)._1 == graphIndex) 1 else 0
+        val skipSelf = if (mergedCandidates.head._1 == graphIndex) 1 else 0
         candidates(responsibilityIndex) = mergedCandidates.slice(skipSelf, settings.k + skipSelf)
         awaitingAnswer(responsibilityIndex) -= 1
         if (awaitingAnswer(responsibilityIndex) == 0) {
@@ -299,7 +293,7 @@ class KnngWorker(data: CacheData[Float],
           ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
         graphHolder ! GraphAndData(cleanedGraph, data, searchOnGraphEventAdapter)
         // TODO add some kind of check to ensure the arrival of the graph?
-        Behaviors.empty
+        Behaviors.stopped
     }
 
   def findLocalCandidates(query: Seq[Float], kdTree: KdTree[Seq[Int]]): Seq[(Int, Double)] = {
@@ -326,7 +320,7 @@ class KnngWorker(data: CacheData[Float],
                               nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]]): Map[Int, Seq[(Int, Double)]] = {
     val currentNeighbors = graph(g_node)
     val currentReverseNeighbors = reverseNeighbors(g_node)
-    val currentMaxDist = currentNeighbors(currentNeighbors.length - 1)._2
+    val currentMaxDist = currentNeighbors.last._2
     val isNew: Boolean = !(currentNeighbors.exists(neighbor => neighbor._1 == potentialNeighbor._1)
       || currentReverseNeighbors.contains(potentialNeighbor._1))
     if (currentMaxDist > potentialNeighbor._2 && potentialNeighbor._1 != g_node && isNew) {
@@ -337,7 +331,7 @@ class KnngWorker(data: CacheData[Float],
         clusterCoordinator ! CorrectFinishedNNDescent
       }
       joinNewNeighbor(currentNeighbors.slice(0, settings.k-1), currentReverseNeighbors, potentialNeighbor._1, nodeLocator)
-      val removedNeighbor = currentNeighbors(currentNeighbors.length - 1)._1
+      val removedNeighbor = currentNeighbors.last._1
       nodeLocator.findResponsibleActor(removedNeighbor) ! RemoveReverseNeighbor(removedNeighbor, g_node)
       val updatedNeighbors = (currentNeighbors :+ potentialNeighbor).sortBy(_._2).slice(0, settings.k)
       timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)

@@ -51,15 +51,15 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
   import GraphRedistributer._
 
   def setup(): Behavior[RedistributionEvent] = {
-    // TODO add step to ensure connectivity of graph?
     clusterCoordinator ! RedistributerDistributionInfo(graph.keys.toSeq, ctx.self)
     waitForStartSignal()
   }
 
   def waitForStartSignal(): Behavior[RedistributionEvent] = Behaviors.receiveMessagePartial {
     case DistributeData(root, workers, dataReplication, nodeLocator) =>
+      ctx.log.info("Starting redistribution")
       if (graph.contains(root)) {
-        ctx.log.info("Starting redistribution")
+        ctx.log.info("Start building redistribution tree from root")
         val rootInfo = createTreeNode(root, root, graph(root), nodeLocator)
         buildTreeForDistribution(Map(root -> rootInfo), workers, dataReplication, nodeLocator)
       } else {
@@ -67,7 +67,6 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
       }
 
     case AddToTree(g_node, parent) =>
-      // TODO find nicer way to deal with these messages arriving before the DistributeData one
       ctx.self ! AddToTree(g_node, parent)
       waitForStartSignal()
   }
@@ -99,15 +98,14 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
       case NotYourChild(g_node) =>
         updateResponses(g_node, tree, workers, replicationStrategy, nodeLocator)
 
+      // the redistribution has started from another node (the one holding the root) already
       case FindNodesInRange(g_node, minNodes, maxNodes, removeFromDescendants, waitingList, workersLeft, nodesLeft) =>
         ctx.self ! FindNodesInRange(g_node, minNodes, maxNodes, removeFromDescendants, waitingList, workersLeft, nodesLeft)
-        val distributionInfo = graph.transform((_, _) => Set.empty[ActorRef[SearchOnGraphEvent]])
-        distributeUsingTree(tree, distributionInfo, replicationStrategy, workers, nodeLocator)
+        startDistribution(tree, replicationStrategy, workers, nodeLocator)
 
       case AssignWithChildren(g_node, worker) =>
         ctx.self ! AssignWithChildren(g_node, worker)
-        val distributionInfo = graph.transform((_, _) => Set.empty[ActorRef[SearchOnGraphEvent]])
-        distributeUsingTree(tree, distributionInfo, replicationStrategy, workers, nodeLocator)
+        startDistribution(tree, replicationStrategy, workers, nodeLocator)
     }
 
   def distributeUsingTree(tree: Map[Int, TreeNodeInfo],
@@ -134,9 +132,6 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
           // TODO instead of choosing the first child in the list, choose the one closest to the last entry in the waitingList?
           // this would need exact locations, though
           val childIndex = treeNode.children.indexWhere(isChild => isChild)
-          if (childIndex < 0) {
-            val debug = 1
-          }
           val child = graph(g_node)(childIndex)
           // remove the child because the next time the search reaches me it will have been assigned something or be in the waiting list
           treeNode.children(childIndex) = false
@@ -167,7 +162,7 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
       case SendResults =>
         // ensure all AssignWithChildren messages have been processed (all nodes have been assigned to a worker)
         val leftToAssign = distributionInfo.valuesIterator.count(assignees => assignees.isEmpty)
-        //ctx.log.info("Still waiting on {} nodes to be assigned", leftToAssign)
+        ctx.log.info("Still waiting on {} nodes to be assigned", leftToAssign)
         if (distributionInfo.valuesIterator.exists(assignees => assignees.isEmpty)) {
           // TODO do this with timer
           ctx.self ! SendResults
@@ -204,19 +199,26 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
         buildTreeForDistribution(tree, workers, replicationStrategy, nodeLocator)
       } else {
         // this is the root of the tree, the building of the tree is done
-        ctx.log.info("Tree for redistribution is built, now assigning g_nodes to workers")
         ctx.log.info("Size of tree from root {}", treeNode.subTreeSize)
         startSearchForNextWorkersNodes(nodeIndex, 0, nodeLocator.graphSize, workers, replicationStrategy, nodeLocator)
-        val distributionInfo = graph.transform((_, _) => Set.empty[ActorRef[SearchOnGraphEvent]])
-        distributeUsingTree(tree, distributionInfo, replicationStrategy, workers, nodeLocator)
+        startDistribution(tree, replicationStrategy, workers, nodeLocator)
       }
     } else {
       buildTreeForDistribution(tree, workers, replicationStrategy, nodeLocator)
     }
   }
 
+  def startDistribution(tree: Map[Int, TreeNodeInfo],
+                        replicationStrategy: DataReplicationModel,
+                        workers: Set[ActorRef[SearchOnGraphEvent]],
+                        nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): Behavior[RedistributionEvent] = {
+    val distributionInfo = graph.transform((_, _) => Set.empty[ActorRef[SearchOnGraphEvent]])
+    ctx.log.info("Done with tree, now assigning g_nodes to workers")
+    distributeUsingTree(tree, distributionInfo, replicationStrategy, workers, nodeLocator)
+  }
 
   def createTreeNode(nodeIndex: Int, parentIndex: Int, neighbors: Seq[Int], nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): TreeNodeInfo = {
+    // TODO with too few actors this leads to send queue overflow :(
     neighbors.foreach(neighbor => nodeLocator.findResponsibleActor(neighbor) ! AddToTree(neighbor, nodeIndex))
     TreeNodeInfo(parentIndex, Array.fill(neighbors.length){false}, 1, 1, neighbors.length)
   }

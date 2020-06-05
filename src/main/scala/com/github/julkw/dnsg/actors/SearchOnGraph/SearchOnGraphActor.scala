@@ -2,7 +2,7 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, DoneWithRedistribution, KNearestNeighbors, SearchOnGraphDistributionInfo}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, DoneWithRedistribution, KNearestNeighbors, NSGonSOG, SearchOnGraphDistributionInfo}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{ConnectionCoordinationEvent, ReceivedNewEdge}
 import com.github.julkw.dnsg.actors.{GraphConnector, GraphRedistributer}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
@@ -61,30 +61,30 @@ object SearchOnGraphActor {
   // send responsiblities to NSG workers
   final case class SendResponsibleIndicesTo(nsgWorker: ActorRef[BuildNSGEvent]) extends SearchOnGraphEvent
   // get NSG from NSGMerger
-  final case class GetNSGFrom(nsgMerger: ActorRef[MergeNSGEvent], connectorCoordinator: ActorRef[ConnectionCoordinationEvent]) extends SearchOnGraphEvent
+  final case class GetNSGFrom(nsgMerger: ActorRef[MergeNSGEvent]) extends SearchOnGraphEvent
 
   // safe knng to file
   final case class GetGraph(sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
 
-  def apply(supervisor: ActorRef[CoordinationEvent]): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
+  def apply(clusterCoordinator: ActorRef[CoordinationEvent]): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
     Behaviors.withTimers(timers =>
-      new SearchOnGraphActor(supervisor, new WaitingOnLocation, timers, ctx).waitForLocalGraph()
+      new SearchOnGraphActor(clusterCoordinator, new WaitingOnLocation, timers, ctx).waitForLocalGraph()
     )
   }
 }
 
-class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
+class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                          waitingOnLocation: WaitingOnLocation,
                          timers: TimerScheduler[SearchOnGraphActor.SearchOnGraphEvent],
-                         ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends SearchOnGraph(supervisor, waitingOnLocation, timers, ctx) {
+                         ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends SearchOnGraph(clusterCoordinator, waitingOnLocation, timers, ctx) {
   import SearchOnGraphActor._
 
   def waitForLocalGraph(): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case GraphAndData(graph, localData, sender) =>
         //sender ! GraphReceived(ctx.self)
-        supervisor ! SearchOnGraphDistributionInfo(graph.keys.toSeq, ctx.self)
+        clusterCoordinator ! SearchOnGraphDistributionInfo(graph.keys.toSeq, ctx.self)
         waitForDistributionInfo(graph, localData)
     }
 
@@ -198,12 +198,12 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
         searchOnGraphForNSG(graph, data, nodeLocator, Map.empty, Map.empty, QueryResponseLocations(data))
 
       case StartGraphRedistribution =>
-        ctx.spawn(GraphRedistributer(graph, supervisor), name="GraphRedistributer")
+        ctx.spawn(GraphRedistributer(graph, clusterCoordinator), name="GraphRedistributer")
         waitForRedistributionResults(graph, data)
 
       case ConnectGraph(graphConnectorSupervisor) =>
         ctx.log.info("Told to connect the graph")
-        val graphConnector =  ctx.spawn(GraphConnector(data.data, graph, graphConnectorSupervisor), name="graphConnector")
+        ctx.spawn(GraphConnector(data.data, graph, graphConnectorSupervisor), name="graphConnector")
         searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
     }
 
@@ -231,7 +231,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
       case UpdatedLocalData(newData) =>
         // TODO Cache size from settings?
       if (newGraph.size == nodesExpected) {
-          supervisor ! DoneWithRedistribution
+          clusterCoordinator ! DoneWithRedistribution
           searchOnGraph(newGraph, CacheData(0, newData), nodeLocator, Map.empty, Map.empty, -1)
         } else {
         redistributeGraph(oldGraph, nodeLocator, newGraph, nodesExpected, CacheData(0, newData), true)
@@ -240,7 +240,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
       case PartialGraph(partialGraph) =>
         val updatedGraph = newGraph ++ partialGraph
         if (updatedGraph.size == nodesExpected && dataUpdated) {
-          supervisor ! DoneWithRedistribution
+          clusterCoordinator ! DoneWithRedistribution
           searchOnGraph(updatedGraph, data, nodeLocator, Map.empty, Map.empty, -1)
         }
         redistributeGraph(oldGraph, nodeLocator, updatedGraph, nodesExpected, data, dataUpdated)
@@ -326,18 +326,17 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
         }
         searchOnGraphForNSG(graph, data, nodeLocator, pathQueries -- removedQueries, respondTo -- removedQueries, responseLocations)
 
-      case GetNSGFrom(nsgMerger, connectorCoordinator) =>
+      case GetNSGFrom(nsgMerger) =>
         //ctx.log.info("Asking NSG Merger for my part of the NSG")
         nsgMerger ! GetPartialGraph(graph.keys.toSet, ctx.self)
-        waitForNSG(nodeLocator, connectorCoordinator, data)
+        waitForNSG(nodeLocator, data)
     }
 
-  def waitForNSG(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]], connectorCoordinator: ActorRef[ConnectionCoordinationEvent], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
+  def waitForNSG(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case PartialGraph(graph) =>
-        ctx.log.info("Received nsg, ready for queries/establishing connectivity")
-        // TODO change to different command as the graphConnector also calls for this through ConnectGraph
-        val graphConnector =  ctx.spawn(GraphConnector(data.data, graph, connectorCoordinator), name="graphConnector")
+        ctx.log.info("Received nsg, ready for queries")
+        clusterCoordinator ! NSGonSOG
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, -1)
     }
 

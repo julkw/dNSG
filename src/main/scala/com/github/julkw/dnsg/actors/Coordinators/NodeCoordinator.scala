@@ -4,7 +4,6 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import akka.cluster.typed.{ClusterSingleton, SingletonActor}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, NodeCoordinatorIntroduction}
-import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.ConnectionCoordinationEvent
 import com.github.julkw.dnsg.actors.DataHolder
 import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, LoadPartialDataFromFile}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
@@ -25,8 +24,6 @@ object NodeCoordinator {
   final case class DataRef(dataRef: LocalData[Float]) extends NodeCoordinationEvent
 
   final case object StartSearchOnGraph extends NodeCoordinationEvent
-
-  final case class StartSearchOnGraphAndConnect(connectorCoordinator: ActorRef[ConnectionCoordinationEvent]) extends NodeCoordinationEvent
 
   final case class StartBuildingNSG(navigatingNode: Int, nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]) extends NodeCoordinationEvent
 
@@ -138,8 +135,8 @@ class NodeCoordinator(settings: Settings,
                              nsgMerger: ActorRef[MergeNSGEvent],
                              data: LocalData[Float]): Behavior[NodeCoordinationEvent] =
     Behaviors.receiveMessagePartial{
-      case StartSearchOnGraphAndConnect(connectorCoordinator) =>
-        graphHolders.foreach(graphHolder => graphHolder ! GetNSGFrom(nsgMerger, connectorCoordinator))
+      case StartSearchOnGraph =>
+        graphHolders.foreach(graphHolder => graphHolder ! GetNSGFrom(nsgMerger))
         waitForShutdown()
     }
 
