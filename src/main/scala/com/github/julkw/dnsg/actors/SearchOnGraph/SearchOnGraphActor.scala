@@ -2,18 +2,15 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, DoneWithRedistribution, KNearestNeighbors, SearchOnGraphDistributionInfo}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{ConnectionCoordinationEvent, ReceivedNewEdge}
 import com.github.julkw.dnsg.actors.{GraphConnector, GraphRedistributer}
-import com.github.julkw.dnsg.actors.GraphConnector.{ConnectGraphEvent, UpdatedGraphReceived}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, Responsibility}
 import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
 import com.github.julkw.dnsg.util._
 
 import scala.language.postfixOps
-
 
 object SearchOnGraphActor {
 
@@ -206,7 +203,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
 
       case ConnectGraph(graphConnectorSupervisor) =>
         ctx.log.info("Told to connect the graph")
-        val graphConnector =  ctx.spawn(GraphConnector(data.data, graph, graphConnectorSupervisor, ctx.self), name="graphConnector")
+        val graphConnector =  ctx.spawn(GraphConnector(data.data, graph, graphConnectorSupervisor), name="graphConnector")
         searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
     }
 
@@ -340,7 +337,7 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
       case PartialGraph(graph) =>
         ctx.log.info("Received nsg, ready for queries/establishing connectivity")
         // TODO change to different command as the graphConnector also calls for this through ConnectGraph
-        val graphConnector =  ctx.spawn(GraphConnector(data.data, graph, connectorCoordinator, ctx.self), name="graphConnector")
+        val graphConnector =  ctx.spawn(GraphConnector(data.data, graph, connectorCoordinator), name="graphConnector")
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, -1)
     }
 

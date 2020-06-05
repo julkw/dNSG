@@ -3,8 +3,7 @@ package com.github.julkw.dnsg.actors
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{AllConnected, ConnectionCoordinationEvent, FinishedUpdatingConnectivity, GraphConnectorDistributionInfo, UnconnectedNode}
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.SearchOnGraphEvent
-import com.github.julkw.dnsg.util.Data.{LocalData}
+import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}
 
 import scala.collection.mutable
@@ -24,8 +23,6 @@ object GraphConnector {
 
   final case object GraphConnected extends ConnectGraphEvent
 
-  final case object UpdatedGraphReceived extends ConnectGraphEvent
-
   // data structures for more readable code
   protected case class MessageCounter(var waitingForMessages: Int, parentNode: Int)
 
@@ -33,16 +30,14 @@ object GraphConnector {
 
   def apply(data: LocalData[Float],
             graph: Map[Int, Seq[Int]],
-            supervisor: ActorRef[ConnectionCoordinationEvent],
-            searchOnGraphActor: ActorRef[SearchOnGraphEvent]): Behavior[ConnectGraphEvent] = Behaviors.setup(ctx =>
-    new GraphConnector(data, graph, supervisor, searchOnGraphActor, ctx).setup()
+            supervisor: ActorRef[ConnectionCoordinationEvent]): Behavior[ConnectGraphEvent] = Behaviors.setup(ctx =>
+    new GraphConnector(data, graph, supervisor, ctx).setup()
   )
 }
 
 class GraphConnector(data: LocalData[Float],
                      graph: Map[Int, Seq[Int]],
                      supervisor: ActorRef[ConnectionCoordinationEvent],
-                     searchOnGraphActor: ActorRef[SearchOnGraphEvent],
                      ctx: ActorContext[GraphConnector.ConnectGraphEvent]) {
   import GraphConnector._
 
@@ -56,12 +51,14 @@ class GraphConnector(data: LocalData[Float],
       establishConnectivity(nodeLocator, ConnectivityInfo(mutable.Set.empty, mutable.Map.empty))
 
     case UpdateConnectivity(root) =>
-      // TODO this is an ugly way to deal with the case that this message arrives here before the DistributionInfo
       ctx.self ! UpdateConnectivity(root)
-      Behaviors.same
+      waitForDistInfo()
+
+    case IsConnected(connectedNode, parent) =>
+      ctx.self ! IsConnected(connectedNode, parent)
+      waitForDistInfo()
   }
 
-  // TODO replace graph with responsibility and a list of edges to prevent holding the graph twice on the same node
   def establishConnectivity(nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
                             connectivityInfo: ConnectivityInfo): Behavior[ConnectGraphEvent] =
     Behaviors.receiveMessagePartial {
