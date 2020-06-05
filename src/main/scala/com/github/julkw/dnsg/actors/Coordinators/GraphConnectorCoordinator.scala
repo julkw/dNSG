@@ -6,11 +6,11 @@ import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionA
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.NodeCoordinationEvent
 import com.github.julkw.dnsg.actors.GraphConnector.{AddToGraph, ConnectGraphEvent, ConnectorDistributionInfo, FindUnconnectedNode, GraphConnected, UpdateConnectivity}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{ConnectGraph, FindNearestNeighborsStartingFrom, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.{NodeLocator, NodeLocatorBuilder}
+import com.github.julkw.dnsg.util.{NodeLocator, NodeLocatorBuilder, dNSGSerializable}
 
 object GraphConnectorCoordinator {
 
-  trait ConnectionCoordinationEvent
+  trait ConnectionCoordinationEvent extends dNSGSerializable
 
   final case class GraphConnectorDistributionInfo(responsibility: Seq[Int], sender: ActorRef[ConnectGraphEvent]) extends ConnectionCoordinationEvent
 
