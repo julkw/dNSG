@@ -4,7 +4,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, DoneWithRedistribution, KNearestNeighbors, SearchOnGraphDistributionInfo}
-import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.ConnectionCoordinationEvent
+import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{ConnectionCoordinationEvent, ReceivedNewEdge}
 import com.github.julkw.dnsg.actors.{GraphConnector, GraphRedistributer}
 import com.github.julkw.dnsg.actors.GraphConnector.{ConnectGraphEvent, UpdatedGraphReceived}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
@@ -59,7 +59,7 @@ object SearchOnGraphActor {
 
   final case class ConnectGraph(graphConnectorSupervisor: ActorRef[ConnectionCoordinationEvent]) extends SearchOnGraphEvent
 
-  final case class AddEdges(newEdges: Map[Int, Seq[Int]], sendAckTo: ActorRef[ConnectGraphEvent]) extends SearchOnGraphEvent
+  final case class AddToGraph(startNode: Int, endNode: Int, sender: ActorRef[ConnectionCoordinationEvent]) extends SearchOnGraphEvent
 
   // send responsiblities to NSG workers
   final case class SendResponsibleIndicesTo(nsgWorker: ActorRef[BuildNSGEvent]) extends SearchOnGraphEvent
@@ -185,16 +185,11 @@ class SearchOnGraphActor(supervisor: ActorRef[CoordinationEvent],
         }
         searchOnGraph(graph, data, nodeLocator, neighborQueries -- removedQueries, respondTo -- removedQueries, lastIdUsed)
 
-      case AddEdges(newEdges, graphConnector) =>
-        graphConnector ! UpdatedGraphReceived
-        val updatedGraph = graph.transform { (node, neighbors) =>
-          if (newEdges.contains(node)) {
-            neighbors :++ newEdges(node)
-          } else {
-            neighbors
-          }
-        }
-        searchOnGraph(updatedGraph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
+      case AddToGraph(startNode, endNode, sender) =>
+        ctx.log.info("Add edge to graph to ensure connectivity")
+        sender ! ReceivedNewEdge
+        val newNeighbors = graph(startNode) :+ endNode
+        searchOnGraph(graph + (startNode -> newNeighbors), data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
 
       case GetGraph(sender) =>
         //ctx.log.info("Asked for graph info")
