@@ -60,13 +60,14 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
       ctx.log.info("Starting redistribution")
       if (graph.contains(root)) {
         ctx.log.info("Start building redistribution tree from root")
-        val rootInfo = createTreeNode(root, root, graph(root), nodeLocator)
+        val rootInfo = createTreeNode(root, root, graph(root), Map.empty, nodeLocator)
         buildTreeForDistribution(Map(root -> rootInfo), workers, dataReplication, nodeLocator)
       } else {
         buildTreeForDistribution(Map.empty, workers, dataReplication, nodeLocator)
       }
 
     case AddToTree(g_node, parent) =>
+      ctx.log.info("still waiting on nodeLocator for Redistribution")
       ctx.self ! AddToTree(g_node, parent)
       waitForStartSignal()
   }
@@ -81,12 +82,12 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
           nodeLocator.findResponsibleActor(parent) ! NotYourChild(parent)
           buildTreeForDistribution(tree, workers, replicationStrategy, nodeLocator)
         } else {
-          //ctx.log.info("{} is child of {}", g_node, parent)
-          val nodeInfo = createTreeNode(g_node, parent, graph(g_node), nodeLocator)
+          val nodeInfo = createTreeNode(g_node, parent, graph(g_node), tree, nodeLocator)
           buildTreeForDistribution(tree + (g_node -> nodeInfo), workers, replicationStrategy, nodeLocator)
         }
 
       case IsChildOf(g_node, childIndex, childSubtreeSize) =>
+        //ctx.log.info("{} is child of {}", childIndex, g_node)
         val neighbors = graph(g_node)
         val nodeInfoChildIndex = neighbors.indexOf(childIndex)
         val treeNode = tree(g_node)
@@ -217,10 +218,20 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
     distributeUsingTree(tree, distributionInfo, replicationStrategy, workers, nodeLocator)
   }
 
-  def createTreeNode(nodeIndex: Int, parentIndex: Int, neighbors: Seq[Int], nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): TreeNodeInfo = {
+  def createTreeNode(nodeIndex: Int, parentIndex: Int, neighbors: Seq[Int], tree: Map[Int, TreeNodeInfo], nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): TreeNodeInfo = {
     // TODO with too few actors this leads to send queue overflow :(
-    neighbors.foreach(neighbor => nodeLocator.findResponsibleActor(neighbor) ! AddToTree(neighbor, nodeIndex))
-    TreeNodeInfo(parentIndex, Array.fill(neighbors.length){false}, 1, 1, neighbors.length)
+    var neighborsAsked: Int = 0
+    neighbors.foreach { neighbor =>
+      if(!tree.contains(neighbor)) {
+        nodeLocator.findResponsibleActor(neighbor) ! AddToTree(neighbor, nodeIndex)
+        neighborsAsked += 1
+      }
+    }
+    if (neighborsAsked == 0) {
+      ctx.log.info("This is a leaf")
+      nodeLocator.findResponsibleActor(parentIndex) ! IsChildOf(parentIndex, nodeIndex, 1)
+    }
+    TreeNodeInfo(parentIndex, Array.fill(neighbors.length){false}, 1, 1, neighborsAsked)
   }
 
   def assignNodesToWorker(waitingList: Seq[WaitingListEntry],
