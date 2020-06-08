@@ -3,6 +3,7 @@ package com.github.julkw.dnsg.actors
 import scala.concurrent.duration._
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.CoordinationEvent
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{AllConnected, ConnectionCoordinationEvent, FinishedUpdatingConnectivity, GraphConnectorDistributionInfo, UnconnectedNode}
 import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}
@@ -14,29 +15,33 @@ object GraphConnector {
 
   final case class ConnectorDistributionInfo(nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]]) extends ConnectGraphEvent
 
-  final case class UpdateConnectivity(root: Int) extends ConnectGraphEvent
+  final case class BuildTreeFrom(root: Int) extends ConnectGraphEvent
 
-  final case class IsConnected(connectedNode: Int, parent: Int) extends ConnectGraphEvent
+  final case class AddChild(connectedNode: Int, parent: Int) extends ConnectGraphEvent
+
+  final case class NotYourChild(connectedNode: Int, parent: Int) extends ConnectGraphEvent
 
   final case class DoneConnectingChildren(connectedNode: Int, nodeAwaitingAnswer: Int) extends ConnectGraphEvent
+
+  final case class AddEdgeAndContinue(from: Int, to: Int) extends ConnectGraphEvent
 
   final case class FindUnconnectedNode(sendTo: ActorRef[ConnectionCoordinationEvent], notAskedYet: Set[ActorRef[ConnectGraphEvent]]) extends ConnectGraphEvent
 
   final case object GraphConnected extends ConnectGraphEvent
 
-  // ensuring message delivery
-  final case class ResendIsConnected(connectedNode: Int, parent: Int) extends ConnectGraphEvent
+  final case class StartGraphRedistributers(clusterCoordinator: ActorRef[CoordinationEvent]) extends ConnectGraphEvent
 
-  final case class NowConnectingChildren(connectedNode: Int, parent: Int) extends ConnectGraphEvent
+  // ensuring message delivery
+  final case class ResendAddChild(connectedNode: Int, parent: Int) extends ConnectGraphEvent
+
+  //final case class NowConnectingChildren(connectedNode: Int, parent: Int) extends ConnectGraphEvent
 
   final case class IsConnectedKey(connectedNode: Int, parent: Int)
 
-  val timeoutAfter = 10.second
+  val timeoutAfter = 100.second
 
   // data structures for more readable code
-  protected case class MessageCounter(var waitingForMessages: Int, parentNode: Int)
-
-  protected case class ConnectivityInfo(connectedNodes: mutable.Set[Int], messageTracker: mutable.Map[Int, MessageCounter])
+  case class CTreeNode(parent: Int, children: mutable.Set[Int], awaitingAnswer: mutable.Set[Int])
 
   def apply(data: LocalData[Float],
             graph: Map[Int, Seq[Int]],
@@ -61,72 +66,83 @@ class GraphConnector(data: LocalData[Float],
 
   def waitForDistInfo(): Behavior[ConnectGraphEvent] = Behaviors.receiveMessagePartial {
     case ConnectorDistributionInfo(nodeLocator) =>
-      establishConnectivity(nodeLocator, ConnectivityInfo(mutable.Set.empty, mutable.Map.empty))
+      buildTree(nodeLocator, -1, Map.empty)
 
-    case UpdateConnectivity(root) =>
-      ctx.self ! UpdateConnectivity(root)
+    case BuildTreeFrom(root) =>
+      ctx.self ! BuildTreeFrom(root)
       waitForDistInfo()
 
-    case IsConnected(connectedNode, parent) =>
-      ctx.self ! IsConnected(connectedNode, parent)
+    case AddChild(connectedNode, parent) =>
+      ctx.self ! AddChild(connectedNode, parent)
       waitForDistInfo()
   }
 
-  def establishConnectivity(nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
-                            connectivityInfo: ConnectivityInfo): Behavior[ConnectGraphEvent] =
+  def buildTree(nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
+                root: Int,
+                tree: Map[Int, CTreeNode]): Behavior[ConnectGraphEvent] =
     Behaviors.receiveMessagePartial {
-      case UpdateConnectivity(root) =>
+      case BuildTreeFrom(root) =>
         ctx.log.info("Updating connectivity")
-        connectivityInfo.connectedNodes.add(root)
-        updateNeighborConnectedness(root, root, connectivityInfo, supervisor, nodeLocator)
-        establishConnectivity(nodeLocator, connectivityInfo)
+        // treat the newly connected node as out new root node
+        val rootNode = updateNeighborConnectedness(root, root, root, tree, supervisor, nodeLocator)
+        buildTree(nodeLocator, root, tree + (root -> rootNode))
 
-      case IsConnected(connectedNode, parent) =>
-        // in case the parent is placed on another node this might not be known here
-        //ctx.log.info("{} ist connected", connectedNode)
-        connectivityInfo.connectedNodes.add(parent)
-        if (connectivityInfo.connectedNodes.contains(connectedNode)) {
-          if (connectivityInfo.messageTracker.getOrElse(parent, -1) == parent) {
-            nodeLocator.findResponsibleActor(parent) ! NowConnectingChildren(connectedNode, parent)
+      case AddEdgeAndContinue(from, to) =>
+        ctx.log.info("Updating connectivity after adding a new edge")
+        tree(from).children += to
+        // treat the newly connected node as out new root node
+        val rootNode = updateNeighborConnectedness(to, from, to, tree, supervisor, nodeLocator)
+        buildTree(nodeLocator, to, tree + (to -> rootNode))
+
+      case AddChild(connectedNode, parent) =>
+        if (tree.contains(connectedNode)) {
+          val node = tree(connectedNode)
+          if (node.parent == parent) {
+            if(node.awaitingAnswer.isEmpty) {
+              nodeLocator.findResponsibleActor(parent) ! DoneConnectingChildren(connectedNode, parent)
+            } // else still working on it, don't respond
           } else {
-            // TODO this could be send twice to the same node on accident -> we need to track which children have answered
-            nodeLocator.findResponsibleActor(parent) ! DoneConnectingChildren(connectedNode, parent)
+            nodeLocator.findResponsibleActor(parent) ! NotYourChild(connectedNode, parent)
           }
+          buildTree(nodeLocator, root, tree)
         } else {
-          nodeLocator.findResponsibleActor(parent) ! NowConnectingChildren(connectedNode, parent)
-          connectivityInfo.connectedNodes.add(connectedNode)
-          updateNeighborConnectedness(connectedNode, parent, connectivityInfo, supervisor, nodeLocator)
+          //nodeLocator.findResponsibleActor(parent) ! NowConnectingChildren(connectedNode, parent)
+          val newNode = updateNeighborConnectedness(connectedNode, parent, root, tree, supervisor, nodeLocator)
+          buildTree(nodeLocator, root, tree + (connectedNode -> newNode))
         }
-        establishConnectivity(nodeLocator, connectivityInfo)
 
-      case NowConnectingChildren(connectedNode, parent) =>
-        //ctx.log.info("timer cancelled")
+      case NotYourChild(connectedNode, parent) =>
         timers.cancel(IsConnectedKey(connectedNode, parent))
-        establishConnectivity(nodeLocator, connectivityInfo)
+        val node = tree(parent)
+        node.awaitingAnswer -= connectedNode
+        if (node.awaitingAnswer.isEmpty) {
+          nodeLocator.findResponsibleActor(node.parent) ! DoneConnectingChildren(parent, node.parent)
+        }
+        buildTree(nodeLocator, root, tree)
 
-      case ResendIsConnected(connectedNode, parent) =>
+      case ResendAddChild(connectedNode, parent) =>
         ctx.log.info("Apparently a connection message got lost. resend.")
-        timers.startSingleTimer(IsConnectedKey(connectedNode, parent), ResendIsConnected(connectedNode, parent), timeoutAfter)
-        nodeLocator.findResponsibleActor(connectedNode) ! IsConnected(connectedNode, parent)
-        establishConnectivity(nodeLocator, connectivityInfo)
+        timers.startSingleTimer(IsConnectedKey(connectedNode, parent), ResendAddChild(connectedNode, parent), timeoutAfter)
+        nodeLocator.findResponsibleActor(connectedNode) ! AddChild(connectedNode, parent)
+        buildTree(nodeLocator, root, tree)
 
-      case DoneConnectingChildren(connectedNode, nodeAwaitingAnswer) =>
-        timers.cancel(IsConnectedKey(connectedNode, nodeAwaitingAnswer))
-        val messageCounter = connectivityInfo.messageTracker(nodeAwaitingAnswer)
-        messageCounter.waitingForMessages -= 1
-        if (messageCounter.waitingForMessages == 0) {
-          if (messageCounter.parentNode == nodeAwaitingAnswer) {
+      case DoneConnectingChildren(connectedNode, parent) =>
+        timers.cancel(IsConnectedKey(connectedNode, parent))
+        val node = tree(parent)
+        node.awaitingAnswer -= connectedNode
+        node.children += connectedNode
+        if (node.awaitingAnswer.isEmpty) {
+          if (parent == root) {
             supervisor ! FinishedUpdatingConnectivity
           } else {
-            nodeLocator.findResponsibleActor(messageCounter.parentNode) !
-              DoneConnectingChildren(connectedNode, messageCounter.parentNode)
-            connectivityInfo.messageTracker -= nodeAwaitingAnswer
+            nodeLocator.findResponsibleActor(node.parent) !
+              DoneConnectingChildren(connectedNode, node.parent)
           }
         }
-        establishConnectivity(nodeLocator, connectivityInfo)
+        buildTree(nodeLocator, root, tree)
 
       case FindUnconnectedNode(sendTo, notAskedYet) =>
-        val unconnectedNodes = graph.keys.toSet -- connectivityInfo.connectedNodes
+        val unconnectedNodes = graph.keys.toSet -- tree.keys
         if (unconnectedNodes.isEmpty) {
           // no unconnected nodes in this actor, ask others
           val yetToAsk = notAskedYet - ctx.self
@@ -140,33 +156,39 @@ class GraphConnector(data: LocalData[Float],
           // send one of the unconnected nodes
           sendTo ! UnconnectedNode(unconnectedNodes.head, data.get(unconnectedNodes.head))
         }
-        establishConnectivity(nodeLocator, connectivityInfo)
+        buildTree(nodeLocator, root, tree)
 
       case GraphConnected =>
         Behaviors.stopped
+
+      case StartGraphRedistributers(clusterCoordinator) =>
+        ctx.spawn(GraphRedistributer(tree, clusterCoordinator), name="GraphRedistributer")
+        buildTree(nodeLocator, root, tree)
     }
 
   def updateNeighborConnectedness(node: Int,
                                   parent: Int,
-                                  connectivityInfo: ConnectivityInfo,
+                                  root: Int,
+                                  tree: Map[Int, CTreeNode],
                                   sendResultTo: ActorRef[ConnectionCoordinationEvent],
-                                  nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]]): Unit = {
-    var sendMessages = 0
+                                  nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]]): CTreeNode = {
     // tell all neighbors they are connected
+    val nodeInfo = CTreeNode(parent, mutable.Set.empty, mutable.Set.empty)
     graph(node).foreach { neighborIndex =>
-      if (!connectivityInfo.connectedNodes.contains(neighborIndex)) {
-        timers.startSingleTimer(IsConnectedKey(neighborIndex, node), ResendIsConnected(neighborIndex, node), timeoutAfter)
-        nodeLocator.findResponsibleActor(neighborIndex) ! IsConnected(neighborIndex, node)
-        sendMessages += 1
+      if (!tree.contains(neighborIndex)) {
+        timers.startSingleTimer(IsConnectedKey(neighborIndex, node), ResendAddChild(neighborIndex, node), timeoutAfter)
+        nodeLocator.findResponsibleActor(neighborIndex) ! AddChild(neighborIndex, node)
+        nodeInfo.awaitingAnswer.add(neighborIndex)
       }
     }
-    if (sendMessages > 0) {
-      connectivityInfo.messageTracker += (node -> MessageCounter(sendMessages, parent))
-    } else if (node != parent) {
-      nodeLocator.findResponsibleActor(parent) ! DoneConnectingChildren(node, parent)
-    } else { // no neighbors updated and this is the root
-      sendResultTo ! FinishedUpdatingConnectivity
+    if (nodeInfo.awaitingAnswer.isEmpty) {
+      if (node == root) {
+        sendResultTo ! FinishedUpdatingConnectivity
+      } else {
+        nodeLocator.findResponsibleActor(parent) ! DoneConnectingChildren(node, parent)
+      }
     }
+    nodeInfo
   }
 
 }

@@ -2,10 +2,11 @@ package com.github.julkw.dnsg.actors.Coordinators
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
+import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{ConnectionCoordinationEvent, StartGraphRedistribution}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
 import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries, StartRedistributingData}
 import com.github.julkw.dnsg.actors.GraphRedistributer.{DistributeData, NoReplication, RedistributionEvent}
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, RedistributeGraph, SearchOnGraphEvent, StartGraphRedistribution}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, RedistributeGraph, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
 import com.github.julkw.dnsg.util._
@@ -180,13 +181,14 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         val navigatingNode = neighbors.head
         ctx.log.info("The navigating node has the index: {}", navigatingNode)
         ctx.log.info("Now connecting graph for redistribution")
-        ctx.spawn(GraphConnectorCoordinator(neighbors.head, nodeLocator, ctx.self), name="GraphConnectorCoordinator")
-        connectGraphForRedistribution(neighbors.head, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
+        val connectorCoordinator =  ctx.spawn(GraphConnectorCoordinator(neighbors.head, nodeLocator, ctx.self), name="GraphConnectorCoordinator")
+        connectGraphForRedistribution(neighbors.head, connectorCoordinator, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
         // nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
         // waitOnNSG(Set.empty, navigatingNode, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
     }
 
   def connectGraphForRedistribution(navigatingNodeIndex: Int,
+                                    connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
                                    nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                                    graphHolders: Set[ActorRef[SearchOnGraphEvent]],
                                    nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
@@ -194,7 +196,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
     Behaviors.receiveMessagePartial {
       case ConnectionAchieved =>
         ctx.log.info("All Search on Graph actors updated to connected graph, can start redistribution now")
-        graphHolders.foreach(graphHolder => graphHolder ! StartGraphRedistribution)
+        connectorCoordinator ! StartGraphRedistribution
         waitOnRedistributionDistributionInfo(navigatingNodeIndex, Set.empty, NodeLocatorBuilder(nodeLocator.graphSize), nodeLocator, graphHolders, nodeCoordinators, dataHolder)
     }
 
@@ -212,7 +214,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
           case Some(redistributionLocator) =>
             // TODO take replicationMode from settings
             ctx.log.info("All redistributers started")
-            updatedRedistributers.foreach(graphRedistributer => graphRedistributer ! DistributeData(navigatingNodeIndex, graphHolders, NoReplication, redistributionLocator))
+            updatedRedistributers.foreach(graphRedistributer => graphRedistributer ! DistributeData(graphHolders, NoReplication, redistributionLocator))
             waitOnRedistributionAssignments(navigatingNodeIndex, NodeLocatorBuilder(sogNodeLocator.graphSize), sogNodeLocator, graphHolders, nodeCoordinators, dataHolder)
           case None =>
             waitOnRedistributionDistributionInfo(navigatingNodeIndex, updatedRedistributers, redistributionLocations, sogNodeLocator, graphHolders, nodeCoordinators, dataHolder)

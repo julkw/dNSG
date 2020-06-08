@@ -3,7 +3,7 @@ package com.github.julkw.dnsg.actors.Coordinators
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionAchieved, CoordinationEvent, KNearestNeighbors}
-import com.github.julkw.dnsg.actors.GraphConnector.{ConnectGraphEvent, ConnectorDistributionInfo, FindUnconnectedNode, GraphConnected, UpdateConnectivity}
+import com.github.julkw.dnsg.actors.GraphConnector.{BuildTreeFrom, ConnectGraphEvent, ConnectorDistributionInfo, FindUnconnectedNode, GraphConnected, StartGraphRedistributers}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{AddToGraph, ConnectGraph, FindNearestNeighborsStartingFrom, SearchOnGraphEvent}
 import com.github.julkw.dnsg.util.{NodeLocator, NodeLocatorBuilder, dNSGSerializable}
 
@@ -20,6 +20,10 @@ object GraphConnectorCoordinator {
   final case object ReceivedNewEdge extends ConnectionCoordinationEvent
 
   final case object AllConnected extends ConnectionCoordinationEvent
+
+  final case object StartGraphRedistribution extends ConnectionCoordinationEvent
+
+  final case object DoneWithConnecting extends ConnectionCoordinationEvent
 
   final case class WrappedCoordinationEvent(event: CoordinationEvent) extends ConnectionCoordinationEvent
 
@@ -56,7 +60,7 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
         gcLocator match {
           case Some(newLocator) =>
             updatedConnectors.foreach(connector => connector ! ConnectorDistributionInfo(newLocator))
-            newLocator.findResponsibleActor(navigatingNodeIndex) ! UpdateConnectivity(navigatingNodeIndex)
+            newLocator.findResponsibleActor(navigatingNodeIndex) ! BuildTreeFrom(navigatingNodeIndex)
             connectGraph(newLocator, updatedConnectors,0, -1, false)
           case None =>
             waitForGraphConnectors(updatedConnectors, graphConnectorLocator)
@@ -87,7 +91,7 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
           case KNearestNeighbors(query, neighbors) =>
             // the only query being asked for is to connect unconnected nodes
             graphNodeLocator.findResponsibleActor(neighbors.head) ! AddToGraph(neighbors.head, latestUnconnectedNodeIndex, ctx.self)
-            connectorLocator.findResponsibleActor(latestUnconnectedNodeIndex) ! UpdateConnectivity(latestUnconnectedNodeIndex)
+            connectorLocator.findResponsibleActor(latestUnconnectedNodeIndex) ! BuildTreeFrom(latestUnconnectedNodeIndex)
             connectGraph(connectorLocator, graphConnectors, waitOnNodeAck + 1, -1, allConnected)
         }
 
@@ -105,9 +109,18 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
         if (waitOnNodeAck > 0) {
           connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, true)
         } else {
-          graphConnectors.foreach(graphConnector => graphConnector ! GraphConnected)
+          //graphConnectors.foreach(graphConnector => graphConnector ! GraphConnected)
           clusterCoordinator ! ConnectionAchieved
-          Behaviors.stopped
+          //Behaviors.stopped
+          connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, allConnected)
         }
+      // TODO these could be placed in another state
+      case StartGraphRedistribution =>
+        graphConnectors.foreach(graphConnector => graphConnector ! StartGraphRedistributers(clusterCoordinator))
+        connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, allConnected)
+
+      case DoneWithConnecting =>
+        graphConnectors.foreach(graphConnector => graphConnector ! GraphConnected)
+        Behaviors.stopped
     }
 }

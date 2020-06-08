@@ -4,21 +4,20 @@ import scala.concurrent.duration._
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, RedistributerDistributionInfo, RedistributionNodeAssignments}
+import com.github.julkw.dnsg.actors.GraphConnector.CTreeNode
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.SearchOnGraphEvent
 import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}
+
+import scala.collection.mutable
 
 object GraphRedistributer {
 
   sealed trait RedistributionEvent extends dNSGSerializable
 
-  final case class DistributeData(root: Int, workers: Set[ActorRef[SearchOnGraphEvent]], dataReplication: DataReplicationModel, nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]) extends RedistributionEvent
+  final case class DistributeData(workers: Set[ActorRef[SearchOnGraphEvent]], dataReplication: DataReplicationModel, nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]) extends RedistributionEvent
 
-  // tree building
-  final case class AddToTree(g_node: Int, parent: Int) extends RedistributionEvent
-
+  // calculating subtree-sizes
   final case class ChildSubtreeSize(g_node: Int, childIndex: Int, childSubtreeSize: Int) extends RedistributionEvent
-
-  final case class NotYourChild(g_node: Int, childIndex: Int) extends RedistributionEvent
 
   // Search for nodes to assign
   final case class FindNodesInRange(g_node: Int, minNodes: Int, maxNodes: Int, removeFromDescendants: Int, waitingList: Seq[WaitingListEntry], workersLeft: Set[ActorRef[SearchOnGraphEvent]], nodesLeft: Int) extends RedistributionEvent
@@ -30,17 +29,8 @@ object GraphRedistributer {
 
   final case object SendResults extends RedistributionEvent
 
-  // ensuring message delivery
-  final case class ReAddToTree(g_node: Int, parent: Int) extends RedistributionEvent
-
-  final case class IsChildOf(g_node: Int, childIndex: Int) extends RedistributionEvent
-
-  final case class AddToTreeKey(g_node: Int, parent: Int)
-
-  val timeoutAfter = 3.second
-
   // data structures for more readable code
-  protected case class TreeNodeInfo(parent: Int, children: Array[Boolean], var subTreeSize: Int, var stillToDistribute: Int, var waitingForResponses: Int)
+  protected case class DistributionTreeInfo(var subTreeSize: Int, var stillToDistribute: Int, var waitingForResponses: Int, assignedWorkers: mutable.Set[ActorRef[SearchOnGraphEvent]])
 
   protected case class WaitingListEntry(g_node: Int, subTreeSize: Int)
 
@@ -52,219 +42,155 @@ object GraphRedistributer {
 
   case object AllSharedReplication extends DataReplicationModel
 
-  def apply(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef[CoordinationEvent]): Behavior[RedistributionEvent] = Behaviors.setup(ctx =>
+  def apply(tree: Map[Int, CTreeNode], clusterCoordinator: ActorRef[CoordinationEvent]): Behavior[RedistributionEvent] = Behaviors.setup(ctx =>
     Behaviors.withTimers(timers =>
-      new GraphRedistributer(graph, clusterCoordinator, timers, ctx).setup()
+      new GraphRedistributer(tree, clusterCoordinator, timers, ctx).setup()
     )
   )
 }
 
-class GraphRedistributer(graph: Map[Int, Seq[Int]],
+class GraphRedistributer(tree: Map[Int, CTreeNode],
                          clusterCoordinator: ActorRef[CoordinationEvent],
                          timers: TimerScheduler[GraphRedistributer.RedistributionEvent],
                          ctx: ActorContext[GraphRedistributer.RedistributionEvent]) {
   import GraphRedistributer._
 
   def setup(): Behavior[RedistributionEvent] = {
-    clusterCoordinator ! RedistributerDistributionInfo(graph.keys.toSeq, ctx.self)
-    waitForStartSignal()
+    clusterCoordinator ! RedistributerDistributionInfo(tree.keys.toSeq, ctx.self)
+    val distributionTree: Map[Int, DistributionTreeInfo] = tree.transform((index, treeNode) => DistributionTreeInfo(0, 0, treeNode.children.size, mutable.Set.empty))
+    waitForStartSignal(distributionTree)
   }
 
-  def waitForStartSignal(): Behavior[RedistributionEvent] = Behaviors.receiveMessagePartial {
-    case DistributeData(root, workers, dataReplication, nodeLocator) =>
+  def waitForStartSignal(distributionTree: Map[Int, DistributionTreeInfo]): Behavior[RedistributionEvent] = Behaviors.receiveMessagePartial {
+    case DistributeData(workers, dataReplication, nodeLocator) =>
       ctx.log.info("Starting redistribution")
-      if (graph.contains(root)) {
-        ctx.log.info("Start building redistribution tree from root")
-        val rootInfo = createTreeNode(root, root, graph(root), Map.empty, nodeLocator)
-        buildTreeForDistribution(Map(root -> rootInfo), workers, dataReplication, nodeLocator)
-      } else {
-        buildTreeForDistribution(Map.empty, workers, dataReplication, nodeLocator)
+      tree.foreach { case (node, nodeInfo) =>
+        if (nodeInfo.children.isEmpty) {
+          distributionTree(node).subTreeSize = 1
+          nodeLocator.findResponsibleActor(nodeInfo.parent) ! ChildSubtreeSize(nodeInfo.parent, node, 1)
+        }
       }
+      calculateNodeSizes(distributionTree, workers, dataReplication, nodeLocator)
 
-    case AddToTree(g_node, parent) =>
-      ctx.log.info("still waiting on nodeLocator for Redistribution")
-      ctx.self ! AddToTree(g_node, parent)
-      waitForStartSignal()
+    case ChildSubtreeSize(g_node, childIndex, childSubtreeSize) =>
+      distributionTree(g_node).subTreeSize += childSubtreeSize
+      distributionTree(g_node).waitingForResponses -= 1
+      waitForStartSignal(distributionTree)
   }
 
-  def buildTreeForDistribution(tree: Map[Int, TreeNodeInfo],
-                               workers: Set[ActorRef[SearchOnGraphEvent]],
-                               replicationStrategy: DataReplicationModel,
-                               nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): Behavior[RedistributionEvent] =
+  def calculateNodeSizes(distributionTree: Map[Int, DistributionTreeInfo],
+                         workers: Set[ActorRef[SearchOnGraphEvent]],
+                         replicationStrategy: DataReplicationModel,
+                         nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): Behavior[RedistributionEvent] =
     Behaviors.receiveMessagePartial {
-      case AddToTree(g_node, parent) =>
-        if (tree.contains(g_node)) {
-          if (tree(g_node).parent == parent) {
-            // the answer seems to have gotten lost, resend
-            nodeLocator.findResponsibleActor(parent) ! IsChildOf(parent, g_node)
+      case ChildSubtreeSize(g_node, childIndex, childSubtreeSize) =>
+        val currentNode = distributionTree(g_node)
+        currentNode.subTreeSize += childSubtreeSize
+        currentNode.waitingForResponses -= 1
+        if (currentNode.waitingForResponses == 0) {
+          val currentParent = tree(g_node).parent
+          if (currentParent == g_node) {
+            // this is the root
+            startSearchForNextWorkersNodes(g_node, 0, nodeLocator.graphSize, workers, replicationStrategy, nodeLocator)
+            startDistribution(distributionTree, workers, replicationStrategy, nodeLocator)
           } else {
-            nodeLocator.findResponsibleActor(parent) ! NotYourChild(parent, g_node)
+            nodeLocator.findResponsibleActor(currentParent) ! ChildSubtreeSize(currentParent, g_node, currentNode.subTreeSize)
+            calculateNodeSizes(distributionTree, workers, replicationStrategy, nodeLocator)
           }
-          buildTreeForDistribution(tree, workers, replicationStrategy, nodeLocator)
         } else {
-          nodeLocator.findResponsibleActor(parent) ! IsChildOf(parent, g_node)
-          val nodeInfo = createTreeNode(g_node, parent, graph(g_node), tree, nodeLocator)
-          buildTreeForDistribution(tree + (g_node -> nodeInfo), workers, replicationStrategy, nodeLocator)
+          calculateNodeSizes(distributionTree, workers, replicationStrategy, nodeLocator)
         }
 
-      case ChildSubtreeSize(g_node, childIndex, childSubtreeSize) =>
-        //ctx.log.info("{} is child of {}", childIndex, g_node)
-        val neighbors = graph(g_node)
-        val nodeInfoChildIndex = neighbors.indexOf(childIndex)
-        val treeNode = tree(g_node)
-        treeNode.children(nodeInfoChildIndex) = true
-        treeNode.subTreeSize += childSubtreeSize
-        treeNode.stillToDistribute += childSubtreeSize
-        updateResponses(g_node, tree, workers, replicationStrategy, nodeLocator)
-
-      case NotYourChild(g_node, childIndex) =>
-        timers.cancel(AddToTreeKey(childIndex, g_node))
-        updateResponses(g_node, tree, workers, replicationStrategy, nodeLocator)
-
-      case IsChildOf(g_node, childIndex) =>
-        timers.cancel(AddToTreeKey(childIndex, g_node))
-        buildTreeForDistribution(tree, workers, replicationStrategy, nodeLocator)
-
-      case ReAddToTree(g_node, parent) =>
-        ctx.log.info("A message seems to have been lost. Resend.")
-        timers.startSingleTimer(AddToTreeKey(parent, g_node), ReAddToTree(parent, g_node), timeoutAfter)
-        nodeLocator.findResponsibleActor(g_node) ! AddToTree(g_node, parent)
-        buildTreeForDistribution(tree, workers, replicationStrategy, nodeLocator)
-
-      // the redistribution has started from another node (the one holding the root) already
       case FindNodesInRange(g_node, minNodes, maxNodes, removeFromDescendants, waitingList, workersLeft, nodesLeft) =>
         ctx.self ! FindNodesInRange(g_node, minNodes, maxNodes, removeFromDescendants, waitingList, workersLeft, nodesLeft)
-        startDistribution(tree, replicationStrategy, workers, nodeLocator)
-
-      case AssignWithChildren(g_node, worker) =>
-        ctx.self ! AssignWithChildren(g_node, worker)
-        startDistribution(tree, replicationStrategy, workers, nodeLocator)
+        startDistribution(distributionTree, workers, replicationStrategy, nodeLocator)
     }
 
-  def distributeUsingTree(tree: Map[Int, TreeNodeInfo],
-                          distributionInfo: Map[Int, Set[ActorRef[SearchOnGraphEvent]]],
+  def distributeUsingTree(distributionTree: Map[Int, DistributionTreeInfo],
                           replicationStrategy: DataReplicationModel,
                           workers: Set[ActorRef[SearchOnGraphEvent]],
                           nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): Behavior[RedistributionEvent] =
     Behaviors.receiveMessagePartial {
       case FindNodesInRange(g_node, minNodes, maxNodes, removeFromDescendants, waitingList, workersLeft, nodesLeft) =>
         val alreadyCollected = waitingList.map(_.subTreeSize).sum
-        val treeNode = tree(g_node)
+        val treeNode = distributionTree(g_node)
+        val parent = tree(g_node).parent
         treeNode.stillToDistribute -= removeFromDescendants
         val withMe = alreadyCollected + treeNode.stillToDistribute
         if (withMe < minNodes) {
           val myEntry = WaitingListEntry(g_node, treeNode.stillToDistribute)
-          nodeLocator.findResponsibleActor(treeNode.parent) ! FindNodesInRange(treeNode.parent, minNodes, maxNodes, treeNode.subTreeSize, waitingList :+ myEntry, workersLeft, nodesLeft)
+          nodeLocator.findResponsibleActor(parent) ! FindNodesInRange(parent, minNodes, maxNodes, treeNode.subTreeSize, waitingList :+ myEntry, workersLeft, nodesLeft)
         } else if (withMe <= maxNodes) {
           val myEntry = WaitingListEntry(g_node, treeNode.stillToDistribute)
           val worker = workersLeft.head
           val updatedWaitingList = waitingList :+ myEntry
           assignNodesToWorker(updatedWaitingList, worker, replicationStrategy, nodeLocator)
-          startSearchForNextWorkersNodes(treeNode.parent, treeNode.subTreeSize, nodesLeft - withMe, workersLeft - worker, replicationStrategy, nodeLocator)
+          startSearchForNextWorkersNodes(parent, treeNode.subTreeSize, nodesLeft - withMe, workersLeft - worker, replicationStrategy, nodeLocator)
         } else {
           // TODO instead of choosing the first child in the list, choose the one closest to the last entry in the waitingList?
           // this would need exact locations, though
-          val childIndex = treeNode.children.indexWhere(isChild => isChild)
-          val child = graph(g_node)(childIndex)
+          // TODO this break again. Find out why
+          val child = tree(g_node).children.head
           // remove the child because the next time the search reaches me it will have been assigned something or be in the waiting list
-          treeNode.children(childIndex) = false
+          tree(g_node).children -= child
           nodeLocator.findResponsibleActor(child) ! FindNodesInRange(child, minNodes, maxNodes, 0, waitingList, workersLeft, nodesLeft)
         }
-        distributeUsingTree(tree, distributionInfo, replicationStrategy, workers, nodeLocator)
+        distributeUsingTree(distributionTree, replicationStrategy, workers, nodeLocator)
 
       case AssignWithChildren(g_node, worker) =>
-        val treeNode = tree(g_node)
-        val children = graph(g_node).zip(treeNode.children).filter(_._2).map(_._1)
-        children.foreach(child => nodeLocator.findResponsibleActor(child) ! AssignWithChildren(child, worker))
-        // in assign with children each node should only be called once
-        distributeUsingTree(tree, distributionInfo + (g_node -> Set(worker)), replicationStrategy, workers, nodeLocator)
+        distributionTree(g_node).assignedWorkers += worker
+        tree(g_node).children.foreach(child => nodeLocator.findResponsibleActor(child) ! AssignWithChildren(child, worker))
+        distributeUsingTree(distributionTree, replicationStrategy, workers, nodeLocator)
 
       case AssignWithParents(g_node, worker) =>
         val parent = tree(g_node).parent
-        val updatedAssignees = distributionInfo(g_node) + worker
+        distributionTree(g_node).assignedWorkers += worker
         if (parent != g_node) {
           nodeLocator.findResponsibleActor(parent) ! AssignWithParents(parent, worker)
-        } else if (updatedAssignees.size == workers.size) {
+        } else if (distributionTree(g_node).assignedWorkers.size == workers.size) {
           // TODO this is not a good test as multiple g_nodes will propagate the same worker up to root, so this only ensures that one of those has reached
           ctx.log.info("root is now assigned to all workers")
           // check if all AssignWithParents messages are done
           nodeLocator.allActors().foreach(redistributer => redistributer ! SendResults)
         }
-        distributeUsingTree(tree, distributionInfo + (g_node -> updatedAssignees), replicationStrategy, workers, nodeLocator)
+        distributeUsingTree(distributionTree, replicationStrategy, workers, nodeLocator)
 
       case SendResults =>
-        // ensure all AssignWithChildren messages have been processed (all nodes have been assigned to a worker)
-        val leftToAssign = distributionInfo.valuesIterator.count(assignees => assignees.isEmpty)
+        // just for debugging purposes
+        val leftToAssign = distributionTree.valuesIterator.count(treeNode => treeNode.assignedWorkers.isEmpty)
         ctx.log.info("Still waiting on {} nodes to be assigned", leftToAssign)
-        if (distributionInfo.valuesIterator.exists(assignees => assignees.isEmpty)) {
+        // ensure all AssignWithChildren messages have been processed (all nodes have been assigned to a worker)
+        if (distributionTree.valuesIterator.exists(treeNode => treeNode.assignedWorkers.isEmpty)) {
           // TODO do this with timer
           ctx.self ! SendResults
-          distributeUsingTree(tree, distributionInfo, replicationStrategy, workers, nodeLocator)
+          distributeUsingTree(distributionTree,  replicationStrategy, workers, nodeLocator)
         } else {
           ctx.log.info("Send assignments to clusterCoordinator")
           if (replicationStrategy == AllSharedReplication) {
-            val updatedDistInfo = distributionInfo.transform {(_, assignedWorkers) =>
-              if (assignedWorkers.size > 1) {
+            val updatedDistInfo = distributionTree.transform {(_, treeNode) =>
+              if (treeNode.assignedWorkers.size > 1) {
                 workers
               } else {
-                assignedWorkers
+                treeNode.assignedWorkers.toSet
               }
             }
             // TODO maybe add check that this has been received?
             clusterCoordinator ! RedistributionNodeAssignments(updatedDistInfo)
           } else {
+            val distributionInfo = distributionTree.transform((_, treeNode) => treeNode.assignedWorkers.toSet)
             clusterCoordinator ! RedistributionNodeAssignments(distributionInfo)
           }
           Behaviors.stopped
         }
     }
 
-  def updateResponses(nodeIndex: Int,
-                      tree: Map[Int, TreeNodeInfo],
-                      workers: Set[ActorRef[SearchOnGraphEvent]],
-                      replicationStrategy: DataReplicationModel,
-                      nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): Behavior[RedistributionEvent] = {
-    val treeNode = tree(nodeIndex)
-    treeNode.waitingForResponses -= 1
-    if (treeNode.waitingForResponses == 0) {
-      if (treeNode.parent != nodeIndex) {
-        nodeLocator.findResponsibleActor(treeNode.parent) ! ChildSubtreeSize(treeNode.parent, nodeIndex, treeNode.subTreeSize)
-        buildTreeForDistribution(tree, workers, replicationStrategy, nodeLocator)
-      } else {
-        // this is the root of the tree, the building of the tree is done
-        ctx.log.info("Size of tree from root {}", treeNode.subTreeSize)
-        startSearchForNextWorkersNodes(nodeIndex, 0, nodeLocator.graphSize, workers, replicationStrategy, nodeLocator)
-        startDistribution(tree, replicationStrategy, workers, nodeLocator)
-      }
-    } else {
-      buildTreeForDistribution(tree, workers, replicationStrategy, nodeLocator)
-    }
-  }
-
-  def startDistribution(tree: Map[Int, TreeNodeInfo],
-                        replicationStrategy: DataReplicationModel,
+  def startDistribution(distributionTree: Map[Int, DistributionTreeInfo],
                         workers: Set[ActorRef[SearchOnGraphEvent]],
+                        replicationStrategy: DataReplicationModel,
                         nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): Behavior[RedistributionEvent] = {
-    val distributionInfo = graph.transform((_, _) => Set.empty[ActorRef[SearchOnGraphEvent]])
     ctx.log.info("Done with tree, now assigning g_nodes to workers")
-    distributeUsingTree(tree, distributionInfo, replicationStrategy, workers, nodeLocator)
-  }
-
-  def createTreeNode(nodeIndex: Int, parentIndex: Int, neighbors: Seq[Int], tree: Map[Int, TreeNodeInfo], nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): TreeNodeInfo = {
-    // TODO with too few actors this leads to send queue overflow :(
-    var neighborsAsked: Int = 0
-    neighbors.foreach { neighbor =>
-      if(!tree.contains(neighbor)) {
-        timers.startSingleTimer(AddToTreeKey(nodeIndex, neighbor), ReAddToTree(nodeIndex, neighbor), timeoutAfter)
-        nodeLocator.findResponsibleActor(neighbor) ! AddToTree(neighbor, nodeIndex)
-        neighborsAsked += 1
-      }
-    }
-    if (neighborsAsked == 0) {
-      ctx.log.info("This is a leaf")
-      nodeLocator.findResponsibleActor(parentIndex) ! ChildSubtreeSize(parentIndex, nodeIndex, 1)
-    }
-    TreeNodeInfo(parentIndex, Array.fill(neighbors.length){false}, 1, 1, neighborsAsked)
+    distributionTree.valuesIterator.foreach(nodeInfo => nodeInfo.stillToDistribute = nodeInfo.subTreeSize)
+    distributeUsingTree(distributionTree, replicationStrategy, workers, nodeLocator)
   }
 
   def assignNodesToWorker(waitingList: Seq[WaitingListEntry],

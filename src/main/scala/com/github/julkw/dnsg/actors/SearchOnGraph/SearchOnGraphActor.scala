@@ -25,9 +25,6 @@ object SearchOnGraphActor {
 
   final case class GraphDistribution(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]) extends SearchOnGraphEvent
 
-  // TODO call and use these three
-  final case object StartGraphRedistribution extends SearchOnGraphEvent
-
   final case class RedistributeGraph(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends SearchOnGraphEvent
 
   final case class PartialGraph(partialGraph: Map[Int, Seq[Int]]) extends SearchOnGraphEvent
@@ -53,7 +50,6 @@ object SearchOnGraphActor {
   final case class ReaskForLocation(index: Int) extends SearchOnGraphEvent
 
   // connectivity
-
   final case class ConnectGraph(graphConnectorSupervisor: ActorRef[ConnectionCoordinationEvent]) extends SearchOnGraphEvent
 
   final case class AddToGraph(startNode: Int, endNode: Int, sender: ActorRef[ConnectionCoordinationEvent]) extends SearchOnGraphEvent
@@ -196,10 +192,6 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
       case SendResponsibleIndicesTo(nsgWorker) =>
         nsgWorker ! Responsibility(graph.keys.toSeq)
         searchOnGraphForNSG(graph, data, nodeLocator, Map.empty, Map.empty, QueryResponseLocations(data))
-
-      case StartGraphRedistribution =>
-        ctx.spawn(GraphRedistributer(graph, clusterCoordinator), name="GraphRedistributer")
-        waitForRedistributionResults(graph, data)
 
       case ConnectGraph(graphConnectorSupervisor) =>
         ctx.log.info("Told to connect the graph")
