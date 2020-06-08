@@ -229,7 +229,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       case RedistributionNodeAssignments(assignments) =>
         redistributionAssignments.addFromMap(assignments) match {
           case Some(redistributionAssignments) =>
-            // TODO this sometimes failes on cluster without an Error message
+            // TODO this sometimes fails on cluster without an Error message
             ctx.log.info("Calculated redistribution, now telling actors to do it")
             graphHolders.foreach(graphHolder => graphHolder ! RedistributeGraph(redistributionAssignments))
             dataHolder ! StartRedistributingData(redistributionAssignments)
@@ -265,7 +265,6 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                 dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial{
       case InitialNSGDone(nsgMerger) =>
-        ctx.log.info("One NSGMerger is done")
         val updatedMergers = finishedNsgMergers + nsgMerger
         if (updatedMergers.size == settings.nodesExpected) {
           ctx.log.info("Initial NSG seems to be done")
@@ -285,7 +284,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
     Behaviors.receiveMessagePartial {
       case NSGonSOG =>
         if (waitingOnGraphHolders == 1) {
-          ctx.log.info("NSG moved to SearchOnGraphActors. Now connecting graph for redistribution")
+          ctx.log.info("NSG moved to SearchOnGraphActors. Now connecting graph")
           ctx.spawn(GraphConnectorCoordinator(navigatingNodeIndex, nodeLocator, ctx.self), name="GraphConnectorCoordinator")
           waitForConnectedGraphs(navigatingNodeIndex, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
         } else {

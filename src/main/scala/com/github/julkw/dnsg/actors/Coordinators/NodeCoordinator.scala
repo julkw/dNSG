@@ -75,6 +75,7 @@ class NodeCoordinator(settings: Settings,
 
     case DataRef(dataRef) =>
       val data = dataRef
+      assert(data.localDataSize > 0)
       ctx.log.info("Successfully loaded data")
       // create Actor to start distribution of data
       val maxResponsibilityPerNode: Int = data.localDataSize / settings.workers + data.localDataSize / 10

@@ -1,6 +1,7 @@
 package com.github.julkw.dnsg.actors
 
-import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
+import scala.concurrent.duration._
+import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, RedistributerDistributionInfo, RedistributionNodeAssignments}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.SearchOnGraphEvent
@@ -15,9 +16,9 @@ object GraphRedistributer {
   // tree building
   final case class AddToTree(g_node: Int, parent: Int) extends RedistributionEvent
 
-  final case class IsChildOf(g_node: Int, childIndex: Int, childSubtreeSize: Int) extends RedistributionEvent
+  final case class ChildSubtreeSize(g_node: Int, childIndex: Int, childSubtreeSize: Int) extends RedistributionEvent
 
-  final case class NotYourChild(g_node: Int) extends RedistributionEvent
+  final case class NotYourChild(g_node: Int, childIndex: Int) extends RedistributionEvent
 
   // Search for nodes to assign
   final case class FindNodesInRange(g_node: Int, minNodes: Int, maxNodes: Int, removeFromDescendants: Int, waitingList: Seq[WaitingListEntry], workersLeft: Set[ActorRef[SearchOnGraphEvent]], nodesLeft: Int) extends RedistributionEvent
@@ -28,6 +29,15 @@ object GraphRedistributer {
   final case class AssignWithParents(g_node: Int, worker: ActorRef[SearchOnGraphEvent]) extends RedistributionEvent
 
   final case object SendResults extends RedistributionEvent
+
+  // ensuring message delivery
+  final case class ReAddToTree(g_node: Int, parent: Int) extends RedistributionEvent
+
+  final case class IsChildOf(g_node: Int, childIndex: Int) extends RedistributionEvent
+
+  final case class AddToTreeKey(g_node: Int, parent: Int)
+
+  val timeoutAfter = 1.second
 
   // data structures for more readable code
   protected case class TreeNodeInfo(parent: Int, children: Array[Boolean], var subTreeSize: Int, var stillToDistribute: Int, var waitingForResponses: Int)
@@ -43,11 +53,16 @@ object GraphRedistributer {
   case object AllSharedReplication extends DataReplicationModel
 
   def apply(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef[CoordinationEvent]): Behavior[RedistributionEvent] = Behaviors.setup(ctx =>
-    new GraphRedistributer(graph, clusterCoordinator, ctx).setup()
+    Behaviors.withTimers(timers =>
+      new GraphRedistributer(graph, clusterCoordinator, timers, ctx).setup()
+    )
   )
 }
 
-class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef[CoordinationEvent], ctx: ActorContext[GraphRedistributer.RedistributionEvent]) {
+class GraphRedistributer(graph: Map[Int, Seq[Int]],
+                         clusterCoordinator: ActorRef[CoordinationEvent],
+                         timers: TimerScheduler[GraphRedistributer.RedistributionEvent],
+                         ctx: ActorContext[GraphRedistributer.RedistributionEvent]) {
   import GraphRedistributer._
 
   def setup(): Behavior[RedistributionEvent] = {
@@ -79,14 +94,20 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
     Behaviors.receiveMessagePartial {
       case AddToTree(g_node, parent) =>
         if (tree.contains(g_node)) {
-          nodeLocator.findResponsibleActor(parent) ! NotYourChild(parent)
+          if (tree(g_node).parent == parent) {
+            // the answer seems to have gotten lost, resend
+            nodeLocator.findResponsibleActor(parent) ! IsChildOf(parent, g_node)
+          } else {
+            nodeLocator.findResponsibleActor(parent) ! NotYourChild(parent, g_node)
+          }
           buildTreeForDistribution(tree, workers, replicationStrategy, nodeLocator)
         } else {
+          nodeLocator.findResponsibleActor(parent) ! IsChildOf(parent, g_node)
           val nodeInfo = createTreeNode(g_node, parent, graph(g_node), tree, nodeLocator)
           buildTreeForDistribution(tree + (g_node -> nodeInfo), workers, replicationStrategy, nodeLocator)
         }
 
-      case IsChildOf(g_node, childIndex, childSubtreeSize) =>
+      case ChildSubtreeSize(g_node, childIndex, childSubtreeSize) =>
         //ctx.log.info("{} is child of {}", childIndex, g_node)
         val neighbors = graph(g_node)
         val nodeInfoChildIndex = neighbors.indexOf(childIndex)
@@ -96,8 +117,19 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
         treeNode.stillToDistribute += childSubtreeSize
         updateResponses(g_node, tree, workers, replicationStrategy, nodeLocator)
 
-      case NotYourChild(g_node) =>
+      case NotYourChild(g_node, childIndex) =>
+        timers.cancel(AddToTreeKey(childIndex, g_node))
         updateResponses(g_node, tree, workers, replicationStrategy, nodeLocator)
+
+      case IsChildOf(g_node, childIndex) =>
+        timers.cancel(AddToTreeKey(childIndex, g_node))
+        buildTreeForDistribution(tree, workers, replicationStrategy, nodeLocator)
+
+      case ReAddToTree(g_node, parent) =>
+        ctx.log.info("A message seems to have been lost. Resend.")
+        timers.startSingleTimer(AddToTreeKey(parent, g_node), ReAddToTree(parent, g_node), timeoutAfter)
+        nodeLocator.findResponsibleActor(g_node) ! AddToTree(g_node, parent)
+        buildTreeForDistribution(tree, workers, replicationStrategy, nodeLocator)
 
       // the redistribution has started from another node (the one holding the root) already
       case FindNodesInRange(g_node, minNodes, maxNodes, removeFromDescendants, waitingList, workersLeft, nodesLeft) =>
@@ -196,7 +228,7 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
     treeNode.waitingForResponses -= 1
     if (treeNode.waitingForResponses == 0) {
       if (treeNode.parent != nodeIndex) {
-        nodeLocator.findResponsibleActor(treeNode.parent) ! IsChildOf(treeNode.parent, nodeIndex, treeNode.subTreeSize)
+        nodeLocator.findResponsibleActor(treeNode.parent) ! ChildSubtreeSize(treeNode.parent, nodeIndex, treeNode.subTreeSize)
         buildTreeForDistribution(tree, workers, replicationStrategy, nodeLocator)
       } else {
         // this is the root of the tree, the building of the tree is done
@@ -223,13 +255,14 @@ class GraphRedistributer(graph: Map[Int, Seq[Int]], clusterCoordinator: ActorRef
     var neighborsAsked: Int = 0
     neighbors.foreach { neighbor =>
       if(!tree.contains(neighbor)) {
+        timers.startSingleTimer(AddToTreeKey(nodeIndex, neighbor), ReAddToTree(nodeIndex, neighbor), timeoutAfter)
         nodeLocator.findResponsibleActor(neighbor) ! AddToTree(neighbor, nodeIndex)
         neighborsAsked += 1
       }
     }
     if (neighborsAsked == 0) {
       ctx.log.info("This is a leaf")
-      nodeLocator.findResponsibleActor(parentIndex) ! IsChildOf(parentIndex, nodeIndex, 1)
+      nodeLocator.findResponsibleActor(parentIndex) ! ChildSubtreeSize(parentIndex, nodeIndex, 1)
     }
     TreeNodeInfo(parentIndex, Array.fill(neighbors.length){false}, 1, 1, neighborsAsked)
   }
