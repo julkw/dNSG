@@ -37,7 +37,7 @@ object GraphRedistributer {
 
   final case class AddToTreeKey(g_node: Int, parent: Int)
 
-  val timeoutAfter = 1.second
+  val timeoutAfter = 3.second
 
   // data structures for more readable code
   protected case class TreeNodeInfo(parent: Int, children: Array[Boolean], var subTreeSize: Int, var stillToDistribute: Int, var waitingForResponses: Int)
