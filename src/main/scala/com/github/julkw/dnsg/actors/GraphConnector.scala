@@ -17,11 +17,15 @@ object GraphConnector {
 
   final case class BuildTreeFrom(root: Int) extends ConnectGraphEvent
 
-  final case class AddChild(connectedNode: Int, parent: Int) extends ConnectGraphEvent
+  // work pulling
+  final case class GetConnectivityInfo(sender: ActorRef[ConnectGraphEvent]) extends ConnectGraphEvent
 
-  final case class NotYourChild(connectedNode: Int, parent: Int) extends ConnectGraphEvent
+  final case class AddChildren(connectedNodes: Seq[TreeEdge], sender: ActorRef[ConnectGraphEvent]) extends ConnectGraphEvent
 
-  final case class DoneConnectingChildren(connectedNode: Int, nodeAwaitingAnswer: Int) extends ConnectGraphEvent
+  final case class NotYourChildren(connectedNodes: Seq[TreeEdge], sender: ActorRef[ConnectGraphEvent]) extends ConnectGraphEvent
+
+  final case class DoneConnectingChildren(connectedNodes: Seq[TreeEdge], sender: ActorRef[ConnectGraphEvent]) extends ConnectGraphEvent
+
 
   final case class AddEdgeAndContinue(from: Int, to: Int) extends ConnectGraphEvent
 
@@ -34,14 +38,16 @@ object GraphConnector {
   // ensuring message delivery
   final case class ResendAddChild(connectedNode: Int, parent: Int) extends ConnectGraphEvent
 
-  //final case class NowConnectingChildren(connectedNode: Int, parent: Int) extends ConnectGraphEvent
-
   final case class IsConnectedKey(connectedNode: Int, parent: Int)
 
   val timeoutAfter = 3.second
 
   // data structures for more readable code
   case class CTreeNode(parent: Int, children: mutable.Set[Int], awaitingAnswer: mutable.Set[Int])
+
+  case class TreeEdge(child: Int, parent: Int)
+
+  case class ConnectivityInformation(var addChildren: Seq[TreeEdge], var notChildren: Seq[TreeEdge], var doneChildren: Seq[TreeEdge])
 
   def apply(data: LocalData[Float],
             graph: Map[Int, Seq[Int]],
@@ -66,81 +72,96 @@ class GraphConnector(data: LocalData[Float],
 
   def waitForDistInfo(): Behavior[ConnectGraphEvent] = Behaviors.receiveMessagePartial {
     case ConnectorDistributionInfo(nodeLocator) =>
-      buildTree(nodeLocator, -1, Map.empty)
+      val allConnectors = nodeLocator.allActors()
+      allConnectors.foreach(connector => connector ! GetConnectivityInfo(ctx.self))
+      val toSend = allConnectors.map(connector => connector -> ConnectivityInformation(Seq.empty, Seq.empty, Seq.empty)).toMap
+      buildTree(nodeLocator, -1, Map.empty, toSend)
+
+    case GetConnectivityInfo(sender) =>
+      ctx.self ! GetConnectivityInfo(sender)
+      waitForDistInfo()
 
     case BuildTreeFrom(root) =>
       ctx.self ! BuildTreeFrom(root)
-      waitForDistInfo()
-
-    case AddChild(connectedNode, parent) =>
-      ctx.self ! AddChild(connectedNode, parent)
       waitForDistInfo()
   }
 
   def buildTree(nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
                 root: Int,
-                tree: Map[Int, CTreeNode]): Behavior[ConnectGraphEvent] =
+                tree: Map[Int, CTreeNode],
+                toSend: Map[ActorRef[ConnectGraphEvent], ConnectivityInformation]): Behavior[ConnectGraphEvent] =
     Behaviors.receiveMessagePartial {
       case BuildTreeFrom(root) =>
         ctx.log.info("Updating connectivity")
         // treat the newly connected node as out new root node
-        val rootNode = updateNeighborConnectedness(root, root, root, tree, supervisor, nodeLocator)
-        buildTree(nodeLocator, root, tree + (root -> rootNode))
+        val rootNode = updateNeighborConnectedness(TreeEdge(root, root), root, tree, supervisor, nodeLocator, toSend)
+        buildTree(nodeLocator, root, tree + (root -> rootNode), toSend)
 
       case AddEdgeAndContinue(from, to) =>
         ctx.log.info("Updating connectivity after adding a new edge")
         timers.startSingleTimer(IsConnectedKey(to, from), ResendAddChild(to, from), timeoutAfter)
-        nodeLocator.findResponsibleActor(to) ! AddChild(to, from)
+        nodeLocator.findResponsibleActor(to) ! AddChildren(Seq(TreeEdge(to, from)), ctx.self)
         tree(from).awaitingAnswer.add(to)
-        buildTree(nodeLocator, from, tree)
+        buildTree(nodeLocator, from, tree, toSend)
 
-      case AddChild(connectedNode, parent) =>
-        if (tree.contains(connectedNode)) {
-          val node = tree(connectedNode)
-          if (node.parent == parent) {
+      case GetConnectivityInfo(sender) =>
+        val connectivityInfo = toSend(sender)
+        sender ! AddChildren(connectivityInfo.addChildren, ctx.self)
+        sender ! NotYourChildren(connectivityInfo.notChildren, ctx.self)
+        sender ! DoneConnectingChildren(connectivityInfo.doneChildren, ctx.self)
+        buildTree(nodeLocator, root, tree, toSend + (sender -> ConnectivityInformation(Seq.empty, Seq.empty, Seq.empty)))
+
+      case AddChildren(connectedNodes, sender) =>
+        val (knownNodes, unknownNodes) = connectedNodes.partition(treeEdge => tree.contains(treeEdge.child))
+        knownNodes.foreach { treeEdge =>
+          val node = tree(treeEdge.child)
+          if (node.parent == treeEdge.parent) {
             if(node.awaitingAnswer.isEmpty) {
-              nodeLocator.findResponsibleActor(parent) ! DoneConnectingChildren(connectedNode, parent)
+              toSend(nodeLocator.findResponsibleActor(treeEdge.parent)).doneChildren :+= treeEdge
             } // else still working on it, don't respond
           } else {
-            nodeLocator.findResponsibleActor(parent) ! NotYourChild(connectedNode, parent)
+            toSend(nodeLocator.findResponsibleActor(treeEdge.parent)).notChildren :+= treeEdge
           }
-          buildTree(nodeLocator, root, tree)
-        } else {
-          //nodeLocator.findResponsibleActor(parent) ! NowConnectingChildren(connectedNode, parent)
-          val newNode = updateNeighborConnectedness(connectedNode, parent, root, tree, supervisor, nodeLocator)
-          buildTree(nodeLocator, root, tree + (connectedNode -> newNode))
         }
-
-      case NotYourChild(connectedNode, parent) =>
-        timers.cancel(IsConnectedKey(connectedNode, parent))
-        val node = tree(parent)
-        node.awaitingAnswer -= connectedNode
-        if (node.awaitingAnswer.isEmpty) {
-          nodeLocator.findResponsibleActor(node.parent) ! DoneConnectingChildren(parent, node.parent)
+        val newNodes = unknownNodes.map { treeEdge =>
+          val newNode = updateNeighborConnectedness(treeEdge, root, tree, supervisor, nodeLocator, toSend)
+          treeEdge.child -> newNode
         }
-        buildTree(nodeLocator, root, tree)
+        buildTree(nodeLocator, root, tree ++ newNodes, toSend)
 
+      case NotYourChildren(connectedNodes, sender) =>
+        connectedNodes.foreach { treeEdge =>
+          val node = tree(treeEdge.parent)
+          node.awaitingAnswer -= treeEdge.child
+          if (node.awaitingAnswer.isEmpty) {
+            toSend(nodeLocator.findResponsibleActor(node.parent)).doneChildren :+= TreeEdge(treeEdge.parent, node.parent)
+          }
+        }
+        buildTree(nodeLocator, root, tree, toSend)
+
+      case DoneConnectingChildren(connectedNodes, sender) =>
+        connectedNodes.foreach { treeEdge =>
+          val node = tree(treeEdge.parent)
+          node.awaitingAnswer -= treeEdge.child
+          node.children += treeEdge.child
+          if (node.awaitingAnswer.isEmpty) {
+            if (treeEdge.parent == root) {
+              supervisor ! FinishedUpdatingConnectivity
+            } else {
+              toSend(nodeLocator.findResponsibleActor(node.parent)).doneChildren :+= TreeEdge(treeEdge.parent, node.parent)
+            }
+          }
+        }
+        // TODO Use timer if this was empty? Put all three messages into one?
+        sender ! GetConnectivityInfo(ctx.self)
+        buildTree(nodeLocator, root, tree, toSend)
+/*
       case ResendAddChild(connectedNode, parent) =>
         ctx.log.info("Apparently a connection message got lost. resend.")
         timers.startSingleTimer(IsConnectedKey(connectedNode, parent), ResendAddChild(connectedNode, parent), timeoutAfter)
         nodeLocator.findResponsibleActor(connectedNode) ! AddChild(connectedNode, parent)
-        buildTree(nodeLocator, root, tree)
-
-      case DoneConnectingChildren(connectedNode, parent) =>
-        timers.cancel(IsConnectedKey(connectedNode, parent))
-        val node = tree(parent)
-        node.awaitingAnswer -= connectedNode
-        node.children += connectedNode
-        if (node.awaitingAnswer.isEmpty) {
-          if (parent == root) {
-            supervisor ! FinishedUpdatingConnectivity
-          } else {
-            nodeLocator.findResponsibleActor(node.parent) !
-              DoneConnectingChildren(parent, node.parent)
-          }
-        }
-        buildTree(nodeLocator, root, tree)
-
+        buildTree(nodeLocator, root, tree,toSend)
+ */
       case FindUnconnectedNode(sendTo, notAskedYet) =>
         val unconnectedNodes = graph.keys.toSet -- tree.keys
         if (unconnectedNodes.isEmpty) {
@@ -156,36 +177,37 @@ class GraphConnector(data: LocalData[Float],
           // send one of the unconnected nodes
           sendTo ! UnconnectedNode(unconnectedNodes.head, data.get(unconnectedNodes.head))
         }
-        buildTree(nodeLocator, root, tree)
+        buildTree(nodeLocator, root, tree, toSend)
 
+        // TODO with work pulling this needs to be in another state or I get an infinte loop of asking for nothing
       case GraphConnected =>
         Behaviors.stopped
 
       case StartGraphRedistributers(clusterCoordinator) =>
         ctx.spawn(GraphRedistributer(tree, clusterCoordinator), name="GraphRedistributer")
-        buildTree(nodeLocator, root, tree)
+        buildTree(nodeLocator, root, tree, toSend)
     }
 
-  def updateNeighborConnectedness(node: Int,
-                                  parent: Int,
+  def updateNeighborConnectedness(newEdge: TreeEdge,
                                   root: Int,
                                   tree: Map[Int, CTreeNode],
                                   sendResultTo: ActorRef[ConnectionCoordinationEvent],
-                                  nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]]): CTreeNode = {
+                                  nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
+                                  toSend: Map[ActorRef[ConnectGraphEvent], ConnectivityInformation]): CTreeNode = {
     // tell all neighbors they are connected
-    val nodeInfo = CTreeNode(parent, mutable.Set.empty, mutable.Set.empty)
-    graph(node).foreach { neighborIndex =>
+    val nodeInfo = CTreeNode(newEdge.parent, mutable.Set.empty, mutable.Set.empty)
+    graph(newEdge.child).foreach { neighborIndex =>
       if (!tree.contains(neighborIndex)) {
-        timers.startSingleTimer(IsConnectedKey(neighborIndex, node), ResendAddChild(neighborIndex, node), timeoutAfter)
-        nodeLocator.findResponsibleActor(neighborIndex) ! AddChild(neighborIndex, node)
+        //timers.startSingleTimer(IsConnectedKey(neighborIndex, newEdge.child), ResendAddChild(neighborIndex, newEdge.child), timeoutAfter)
+        toSend(nodeLocator.findResponsibleActor(neighborIndex)).addChildren :+= TreeEdge(neighborIndex, newEdge.child)
         nodeInfo.awaitingAnswer.add(neighborIndex)
       }
     }
     if (nodeInfo.awaitingAnswer.isEmpty) {
-      if (node == root) {
+      if (newEdge.child == root) {
         sendResultTo ! FinishedUpdatingConnectivity
       } else {
-        nodeLocator.findResponsibleActor(parent) ! DoneConnectingChildren(node, parent)
+        toSend(nodeLocator.findResponsibleActor(newEdge.parent)).addChildren :+= newEdge
       }
     }
     nodeInfo
