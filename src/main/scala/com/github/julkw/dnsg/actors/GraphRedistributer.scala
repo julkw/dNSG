@@ -72,8 +72,14 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
       calculateNodeSizes(distributionTree, workers, dataReplication, nodeLocator)
 
     case ChildSubtreeSize(g_node, childIndex, childSubtreeSize) =>
-      distributionTree(g_node).subTreeSize += childSubtreeSize
-      distributionTree(g_node).waitingForResponses -= 1
+      val currentNode = distributionTree(g_node)
+      if (currentNode.waitingForResponses == 1) {
+        // I need the nodeLocator to tell the parent about subtree size, so just wait for that
+        ctx.self ! ChildSubtreeSize(g_node, childIndex, childSubtreeSize)
+      } else {
+        currentNode.subTreeSize += childSubtreeSize
+        currentNode.waitingForResponses -= 1
+      }
       waitForStartSignal(distributionTree)
   }
 
