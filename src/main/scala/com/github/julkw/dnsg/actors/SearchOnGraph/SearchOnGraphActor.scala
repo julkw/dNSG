@@ -5,7 +5,7 @@ import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, DoneWithRedistribution, KNearestNeighbors, NSGonSOG, SearchOnGraphDistributionInfo}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{ConnectionCoordinationEvent, ReceivedNewEdge}
 import com.github.julkw.dnsg.actors.{GraphConnector, GraphRedistributer}
-import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialGraph, MergeNSGEvent}
+import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialNSG, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, Responsibility}
 import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
 import com.github.julkw.dnsg.util._
@@ -25,9 +25,12 @@ object SearchOnGraphActor {
 
   final case class GraphDistribution(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]) extends SearchOnGraphEvent
 
+  // redistribution
   final case class RedistributeGraph(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends SearchOnGraphEvent
 
-  final case class PartialGraph(partialGraph: Map[Int, Seq[Int]]) extends SearchOnGraphEvent
+  final case class SendPartialGraph(size: Int, sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
+
+  final case class PartialGraph(partialGraph: Seq[(Int, Seq[Int])], sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
   final case class UpdatedLocalData(data: LocalData[Float]) extends  SearchOnGraphEvent
 
@@ -59,19 +62,23 @@ object SearchOnGraphActor {
   // get NSG from NSGMerger
   final case class GetNSGFrom(nsgMerger: ActorRef[MergeNSGEvent]) extends SearchOnGraphEvent
 
+  final case class PartialNSG(partialGraph: Map[Int, Seq[Int]]) extends SearchOnGraphEvent
+
   // safe knng to file
   final case class GetGraph(sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
 
   def apply(clusterCoordinator: ActorRef[CoordinationEvent]): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
-    Behaviors.withTimers(timers =>
-      new SearchOnGraphActor(clusterCoordinator, new WaitingOnLocation, timers, ctx).waitForLocalGraph()
-    )
+    Behaviors.withTimers { timers =>
+      val settings = Settings(ctx.system.settings.config)
+      new SearchOnGraphActor(clusterCoordinator, new WaitingOnLocation, settings, timers, ctx).waitForLocalGraph()
+    }
   }
 }
 
 class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                          waitingOnLocation: WaitingOnLocation,
+                         settings: Settings,
                          timers: TimerScheduler[SearchOnGraphActor.SearchOnGraphEvent],
                          ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends SearchOnGraph(clusterCoordinator, waitingOnLocation, timers, ctx) {
   import SearchOnGraphActor._
@@ -79,6 +86,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
   def waitForLocalGraph(): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case GraphAndData(graph, localData, sender) =>
+        // The data is send over with cache because there is a 1:1 mapping between knngWorkers and searchOnGraphActors and the first stops using the data after it has send it to the latter
         //sender ! GraphReceived(ctx.self)
         clusterCoordinator ! SearchOnGraphDistributionInfo(graph.keys.toSeq, ctx.self)
         waitForDistributionInfo(graph, localData)
@@ -200,17 +208,23 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case RedistributeGraph(nodeAssignments) =>
         val nodesExpected = nodeAssignments.locationData.count(assignees => assignees.contains(ctx.self))
-        // TODO send out partialGraphs in more steps?
-        graph.keys.groupBy(index => nodeAssignments.findResponsibleActor(index)).foreach { case (assignees, nodes) =>
-          val partialGraph = nodes.map(node => node -> graph(node)).toMap
-          assignees.foreach(searchOnGraphActor => searchOnGraphActor ! PartialGraph(partialGraph))
-        }
+        // TODO this iterates over the whole graph multiple times, but some nodes might end up in more than one group so I cannot use groupBy
+        val toSend = nodeLocator.allActors().map { graphHolder =>
+          graphHolder -> graph.keys.filter(nodeIndex => nodeAssignments.findResponsibleActor(nodeIndex).contains(graphHolder)).toSeq
+        }.toMap
+        // TODO get from setting instead
+        toSend.keys.foreach(graphHolder => graphHolder ! SendPartialGraph(settings.graphMessageSize, ctx.self))
         // TODO use something other(more random) than head / if self in set use self?
-        val nodeLocator = NodeLocator(nodeAssignments.locationData.map(_.head))
-        redistributeGraph(graph, nodeLocator, Map.empty, nodesExpected, data, false)
+        val newNodeLocator = NodeLocator(nodeAssignments.locationData.map(_.head))
+        redistributeGraph(toSend, graph, newNodeLocator, Map.empty, nodesExpected, data, false)
+
+      case SendPartialGraph(size, sender) =>
+        ctx.self ! SendPartialGraph(size, sender)
+        searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
     }
 
-  def redistributeGraph(oldGraph: Map[Int, Seq[Int]],
+  def redistributeGraph(toSend: Map[ActorRef[SearchOnGraphEvent], Seq[Int]],
+                        oldGraph: Map[Int, Seq[Int]],
                         nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
                         newGraph: Map[Int, Seq[Int]],
                         nodesExpected: Int,
@@ -218,22 +232,41 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                         dataUpdated: Boolean): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial {
       case UpdatedLocalData(newData) =>
-        // TODO Cache size from settings?
-      if (newGraph.size == nodesExpected) {
-          clusterCoordinator ! DoneWithRedistribution
-          searchOnGraph(newGraph, CacheData(0, newData), nodeLocator, Map.empty, Map.empty, -1)
-        } else {
-          redistributeGraph(oldGraph, nodeLocator, newGraph, nodesExpected, CacheData(0, newData), true)
-        }
+        val updatedData = CacheData(settings.cacheSize, newData)
+        checkIfRedistributionDone(toSend, oldGraph, nodeLocator, newGraph, nodesExpected, updatedData, true)
 
-      case PartialGraph(partialGraph) =>
+      case PartialGraph(partialGraph, sender) =>
         val updatedGraph = newGraph ++ partialGraph
-        if (updatedGraph.size == nodesExpected && dataUpdated) {
-          clusterCoordinator ! DoneWithRedistribution
-          searchOnGraph(updatedGraph, data, nodeLocator, Map.empty, Map.empty, -1)
-        } else {
-          redistributeGraph(oldGraph, nodeLocator, updatedGraph, nodesExpected, data, dataUpdated)
+        ctx.log.info("Received partial graph. Now have {} of {} nodes", updatedGraph.size, nodesExpected)
+        if(partialGraph.size == settings.graphMessageSize) {
+          // else this was the last piece of graph from this actor
+          sender ! SendPartialGraph(settings.graphMessageSize, ctx.self)
         }
+        checkIfRedistributionDone(toSend, oldGraph, nodeLocator, updatedGraph, nodesExpected, data, dataUpdated)
+
+      case SendPartialGraph(size, sender) =>
+        val stillToSend = toSend(sender)
+        val partialGraph = stillToSend.slice(0, size).map(node => (node, oldGraph(node)))
+        sender ! PartialGraph(partialGraph, ctx.self)
+        val updatedToSend = toSend + (sender -> stillToSend.slice(size, stillToSend.size))
+        checkIfRedistributionDone(updatedToSend, oldGraph, nodeLocator, newGraph, nodesExpected, data, dataUpdated)
+  }
+
+  def checkIfRedistributionDone(toSend: Map[ActorRef[SearchOnGraphEvent], Seq[Int]],
+                                oldGraph: Map[Int, Seq[Int]],
+                                nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                                newGraph: Map[Int, Seq[Int]],
+                                nodesExpected: Int,
+                                data: CacheData[Float],
+                                dataUpdated: Boolean): Behavior[SearchOnGraphEvent] = {
+    val everythingSent = !toSend.valuesIterator.exists(_.nonEmpty)
+    if (newGraph.size == nodesExpected && dataUpdated && everythingSent) {
+      ctx.log.info("Done with Redistribution")
+      clusterCoordinator ! DoneWithRedistribution
+      searchOnGraph(newGraph, data, nodeLocator, Map.empty, Map.empty, -1)
+    } else {
+      redistributeGraph(toSend, oldGraph, nodeLocator, newGraph, nodesExpected, data, dataUpdated)
+    }
   }
 
   def searchOnGraphForNSG(graph: Map[Int, Seq[Int]],
@@ -318,13 +351,13 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case GetNSGFrom(nsgMerger) =>
         //ctx.log.info("Asking NSG Merger for my part of the NSG")
-        nsgMerger ! GetPartialGraph(graph.keys.toSet, ctx.self)
+        nsgMerger ! GetPartialNSG(graph.keys.toSet, ctx.self)
         waitForNSG(nodeLocator, data)
     }
 
   def waitForNSG(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
-      case PartialGraph(graph) =>
+      case PartialNSG(graph) =>
         ctx.log.info("Received nsg, ready for queries")
         clusterCoordinator ! NSGonSOG
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, -1)

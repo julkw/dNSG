@@ -107,6 +107,7 @@ class NodeCoordinator(settings: Settings,
     Behaviors.receiveMessagePartial {
       // In case of data redistribution
       case DataRef(newData) =>
+        ctx.log.info("Received new data, forwarding to graphHolders")
         graphHolders.foreach(graphHolder=> graphHolder ! UpdatedLocalData(newData))
         waitForNavigatingNode(newData, graphHolders)
 

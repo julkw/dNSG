@@ -253,6 +253,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                             dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case DoneWithRedistribution =>
+        ctx.log.info("{} graphHolders done with redistribution", finishedWorkers + 1)
         if (finishedWorkers + 1 == graphHolders.size) {
           ctx.log.info("Done with data redistribution, starting with NSG")
           connectorCoordinator ! DoneWithConnecting

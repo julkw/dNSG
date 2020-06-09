@@ -92,7 +92,7 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
         val currentNode = distributionTree(g_node)
         currentNode.subTreeSize += childSubtreeSize
         currentNode.waitingForResponses -= 1
-        ctx.log.info("{} is still waiting for {} responses", g_node, currentNode.waitingForResponses)
+        // ctx.log.info("{} is still waiting for {} responses", g_node, currentNode.waitingForResponses)
         if (currentNode.waitingForResponses == 0) {
           val currentParent = tree(g_node).parent
           if (currentParent == g_node) {
@@ -140,7 +140,6 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
         } else {
           // TODO instead of choosing the first child in the list, choose the one closest to the last entry in the waitingList?
           // this would need exact locations, though
-          // TODO this break again. Find out why
           val child = tree(g_node).children.head
           // remove the child because the next time the search reaches me it will have been assigned something or be in the waiting list
           tree(g_node).children -= child
@@ -191,6 +190,7 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
           } else {
             val distributionInfo = distributionTree.transform((_, treeNode) => treeNode.assignedWorkers.toSet)
             clusterCoordinator ! RedistributionNodeAssignments(distributionInfo)
+            // TODO add message to tell the actor to stop
             //Behaviors.stopped
           }
         }

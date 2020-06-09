@@ -14,7 +14,7 @@ import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{DataRef, NodeC
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetGraph, Graph, SearchOnGraphEvent}
 import com.github.julkw.dnsg.util.Data.{LocalData, LocalSequentialData, LocalUnorderedData}
-import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}
+import com.github.julkw.dnsg.util.{NodeLocator, Settings, dNSGSerializable}
 
 import scala.language.postfixOps
 
@@ -34,8 +34,6 @@ object DataHolder {
 
   final case class GetNext(alreadyReceived: Int, dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
-  // TODO map from searchOnGraphActor to correct dataHolder and send over the data while also receiving the now redistributed data
-  // TODO Once it has all been received, send to SearchOnGraphActor and NodeCoordinator
   final case class StartRedistributingData(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
 
   final case class RedistributeData(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
@@ -64,18 +62,17 @@ object DataHolder {
 
   private case class ListingResponse(listing: Receptionist.Listing) extends LoadDataEvent
 
-  val dataMessageSize = 100
-
   def apply(nodeCoordinator: ActorRef[NodeCoordinationEvent]): Behavior[LoadDataEvent] = Behaviors.setup { ctx =>
     ctx.log.info("Started up DataHolder")
 
     val listingResponseAdapter = ctx.messageAdapter[Receptionist.Listing](ListingResponse)
 
-    new DataHolder(nodeCoordinator, ctx, listingResponseAdapter).setup()
+    val dataMessageSize = Settings(ctx.system.settings.config).dataMessageSize
+    new DataHolder(nodeCoordinator, dataMessageSize, ctx, listingResponseAdapter).setup()
   }
 }
 
-class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorContext[DataHolder.LoadDataEvent], listingAdapter: ActorRef[Receptionist.Listing]) {
+class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSize: Int, ctx: ActorContext[DataHolder.LoadDataEvent], listingAdapter: ActorRef[Receptionist.Listing]) {
   import DataHolder._
 
   def setup(): Behavior[LoadDataEvent] = {
@@ -245,8 +242,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
           dataHolder -> sendToDH
         }.filter(_._2.nonEmpty).toMap
         toSendTo.keys.foreach(dataHolder => dataHolder ! PrepareForRedistributedData(ctx.self))
-        // TODO send data to other dataHolders in chunks
-        // Keep track of who send me how much like in initial dataDistribution?
+        ctx.log.info("dataHolder received nodeAssignments")
         redistributeData(data, Map.empty, toGet, toSendTo, dataHolders)
 
       case PrepareForRedistributedData(sender) =>
@@ -277,6 +273,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
                        dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial {
       case PrepareForRedistributedData(sender) =>
+        ctx.log.info("Asking for redistributed data")
         sender ! GetRedistributedData(ctx.self)
         redistributeData(oldData, newData, expectedNewData, toSend, dataHolders)
 
@@ -287,6 +284,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
           sender ! PartialRedistributedData(dataToSend, ctx.self)
           redistributeData(oldData, newData, expectedNewData, toSend + (sender -> indicesToSend.slice(dataMessageSize, indicesToSend.length)), dataHolders)
         } else if (toSend.size == 1 && newData.size == expectedNewData) {
+          ctx.log.info("Received and send all the data")
           val localData = LocalUnorderedData(newData)
           nodeCoordinator ! DataRef(localData)
           holdData(localData, dataHolders)
@@ -298,6 +296,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
         sender ! GetRedistributedData(ctx.self)
         val updatedData = newData ++ data
         if (updatedData.size == expectedNewData && toSend.isEmpty) {
+          ctx.log.info("Received and send all the data")
           val localData = LocalUnorderedData(updatedData)
           nodeCoordinator ! DataRef(localData)
           holdData(localData, dataHolders)

@@ -22,6 +22,10 @@ case class Settings(config: Config) {
 
   val cacheSize: Int = config.getInt(s"$namespace.cache-size")
 
+  val dataMessageSize: Int = config.getInt(s"$namespace.data-message-size")
+
+  val graphMessageSize: Int = config.getInt(s"$namespace.graph-message-size")
+
   // for testing
   val queryFilePath: String = config.getString(s"$namespace.query-testing.query-file")
 
