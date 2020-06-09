@@ -57,7 +57,7 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
 
   def setup(): Behavior[RedistributionEvent] = {
     clusterCoordinator ! RedistributerDistributionInfo(tree.keys.toSeq, ctx.self)
-    val distributionTree: Map[Int, DistributionTreeInfo] = tree.transform((index, treeNode) => DistributionTreeInfo(0, 0, treeNode.children.size, mutable.Set.empty))
+    val distributionTree: Map[Int, DistributionTreeInfo] = tree.transform((index, treeNode) => DistributionTreeInfo(1, 0, treeNode.children.size, mutable.Set.empty))
     waitForStartSignal(distributionTree)
   }
 
@@ -66,7 +66,6 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
       ctx.log.info("Starting redistribution")
       tree.foreach { case (node, nodeInfo) =>
         if (nodeInfo.children.isEmpty) {
-          distributionTree(node).subTreeSize = 1
           nodeLocator.findResponsibleActor(nodeInfo.parent) ! ChildSubtreeSize(nodeInfo.parent, node, 1)
         }
       }
@@ -87,10 +86,12 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
         val currentNode = distributionTree(g_node)
         currentNode.subTreeSize += childSubtreeSize
         currentNode.waitingForResponses -= 1
+        ctx.log.info("{} is still waiting for {} responses", g_node, currentNode.waitingForResponses)
         if (currentNode.waitingForResponses == 0) {
           val currentParent = tree(g_node).parent
           if (currentParent == g_node) {
             // this is the root
+            assert(currentNode.subTreeSize == nodeLocator.graphSize)
             startSearchForNextWorkersNodes(g_node, 0, nodeLocator.graphSize, workers, replicationStrategy, nodeLocator)
             startDistribution(distributionTree, workers, replicationStrategy, nodeLocator)
           } else {
@@ -103,6 +104,10 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
 
       case FindNodesInRange(g_node, minNodes, maxNodes, removeFromDescendants, waitingList, workersLeft, nodesLeft) =>
         ctx.self ! FindNodesInRange(g_node, minNodes, maxNodes, removeFromDescendants, waitingList, workersLeft, nodesLeft)
+        startDistribution(distributionTree, workers, replicationStrategy, nodeLocator)
+
+      case AssignWithChildren(g_node, worker) =>
+        ctx.self ! AssignWithChildren(g_node, worker)
         startDistribution(distributionTree, workers, replicationStrategy, nodeLocator)
     }
 
@@ -157,13 +162,13 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
 
       case SendResults =>
         // just for debugging purposes
-        val leftToAssign = distributionTree.valuesIterator.count(treeNode => treeNode.assignedWorkers.isEmpty)
-        ctx.log.info("Still waiting on {} nodes to be assigned", leftToAssign)
+        val leftToAssign = distributionTree.valuesIterator.filter(treeNode => treeNode.assignedWorkers.isEmpty)
+        //ctx.log.info("Still waiting on {} nodes to be assigned", leftToAssign.toSeq)
         // ensure all AssignWithChildren messages have been processed (all nodes have been assigned to a worker)
         if (distributionTree.valuesIterator.exists(treeNode => treeNode.assignedWorkers.isEmpty)) {
           // TODO do this with timer
           ctx.self ! SendResults
-          distributeUsingTree(distributionTree,  replicationStrategy, workers, nodeLocator)
+          //distributeUsingTree(distributionTree,  replicationStrategy, workers, nodeLocator)
         } else {
           ctx.log.info("Send assignments to clusterCoordinator")
           if (replicationStrategy == AllSharedReplication) {
@@ -176,12 +181,14 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
             }
             // TODO maybe add check that this has been received?
             clusterCoordinator ! RedistributionNodeAssignments(updatedDistInfo)
+            //Behaviors.stopped
           } else {
             val distributionInfo = distributionTree.transform((_, treeNode) => treeNode.assignedWorkers.toSet)
             clusterCoordinator ! RedistributionNodeAssignments(distributionInfo)
+            //Behaviors.stopped
           }
-          Behaviors.stopped
         }
+        distributeUsingTree(distributionTree,  replicationStrategy, workers, nodeLocator)
     }
 
   def startDistribution(distributionTree: Map[Int, DistributionTreeInfo],

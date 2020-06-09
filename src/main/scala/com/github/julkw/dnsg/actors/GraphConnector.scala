@@ -38,7 +38,7 @@ object GraphConnector {
 
   final case class IsConnectedKey(connectedNode: Int, parent: Int)
 
-  val timeoutAfter = 100.second
+  val timeoutAfter = 3.second
 
   // data structures for more readable code
   case class CTreeNode(parent: Int, children: mutable.Set[Int], awaitingAnswer: mutable.Set[Int])
@@ -89,10 +89,10 @@ class GraphConnector(data: LocalData[Float],
 
       case AddEdgeAndContinue(from, to) =>
         ctx.log.info("Updating connectivity after adding a new edge")
-        tree(from).children += to
-        // treat the newly connected node as out new root node
-        val rootNode = updateNeighborConnectedness(to, from, to, tree, supervisor, nodeLocator)
-        buildTree(nodeLocator, to, tree + (to -> rootNode))
+        timers.startSingleTimer(IsConnectedKey(to, from), ResendAddChild(to, from), timeoutAfter)
+        nodeLocator.findResponsibleActor(to) ! AddChild(to, from)
+        tree(from).awaitingAnswer.add(to)
+        buildTree(nodeLocator, from, tree)
 
       case AddChild(connectedNode, parent) =>
         if (tree.contains(connectedNode)) {
@@ -136,7 +136,7 @@ class GraphConnector(data: LocalData[Float],
             supervisor ! FinishedUpdatingConnectivity
           } else {
             nodeLocator.findResponsibleActor(node.parent) !
-              DoneConnectingChildren(connectedNode, node.parent)
+              DoneConnectingChildren(parent, node.parent)
           }
         }
         buildTree(nodeLocator, root, tree)

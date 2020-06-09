@@ -197,20 +197,17 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         ctx.log.info("Told to connect the graph")
         ctx.spawn(GraphConnector(data.data, graph, graphConnectorSupervisor), name="graphConnector")
         searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
-    }
 
-  def waitForRedistributionResults(oldGraph: Map[Int, Seq[Int]], oldData: CacheData[Float]): Behavior[SearchOnGraphEvent] =
-    Behaviors.receiveMessagePartial {
       case RedistributeGraph(nodeAssignments) =>
         val nodesExpected = nodeAssignments.locationData.count(assignees => assignees.contains(ctx.self))
         // TODO send out partialGraphs in more steps?
-        oldGraph.keys.groupBy(index => nodeAssignments.findResponsibleActor(index)).foreach { case (assignees, nodes) =>
-          val partialGraph = nodes.map(node => node -> oldGraph(node)).toMap
+        graph.keys.groupBy(index => nodeAssignments.findResponsibleActor(index)).foreach { case (assignees, nodes) =>
+          val partialGraph = nodes.map(node => node -> graph(node)).toMap
           assignees.foreach(searchOnGraphActor => searchOnGraphActor ! PartialGraph(partialGraph))
         }
         // TODO use something other(more random) than head / if self in set use self?
         val nodeLocator = NodeLocator(nodeAssignments.locationData.map(_.head))
-        redistributeGraph(oldGraph, nodeLocator, Map.empty, nodesExpected, oldData, false)
+        redistributeGraph(graph, nodeLocator, Map.empty, nodesExpected, data, false)
     }
 
   def redistributeGraph(oldGraph: Map[Int, Seq[Int]],
@@ -226,16 +223,17 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           clusterCoordinator ! DoneWithRedistribution
           searchOnGraph(newGraph, CacheData(0, newData), nodeLocator, Map.empty, Map.empty, -1)
         } else {
-        redistributeGraph(oldGraph, nodeLocator, newGraph, nodesExpected, CacheData(0, newData), true)
-      }
+          redistributeGraph(oldGraph, nodeLocator, newGraph, nodesExpected, CacheData(0, newData), true)
+        }
 
       case PartialGraph(partialGraph) =>
         val updatedGraph = newGraph ++ partialGraph
         if (updatedGraph.size == nodesExpected && dataUpdated) {
           clusterCoordinator ! DoneWithRedistribution
           searchOnGraph(updatedGraph, data, nodeLocator, Map.empty, Map.empty, -1)
+        } else {
+          redistributeGraph(oldGraph, nodeLocator, updatedGraph, nodesExpected, data, dataUpdated)
         }
-        redistributeGraph(oldGraph, nodeLocator, updatedGraph, nodesExpected, data, dataUpdated)
   }
 
   def searchOnGraphForNSG(graph: Map[Int, Seq[Int]],

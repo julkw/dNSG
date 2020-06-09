@@ -3,7 +3,7 @@ package com.github.julkw.dnsg.actors.Coordinators
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionAchieved, CoordinationEvent, KNearestNeighbors}
-import com.github.julkw.dnsg.actors.GraphConnector.{BuildTreeFrom, ConnectGraphEvent, ConnectorDistributionInfo, FindUnconnectedNode, GraphConnected, StartGraphRedistributers}
+import com.github.julkw.dnsg.actors.GraphConnector.{AddEdgeAndContinue, BuildTreeFrom, ConnectGraphEvent, ConnectorDistributionInfo, FindUnconnectedNode, GraphConnected, StartGraphRedistributers}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{AddToGraph, ConnectGraph, FindNearestNeighborsStartingFrom, SearchOnGraphEvent}
 import com.github.julkw.dnsg.util.{NodeLocator, NodeLocatorBuilder, dNSGSerializable}
 
@@ -91,30 +91,23 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
           case KNearestNeighbors(query, neighbors) =>
             // the only query being asked for is to connect unconnected nodes
             graphNodeLocator.findResponsibleActor(neighbors.head) ! AddToGraph(neighbors.head, latestUnconnectedNodeIndex, ctx.self)
-            connectorLocator.findResponsibleActor(latestUnconnectedNodeIndex) ! BuildTreeFrom(latestUnconnectedNodeIndex)
+            connectorLocator.findResponsibleActor(neighbors.head) ! AddEdgeAndContinue(neighbors.head, latestUnconnectedNodeIndex)
             connectGraph(connectorLocator, graphConnectors, waitOnNodeAck + 1, -1, allConnected)
         }
 
       case ReceivedNewEdge =>
         if (allConnected && waitOnNodeAck == 1) {
-          graphConnectors.foreach(graphConnector => graphConnector ! GraphConnected)
           clusterCoordinator ! ConnectionAchieved
-          Behaviors.stopped
-        } else {
-          connectGraph(connectorLocator, graphConnectors, waitOnNodeAck - 1, latestUnconnectedNodeIndex, allConnected)
         }
+        connectGraph(connectorLocator, graphConnectors, waitOnNodeAck - 1, latestUnconnectedNodeIndex, allConnected)
 
       case AllConnected =>
         ctx.log.info("Graph now fully connected")
-        if (waitOnNodeAck > 0) {
-          connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, true)
-        } else {
-          //graphConnectors.foreach(graphConnector => graphConnector ! GraphConnected)
+        if (waitOnNodeAck == 0) {
           clusterCoordinator ! ConnectionAchieved
-          //Behaviors.stopped
-          connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, allConnected)
         }
-      // TODO these could be placed in another state
+        connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, true)
+
       case StartGraphRedistribution =>
         graphConnectors.foreach(graphConnector => graphConnector ! StartGraphRedistributers(clusterCoordinator))
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, allConnected)
