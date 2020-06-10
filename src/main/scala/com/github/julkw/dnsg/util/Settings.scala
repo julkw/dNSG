@@ -26,6 +26,8 @@ case class Settings(config: Config) {
 
   val graphMessageSize: Int = config.getInt(s"$namespace.graph-message-size")
 
+  val connectMessageSize: Int = config.getInt(s"$namespace.connect-message-size")
+
   // for testing
   val queryFilePath: String = config.getString(s"$namespace.query-testing.query-file")
 

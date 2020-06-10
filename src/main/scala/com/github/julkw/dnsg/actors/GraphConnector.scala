@@ -6,7 +6,7 @@ import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.CoordinationEvent
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{AllConnected, ConnectionCoordinationEvent, FinishedUpdatingConnectivity, GraphConnectorDistributionInfo, UnconnectedNode}
 import com.github.julkw.dnsg.util.Data.LocalData
-import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}
+import com.github.julkw.dnsg.util.{NodeLocator, Settings, dNSGSerializable}
 
 import scala.collection.mutable
 
@@ -44,17 +44,16 @@ object GraphConnector {
 
   def apply(data: LocalData[Float],
             graph: Map[Int, Seq[Int]],
-            supervisor: ActorRef[ConnectionCoordinationEvent]): Behavior[ConnectGraphEvent] = Behaviors.setup(ctx =>
-    Behaviors.withTimers(timers =>
-      new GraphConnector(data, graph, supervisor, timers, ctx).setup()
-    )
-  )
+            supervisor: ActorRef[ConnectionCoordinationEvent]): Behavior[ConnectGraphEvent] = Behaviors.setup { ctx =>
+    val messageSize = Settings(ctx.system.settings.config).connectMessageSize
+    new GraphConnector(data, graph, messageSize, supervisor, ctx).setup()
+  }
 }
 
 class GraphConnector(data: LocalData[Float],
                      graph: Map[Int, Seq[Int]],
+                     messageSize: Int,
                      supervisor: ActorRef[ConnectionCoordinationEvent],
-                     timers: TimerScheduler[GraphConnector.ConnectGraphEvent],
                      ctx: ActorContext[GraphConnector.ConnectGraphEvent]) {
   import GraphConnector._
 
@@ -227,9 +226,18 @@ class GraphConnector(data: LocalData[Float],
   }
 
   def sendConnectivityInfo(sendTo: ActorRef[ConnectGraphEvent], connectivityInfo: ConnectivityInformation): SendInformation = {
-    // TODO limit size of messages and return unsent information
-    sendTo ! ConnectivityInfo(connectivityInfo, ctx.self)
-    SendInformation(ConnectivityInformation(Seq.empty, Seq.empty, Seq.empty), false)
+    val conInfoToSend = ConnectivityInformation(
+      connectivityInfo.addChildren.slice(0, messageSize),
+      connectivityInfo.notChildren.slice(0, messageSize),
+      connectivityInfo.doneChildren.slice(0, messageSize)
+    )
+    val conInfoRest = ConnectivityInformation(
+      connectivityInfo.addChildren.slice(messageSize, connectivityInfo.addChildren.length),
+      connectivityInfo.notChildren.slice(messageSize, connectivityInfo.notChildren.length),
+      connectivityInfo.doneChildren.slice(messageSize, connectivityInfo.doneChildren.length)
+    )
+    sendTo ! ConnectivityInfo(conInfoToSend, ctx.self)
+    SendInformation(conInfoRest, false)
   }
 
   def updateNeighborConnectedness(newEdge: TreeEdge,
