@@ -20,7 +20,7 @@ object GraphConnector {
   // work pulling
   final case class GetConnectivityInfo(sender: ActorRef[ConnectGraphEvent]) extends ConnectGraphEvent
 
-  final case class ConnectivityInfo(connectivityInfo: ConnectivityInformation, root: Int, sender: ActorRef[ConnectGraphEvent]) extends ConnectGraphEvent
+  final case class ConnectivityInfo(connectivityInfo: ConnectivityInformation, sender: ActorRef[ConnectGraphEvent]) extends ConnectGraphEvent
 
   final case class AddEdgeAndContinue(from: Int, to: Int) extends ConnectGraphEvent
 
@@ -80,11 +80,10 @@ class GraphConnector(data: LocalData[Float],
     case BuildTreeFrom(root) =>
       ctx.self ! BuildTreeFrom(root)
       waitForDistInfo()
-
   }
 
   def buildTree(nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
-                lastRoot: Int,
+                root: Int,
                 tree: Map[Int, CTreeNode],
                 alreadyConnected: Array[Boolean],
                 toSend: Map[ActorRef[ConnectGraphEvent], SendInformation]): Behavior[ConnectGraphEvent] =
@@ -97,39 +96,29 @@ class GraphConnector(data: LocalData[Float],
 
       case AddEdgeAndContinue(from, to) =>
         ctx.log.info("Updating connectivity after adding a new edge: {} to {}", from, to)
-        /*
-        tree(from).children += to
-        nodeLocator.findResponsibleActor(to) ! BuildTreeFrom(to)
-        buildTree(nodeLocator, to, tree, alreadyConnected, toSend)
-         */
-        ///*
         val actorToTell = nodeLocator.findResponsibleActor(to)
         tree(from).awaitingAnswer.add(to)
         alreadyConnected(to) = true
         toSend(actorToTell).connectivityInformation.addChildren :+= TreeEdge(to, from)
         if (toSend(actorToTell).sendImmediately) {
-          actorToTell ! ConnectivityInfo(toSend(actorToTell).connectivityInformation, from, ctx.self)
-          val toSendInfo = SendInformation(ConnectivityInformation(Seq.empty, Seq.empty, Seq.empty), false)
-          buildTree(nodeLocator, lastRoot, tree, alreadyConnected, toSend + (actorToTell -> toSendInfo))
+          val toSendInfo = sendConnectivityInfo(actorToTell, toSend(actorToTell).connectivityInformation)
+          buildTree(nodeLocator, root, tree, alreadyConnected, toSend + (actorToTell -> toSendInfo))
         } else {
           buildTree(nodeLocator, from, tree, alreadyConnected, toSend)
         }
-         //*/
 
       case GetConnectivityInfo(sender) =>
         val connectivityInfo = toSend(sender).connectivityInformation
         if (connectivityInfo.nothingToSend()) {
           // send as soon as there is something to send
           toSend(sender).sendImmediately = true
-          buildTree(nodeLocator, lastRoot, tree, alreadyConnected, toSend)
+          buildTree(nodeLocator, root, tree, alreadyConnected, toSend)
         } else {
-          // TODO limit message size
-          sender ! ConnectivityInfo(connectivityInfo, lastRoot, ctx.self)
-          val toSendInfo = SendInformation(ConnectivityInformation(Seq.empty, Seq.empty, Seq.empty), false)
-          buildTree(nodeLocator, lastRoot, tree, alreadyConnected, toSend + (sender -> toSendInfo))
+          val toSendInfo = sendConnectivityInfo(sender, toSend(sender).connectivityInformation)
+          buildTree(nodeLocator, root, tree, alreadyConnected, toSend + (sender -> toSendInfo))
         }
 
-      case ConnectivityInfo(connectivityInfo, root, sender) =>
+      case ConnectivityInfo(connectivityInfo, sender) =>
         val newNodes = addChildren(connectivityInfo.addChildren, tree, alreadyConnected, root, nodeLocator, toSend)
         notMyChildren(connectivityInfo.notChildren, tree, root, nodeLocator, toSend)
         doneChildren(connectivityInfo.doneChildren, tree, root, nodeLocator, toSend)
@@ -137,8 +126,7 @@ class GraphConnector(data: LocalData[Float],
         // send updates to those who have asked but gotten nothing before
         val updatedToSend = toSend.transform { (connector, toSendInfo) =>
           if (toSendInfo.sendImmediately && toSendInfo.connectivityInformation.somethingToSend()) {
-            connector ! ConnectivityInfo(toSendInfo.connectivityInformation, root, ctx.self)
-            SendInformation(ConnectivityInformation(Seq.empty, Seq.empty, Seq.empty), false)
+            sendConnectivityInfo(connector, toSendInfo.connectivityInformation)
           } else {
             toSendInfo
           }
@@ -160,14 +148,14 @@ class GraphConnector(data: LocalData[Float],
           // send one of the unconnected nodes
           sendTo ! UnconnectedNode(unconnectedNodes.head, data.get(unconnectedNodes.head))
         }
-        buildTree(nodeLocator, lastRoot, tree, alreadyConnected, toSend)
+        buildTree(nodeLocator, root, tree, alreadyConnected, toSend)
 
       case GraphConnected =>
         Behaviors.stopped
 
       case StartGraphRedistributers(clusterCoordinator) =>
         ctx.spawn(GraphRedistributer(tree, clusterCoordinator), name="GraphRedistributer")
-        buildTree(nodeLocator, lastRoot, tree, alreadyConnected, toSend)
+        buildTree(nodeLocator, root, tree, alreadyConnected, toSend)
     }
 
   def addChildren(connectedNodes: Seq[TreeEdge],
@@ -217,21 +205,12 @@ class GraphConnector(data: LocalData[Float],
                   root: Int,
                   nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
                   toSend: Map[ActorRef[ConnectGraphEvent], SendInformation]): Unit = {
-    ctx.log.info("{} still waiting on {}", nodeIndex, node.awaitingAnswer)
+    //ctx.log.info("{} still waiting on {}", nodeIndex, node.awaitingAnswer)
     if (node.awaitingAnswer.isEmpty) {
       if (nodeIndex == root) {
         supervisor ! FinishedUpdatingConnectivity
       } else {
         toSend(nodeLocator.findResponsibleActor(node.parent)).connectivityInformation.doneChildren :+= TreeEdge(nodeIndex, node.parent)
-      }
-    }
-  }
-
-  def sendNewInfo(toSend: Map[ActorRef[ConnectGraphEvent], SendInformation], root: Int): Unit = {
-    toSend.foreach { case(connector, toSendInfo) =>
-      if (toSendInfo.sendImmediately && toSendInfo.connectivityInformation.somethingToSend()) {
-        val toSendInfo = SendInformation(ConnectivityInformation(Seq.empty, Seq.empty, Seq.empty), false)
-        connector ! ConnectivityInfo(toSendInfo.connectivityInformation, root, ctx.self)
       }
     }
   }
@@ -245,6 +224,12 @@ class GraphConnector(data: LocalData[Float],
     toSend(nodeLocator.findResponsibleActor(newChild)).connectivityInformation.addChildren :+= treeEdge
     alreadyConnected(newChild) = true
     parentNode.awaitingAnswer.add(newChild)
+  }
+
+  def sendConnectivityInfo(sendTo: ActorRef[ConnectGraphEvent], connectivityInfo: ConnectivityInformation): SendInformation = {
+    // TODO limit size of messages and return unsent information
+    sendTo ! ConnectivityInfo(connectivityInfo, ctx.self)
+    SendInformation(ConnectivityInformation(Seq.empty, Seq.empty, Seq.empty), false)
   }
 
   def updateNeighborConnectedness(newEdge: TreeEdge,
