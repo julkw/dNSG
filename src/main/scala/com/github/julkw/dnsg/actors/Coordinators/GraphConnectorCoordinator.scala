@@ -81,7 +81,6 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, allConnected)
 
       case UnconnectedNode(nodeIndex, nodeData) =>
-        //ctx.log.info("found an unconnected node")
         graphNodeLocator.findResponsibleActor(nodeIndex) !
           FindNearestNeighborsStartingFrom(nodeData, navigatingNodeIndex, 1, coordinationEventAdapter)
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, nodeIndex, allConnected)
@@ -90,6 +89,7 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
         event match {
           case KNearestNeighbors(query, neighbors) =>
             // the only query being asked for is to connect unconnected nodes
+            assert(latestUnconnectedNodeIndex >= 0)
             graphNodeLocator.findResponsibleActor(neighbors.head) ! AddToGraph(neighbors.head, latestUnconnectedNodeIndex, ctx.self)
             connectorLocator.findResponsibleActor(neighbors.head) ! AddEdgeAndContinue(neighbors.head, latestUnconnectedNodeIndex)
             connectGraph(connectorLocator, graphConnectors, waitOnNodeAck + 1, -1, allConnected)

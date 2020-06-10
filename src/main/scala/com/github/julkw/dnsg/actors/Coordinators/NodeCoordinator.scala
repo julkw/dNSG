@@ -93,6 +93,7 @@ class NodeCoordinator(settings: Settings,
     }
 
   def moveKnngToSearchOnGraph(knngWorkers: Set[ActorRef[BuildGraphEvent]], data: LocalData[Float]): Behavior[NodeCoordinationEvent] = {
+    ctx.log.info("Start moving graph to SearchOnGraph Actors")
     var sogIndex = 0
     val graphHolders = knngWorkers.map { worker =>
       val nsgw = ctx.spawn(SearchOnGraphActor(clusterCoordinator), name = "SearchOnGraph" + sogIndex.toString)
