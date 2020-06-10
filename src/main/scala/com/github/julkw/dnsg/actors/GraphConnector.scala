@@ -30,6 +30,13 @@ object GraphConnector {
 
   final case class StartGraphRedistributers(clusterCoordinator: ActorRef[CoordinationEvent]) extends ConnectGraphEvent
 
+  // ensure message deliver
+  protected case class ConnectivityInfoTimerKey(receiver: ActorRef[ConnectGraphEvent])
+
+  protected case class ResendConnectivityInfo(infoToResend: ConnectivityInformation, sendTo: ActorRef[ConnectGraphEvent]) extends ConnectGraphEvent
+
+  val timeout = 3.second
+
   // data structures for more readable code
   case class CTreeNode(parent: Int, children: mutable.Set[Int], awaitingAnswer: mutable.Set[Int])
 
@@ -46,13 +53,16 @@ object GraphConnector {
             graph: Map[Int, Seq[Int]],
             supervisor: ActorRef[ConnectionCoordinationEvent]): Behavior[ConnectGraphEvent] = Behaviors.setup { ctx =>
     val messageSize = Settings(ctx.system.settings.config).connectMessageSize
-    new GraphConnector(data, graph, messageSize, supervisor, ctx).setup()
+    Behaviors.withTimers(timers =>
+      new GraphConnector(data, graph, messageSize, timers, supervisor, ctx).setup()
+    )
   }
 }
 
 class GraphConnector(data: LocalData[Float],
                      graph: Map[Int, Seq[Int]],
                      messageSize: Int,
+                     timers: TimerScheduler[GraphConnector.ConnectGraphEvent],
                      supervisor: ActorRef[ConnectionCoordinationEvent],
                      ctx: ActorContext[GraphConnector.ConnectGraphEvent]) {
   import GraphConnector._
@@ -107,6 +117,8 @@ class GraphConnector(data: LocalData[Float],
         }
 
       case GetConnectivityInfo(sender) =>
+        // the sender only asks for new information if they have received the last one
+        timers.cancel(ConnectivityInfoTimerKey(sender))
         val connectivityInfo = toSend(sender).connectivityInformation
         if (connectivityInfo.nothingToSend()) {
           // send as soon as there is something to send
@@ -118,10 +130,10 @@ class GraphConnector(data: LocalData[Float],
         }
 
       case ConnectivityInfo(connectivityInfo, sender) =>
+        sender ! GetConnectivityInfo(ctx.self)
         val newNodes = addChildren(connectivityInfo.addChildren, tree, alreadyConnected, root, nodeLocator, toSend)
         notMyChildren(connectivityInfo.notChildren, tree, root, nodeLocator, toSend)
         doneChildren(connectivityInfo.doneChildren, tree, root, nodeLocator, toSend)
-        sender ! GetConnectivityInfo(ctx.self)
         // send updates to those who have asked but gotten nothing before
         val updatedToSend = toSend.transform { (connector, toSendInfo) =>
           if (toSendInfo.sendImmediately && toSendInfo.connectivityInformation.somethingToSend()) {
@@ -226,6 +238,7 @@ class GraphConnector(data: LocalData[Float],
   }
 
   def sendConnectivityInfo(sendTo: ActorRef[ConnectGraphEvent], connectivityInfo: ConnectivityInformation): SendInformation = {
+    // TODO potentially add timer to ensure the message gets received (cancel timer on next GetConnectivityInfo from sender)
     val conInfoToSend = ConnectivityInformation(
       connectivityInfo.addChildren.slice(0, messageSize),
       connectivityInfo.notChildren.slice(0, messageSize),
@@ -237,6 +250,7 @@ class GraphConnector(data: LocalData[Float],
       connectivityInfo.doneChildren.slice(messageSize, connectivityInfo.doneChildren.length)
     )
     sendTo ! ConnectivityInfo(conInfoToSend, ctx.self)
+    timers.startSingleTimer(ConnectivityInfoTimerKey(sendTo), ResendConnectivityInfo(conInfoToSend, sendTo), timeout)
     SendInformation(conInfoRest, false)
   }
 
