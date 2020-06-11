@@ -57,8 +57,6 @@ object SearchOnGraphActor {
 
   final case class AddToGraph(startNode: Int, endNode: Int, sender: ActorRef[ConnectionCoordinationEvent]) extends SearchOnGraphEvent
 
-  // send responsiblities to NSG workers
-  final case class SendResponsibleIndicesTo(nsgWorker: ActorRef[BuildNSGEvent]) extends SearchOnGraphEvent
   // get NSG from NSGMerger
   final case class GetNSGFrom(nsgMerger: ActorRef[MergeNSGEvent]) extends SearchOnGraphEvent
 
@@ -197,8 +195,8 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         sender ! Graph(graph, ctx.self)
         searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
 
-      case SendResponsibleIndicesTo(nsgWorker) =>
-        nsgWorker ! Responsibility(graph.keys.toSeq)
+      case CheckedNodesOnSearch(endPoint, startingPoint, neighborsWanted, asker) =>
+        ctx.self ! CheckedNodesOnSearch(endPoint, startingPoint, neighborsWanted, asker)
         searchOnGraphForNSG(graph, data, nodeLocator, Map.empty, Map.empty, QueryResponseLocations(data))
 
       case ConnectGraph(graphConnectorSupervisor) =>
@@ -209,13 +207,13 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
       case RedistributeGraph(nodeAssignments) =>
         val nodesExpected = nodeAssignments.locationData.count(assignees => assignees.contains(ctx.self))
         // TODO this iterates over the whole graph multiple times, but some nodes might end up in more than one group so I cannot use groupBy
-        val toSend = nodeLocator.allActors().map { graphHolder =>
+        val toSend = nodeLocator.allActors.map { graphHolder =>
           graphHolder -> graph.keys.filter(nodeIndex => nodeAssignments.findResponsibleActor(nodeIndex).contains(graphHolder)).toSeq
         }.toMap
         // TODO get from setting instead
         toSend.keys.foreach(graphHolder => graphHolder ! SendPartialGraph(settings.graphMessageSize, ctx.self))
         // TODO use something other(more random) than head / if self in set use self?
-        val newNodeLocator = NodeLocator(nodeAssignments.locationData.map(_.head))
+        val newNodeLocator = NodeLocator(nodeAssignments.locationData.map(_.head), nodeLocator.allActors)
         redistributeGraph(toSend, graph, newNodeLocator, Map.empty, nodesExpected, data, false)
 
       case SendPartialGraph(size, sender) =>

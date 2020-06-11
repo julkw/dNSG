@@ -74,7 +74,7 @@ class GraphConnector(data: LocalData[Float],
 
   def waitForDistInfo(): Behavior[ConnectGraphEvent] = Behaviors.receiveMessagePartial {
     case ConnectorDistributionInfo(nodeLocator) =>
-      val allConnectors = nodeLocator.allActors()
+      val allConnectors = nodeLocator.allActors
       allConnectors.foreach(connector => connector ! GetConnectivityInfo(ctx.self))
       val toSend = allConnectors.map(connector =>
         connector -> SendInformation(ConnectivityInformation(Seq.empty, Seq.empty, Seq.empty), sendImmediately = false)

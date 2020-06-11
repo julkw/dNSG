@@ -23,7 +23,7 @@ object KnngWorker {
   // setup
   final case class ResponsibleFor(responsibility: Seq[Int], treeDepth: Int) extends BuildGraphEvent
 
-  final case class BuildApproximateGraph(nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]], workers: Set[ActorRef[BuildGraphEvent]]) extends BuildGraphEvent
+  final case class BuildApproximateGraph(nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]]) extends BuildGraphEvent
 
   // build approximate graph
   final case class FindCandidates(index: Int) extends BuildGraphEvent
@@ -116,13 +116,13 @@ class KnngWorker(data: CacheData[Float],
   def waitForDistributionInfo(kdTree: IndexTree,
                               responsibility: Seq[Int]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
-      case BuildApproximateGraph(nodeLocator, workers) =>
+      case BuildApproximateGraph(nodeLocator) =>
         ctx.log.info("Received Distribution Info. Start building approximate graph")
         ctx.self ! FindCandidates(0)
         val candidates: Array[Seq[(Int, Double)]] = Array.fill(responsibility.length){Seq.empty}
         val awaitingAnswer: Array[Int] = Array.fill(responsibility.length){0}
         val graph: Map[Int, Seq[(Int, Double)]] = Map.empty
-        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, workers, graph)
+        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
 
       case GetCandidates(query, index, sender) =>
         val localCandidates = findLocalCandidates(query, kdTree)
@@ -135,7 +135,6 @@ class KnngWorker(data: CacheData[Float],
                             candidates: Array[Seq[(Int, Double)]],
                             awaitingAnswer: Array[Int],
                             nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]],
-                            knngWorkers: Set[ActorRef[BuildGraphEvent]],
                             graph:Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
       case FindCandidates(responsibilityIndex) =>
@@ -146,7 +145,7 @@ class KnngWorker(data: CacheData[Float],
         val index = responsibility(responsibilityIndex)
         val query: Seq[Float] = data.get(index)
         // find candidates for current node by asking all workers for candidates to ensure a connected graph across all nodes
-        knngWorkers.foreach { worker =>
+        nodeLocator.allActors.foreach { worker =>
           if (worker != ctx.self) {
             worker ! GetCandidates(query, responsibilityIndex, ctx.self)
             awaitingAnswer(responsibilityIndex) += 1
@@ -155,12 +154,12 @@ class KnngWorker(data: CacheData[Float],
         val localCandidates = findLocalCandidates(query, kdTree)
         ctx.self ! Candidates(localCandidates, responsibilityIndex)
         awaitingAnswer(responsibilityIndex) += 1
-        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, knngWorkers, graph)
+        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
 
       case GetCandidates(query, index, sender) =>
         val localCandidates = findLocalCandidates(query, kdTree)
         sender ! Candidates(localCandidates, index)
-        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, knngWorkers, graph)
+        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
 
       case Candidates(newCandidates, responsibilityIndex) =>
         val graphIndex: Int = responsibility(responsibilityIndex)
@@ -174,9 +173,9 @@ class KnngWorker(data: CacheData[Float],
           if (updatedGraph.size == responsibility.length) {
             clusterCoordinator ! FinishedApproximateGraph
           }
-          buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, knngWorkers, updatedGraph)
+          buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, updatedGraph)
         } else {
-          buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, knngWorkers, graph)
+          buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
         }
 
       case StartNNDescent =>

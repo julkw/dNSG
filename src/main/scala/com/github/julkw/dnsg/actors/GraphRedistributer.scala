@@ -161,7 +161,7 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
           // TODO this is not a good test as multiple g_nodes will propagate the same worker up to root, so this only ensures that one of those has reached
           ctx.log.info("root is now assigned to all workers")
           // check if all AssignWithParents messages are done
-          nodeLocator.allActors().foreach(redistributer => redistributer ! SendResults)
+          nodeLocator.allActors.foreach(redistributer => redistributer ! SendResults)
         }
         distributeUsingTree(distributionTree, replicationStrategy, workers, nodeLocator)
 
@@ -230,7 +230,7 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
     if (workersLeft.isEmpty) {
       ctx.log.info("All workers assigned")
       if (replicationStrategy == NoReplication) {
-        nodeLocator.allActors().foreach(redistributer => redistributer ! SendResults)
+        nodeLocator.allActors.foreach(redistributer => redistributer ! SendResults)
       }
     } else if (workersLeft.size == 1) {
       ctx.log.info("Down to last worker")

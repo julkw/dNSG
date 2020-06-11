@@ -24,19 +24,16 @@ case class NodeLocatorBuilder[T:ClassTag](dataLength: Int) {
     if (nodeMap.contains(None)) {
       None
     } else {
-      Some(NodeLocator(nodeMap.map(_.get)))
+      val locationData = nodeMap.map(_.get)
+      Some(NodeLocator(locationData, locationData.toSet))
     }
   }
 }
 
-case class NodeLocator[T](locationData: Array[T]) {
-  val graphSize = locationData.length
+case class NodeLocator[T](locationData: Array[T], allActors: Set[T]) {
+  val graphSize: Int = locationData.length
 
   def findResponsibleActor (nodeIndex: Int): T = {
    locationData(nodeIndex)
-  }
-
-  def allActors(): Set[T] = {
-    locationData.toSet
   }
 }

@@ -7,9 +7,10 @@ import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{Coordinatio
 import com.github.julkw.dnsg.actors.DataHolder
 import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, LoadPartialDataFromFile}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetNSGFrom, SearchOnGraphEvent, SendResponsibleIndicesTo, UpdatedLocalData}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetNSGFrom, SearchOnGraphEvent, UpdatedLocalData}
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
+import com.github.julkw.dnsg.actors.createNSG.NSGWorker.Responsibility
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildGraphEvent, MoveGraph, ResponsibleFor}
 import com.github.julkw.dnsg.util.Data.LocalData
@@ -115,29 +116,30 @@ class NodeCoordinator(settings: Settings,
 
       // TODO this was unhandled in one runthrough
       case StartBuildingNSG(navigatingNode, nodeLocator) =>
-        startBuildingNSG(data, nodeLocator, graphHolders, navigatingNode)
+        startBuildingNSG(data, nodeLocator, navigatingNode)
     }
 
   def startBuildingNSG(data: LocalData[Float],
                        nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
-                       graphHolders: Set[ActorRef[SearchOnGraphEvent]],
                        navigatingNode: Int): Behavior[NodeCoordinationEvent] = {
     val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, data.localIndices, settings.nodesExpected, nodeLocator), name = "NSGMerger")
     var index = 0
-    graphHolders.foreach { graphHolder =>
+    nodeLocator.allActors.foreach { graphHolder =>
       val nsgWorker = ctx.spawn(NSGWorker(clusterCoordinator, data, navigatingNode, settings.k, settings.maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)
       index += 1
       // for now this is the easiest way to distribute responsibility
-      graphHolder ! SendResponsibleIndicesTo(nsgWorker)
+      // TODO when there is dataReplication this leads to problems as more than one worker will try to calculate the same neighbors
+      // get responsibilities from nodeLocator instead
+      val responsibilities = nodeLocator.locationData.zipWithIndex.filter(assignment => assignment._1 == graphHolder).map(_._2)
+      nsgWorker ! Responsibility(responsibilities)
       nsgWorker
     }
-    moveNSGToSearchOnGraph(graphHolders, nsgMerger, data)
+    moveNSGToSearchOnGraph(nodeLocator.allActors, nsgMerger)
   }
 
   // this happens here for mapping to the correct NSGMerger
   def moveNSGToSearchOnGraph(graphHolders: Set[ActorRef[SearchOnGraphEvent]],
-                             nsgMerger: ActorRef[MergeNSGEvent],
-                             data: LocalData[Float]): Behavior[NodeCoordinationEvent] =
+                             nsgMerger: ActorRef[MergeNSGEvent]): Behavior[NodeCoordinationEvent] =
     Behaviors.receiveMessagePartial{
       case StartSearchOnGraph =>
         graphHolders.foreach(graphHolder => graphHolder ! GetNSGFrom(nsgMerger))

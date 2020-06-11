@@ -21,7 +21,7 @@ object NSGWorker {
 
   final case class SortedCheckedNodes(queryIndex: Int, checkedNodes: Seq[(Int, Seq[Float])]) extends BuildNSGEvent
 
-  def apply(supervisor: ActorRef[CoordinationEvent],
+  def apply(clusterCoordinator: ActorRef[CoordinationEvent],
             data: LocalData[Float],
             navigatingNode: Int,
             k: Int,
@@ -30,11 +30,11 @@ object NSGWorker {
             nsgMerger: ActorRef[MergeNSGEvent]): Behavior[BuildNSGEvent] = Behaviors.setup { ctx =>
     //ctx.log.info("Started NSGWorker")
     Behaviors.setup(ctx =>
-      new NSGWorker(supervisor, data, navigatingNode, k, maxReverseNeighbors, nodeLocator, nsgMerger, ctx).setup())
+      new NSGWorker(clusterCoordinator, data, navigatingNode, k, maxReverseNeighbors, nodeLocator, nsgMerger, ctx).setup())
   }
 }
 
-class NSGWorker(supervisor: ActorRef[CoordinationEvent],
+class NSGWorker(clusterCoordinator: ActorRef[CoordinationEvent],
                 data: LocalData[Float],
                 navigatingNode: Int,
                 k: Int,
@@ -45,13 +45,12 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
 
   import NSGWorker._
 
-  def setup(): Behavior[BuildNSGEvent] =
-    Behaviors.receiveMessagePartial {
-      case Responsibility(responsibility) =>
-        //ctx.log.info("Received responsibilities")
-        ctx.self ! StartEdgeFindingProcessFor(0)
-        buildNSG(responsibility)
-    }
+  def setup(): Behavior[BuildNSGEvent] = {
+    ctx.self ! StartEdgeFindingProcessFor(0)
+    val responsibility = nodeLocator.locationData.zipWithIndex.filter(assignment => assignment._1 == ctx.self).map(_._2)
+    buildNSG(responsibility)
+  }
+
 
   def buildNSG(responsibility: Seq[Int]): Behavior[BuildNSGEvent] =
     Behaviors.receiveMessagePartial {
