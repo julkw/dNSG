@@ -5,6 +5,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.CoordinationEvent
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{AllConnected, ConnectionCoordinationEvent, FinishedUpdatingConnectivity, GraphConnectorDistributionInfo, UnconnectedNode}
+import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.RedistributionCoordinationEvent
 import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util.{NodeLocator, Settings, dNSGSerializable}
 
@@ -28,7 +29,7 @@ object GraphConnector {
 
   final case object GraphConnected extends ConnectGraphEvent
 
-  final case class StartGraphRedistributers(clusterCoordinator: ActorRef[CoordinationEvent]) extends ConnectGraphEvent
+  final case class StartGraphRedistributers(redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]) extends ConnectGraphEvent
 
   // ensure message deliver
   protected case class ConnectivityInfoTimerKey(receiver: ActorRef[ConnectGraphEvent])
@@ -168,8 +169,8 @@ class GraphConnector(data: LocalData[Float],
       case GraphConnected =>
         Behaviors.stopped
 
-      case StartGraphRedistributers(clusterCoordinator) =>
-        ctx.spawn(GraphRedistributer(tree, clusterCoordinator), name="GraphRedistributer")
+      case StartGraphRedistributers(redistributionCoordinator) =>
+        ctx.spawn(GraphRedistributer(tree, redistributionCoordinator), name="GraphRedistributer")
         buildTree(nodeLocator, root, tree, alreadyConnected, toSend)
     }
 

@@ -34,9 +34,9 @@ object DataHolder {
 
   final case class GetNext(alreadyReceived: Int, dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
-  final case class StartRedistributingData(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
+  final case class StartRedistributingData(primaryAssignments: NodeLocator[SearchOnGraphEvent], secondaryAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
 
-  final case class RedistributeData(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
+  final case class RedistributeData(primaryAssignments: NodeLocator[SearchOnGraphEvent], secondaryAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
 
   final case class PrepareForRedistributedData(sender: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
@@ -228,22 +228,24 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSi
         replyTo ! LocalAverage(averageValue, data.localDataSize)
         holdData(data, dataHolders)
 
-      case StartRedistributingData(nodeAssignments) =>
-        dataHolders.foreach(dataHolder => dataHolder ! RedistributeData(nodeAssignments))
+      case StartRedistributingData(primaryAssignments, secondaryAssignments) =>
+        dataHolders.foreach(dataHolder => dataHolder ! RedistributeData(primaryAssignments, secondaryAssignments))
         holdData(data, dataHolders)
 
-      case RedistributeData(nodeAssignments) =>
-        val toGet = nodeAssignments.locationData.count(assignments => assignments.exists(worker => worker.path.root == ctx.self.path.root))
-        val toSend = data.localIndices.groupBy(index => nodeAssignments.findResponsibleActor(index))
-        val toSendTo = dataHolders.map { dataHolder =>
-          val sendToDH = toSend.filter { assignments =>
-            assignments._1.exists(actor => actor.path.root == dataHolder.path.root)
-          }.values.flatten.toSeq
-          dataHolder -> sendToDH
-        }.filter(_._2.nonEmpty).toMap
-        toSendTo.keys.foreach(dataHolder => dataHolder ! PrepareForRedistributedData(ctx.self))
+      case RedistributeData(primaryAssignments, secondaryAssignments) =>
+        val toGet = primaryAssignments.locationData.count(worker => worker.path.root == ctx.self.path.root) +
+          secondaryAssignments.valuesIterator.count(assignments => assignments.exists(worker => worker.path.root == ctx.self.path.root))
+        val toSend = data.localIndices.groupBy(index => primaryAssignments.findResponsibleActor(index))
+        val sendToDHs = dataHolders.map { dataHolder =>
+          val correspondingWorkers = toSend.keys.filter(actor => actor.path.root == dataHolder.path.root)
+          val sendToDH = correspondingWorkers.flatMap { worker =>
+            toSend(worker) ++ secondaryAssignments.keys.filter ( index => data.isLocal(index) && secondaryAssignments(index).contains(worker))
+          }
+          dataHolder -> sendToDH.toSeq
+        }.toMap
+        sendToDHs.keys.foreach(dataHolder => dataHolder ! PrepareForRedistributedData(ctx.self))
         ctx.log.info("dataHolder received nodeAssignments")
-        redistributeData(data, Map.empty, toGet, toSendTo, dataHolders)
+        redistributeData(data, Map.empty, toGet, sendToDHs, dataHolders)
 
       case PrepareForRedistributedData(sender) =>
         ctx.self ! PrepareForRedistributedData(sender)
@@ -273,6 +275,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSi
                        dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial {
       case PrepareForRedistributedData(sender) =>
+        // TODO one one node (not tested on multiples yet) data redistribution stops here for some reason
         ctx.log.info("Asking for redistributed data")
         sender ! GetRedistributedData(ctx.self)
         redistributeData(oldData, newData, expectedNewData, toSend, dataHolders)

@@ -3,6 +3,7 @@ package com.github.julkw.dnsg.actors.Coordinators
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionAchieved, CoordinationEvent, KNearestNeighbors}
+import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.RedistributionCoordinationEvent
 import com.github.julkw.dnsg.actors.GraphConnector.{AddEdgeAndContinue, BuildTreeFrom, ConnectGraphEvent, ConnectorDistributionInfo, FindUnconnectedNode, GraphConnected, StartGraphRedistributers}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{AddToGraph, ConnectGraph, FindNearestNeighborsStartingFrom, SearchOnGraphEvent}
 import com.github.julkw.dnsg.util.{NodeLocator, NodeLocatorBuilder, dNSGSerializable}
@@ -21,7 +22,7 @@ object GraphConnectorCoordinator {
 
   final case object AllConnected extends ConnectionCoordinationEvent
 
-  final case object StartGraphRedistribution extends ConnectionCoordinationEvent
+  final case class StartGraphRedistribution(redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]) extends ConnectionCoordinationEvent
 
   final case object DoneWithConnecting extends ConnectionCoordinationEvent
 
@@ -108,8 +109,8 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
         }
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, true)
 
-      case StartGraphRedistribution =>
-        graphConnectors.foreach(graphConnector => graphConnector ! StartGraphRedistributers(clusterCoordinator))
+      case StartGraphRedistribution(redistributionCoordinator) =>
+        graphConnectors.foreach(graphConnector => graphConnector ! StartGraphRedistributers(redistributionCoordinator))
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, allConnected)
 
       case DoneWithConnecting =>

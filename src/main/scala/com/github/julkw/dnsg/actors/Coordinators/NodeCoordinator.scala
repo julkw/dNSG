@@ -127,9 +127,7 @@ class NodeCoordinator(settings: Settings,
     nodeLocator.allActors.foreach { graphHolder =>
       val nsgWorker = ctx.spawn(NSGWorker(clusterCoordinator, data, navigatingNode, settings.k, settings.maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)
       index += 1
-      // for now this is the easiest way to distribute responsibility
-      // TODO when there is dataReplication this leads to problems as more than one worker will try to calculate the same neighbors
-      // get responsibilities from nodeLocator instead
+      // 1 to 1 mapping from seachOnGraphActors to NSGWorkers
       val responsibilities = nodeLocator.locationData.zipWithIndex.filter(assignment => assignment._1 == graphHolder).map(_._2)
       nsgWorker ! Responsibility(responsibilities)
       nsgWorker

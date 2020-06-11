@@ -2,10 +2,9 @@ package com.github.julkw.dnsg.actors.Coordinators
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{ConnectionCoordinationEvent, DoneWithConnecting, StartGraphRedistribution}
+import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.AllSharedReplication
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
-import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries, StartRedistributingData}
-import com.github.julkw.dnsg.actors.GraphRedistributer.{AllSharedReplication, DistributeData, NoReplication, RedistributionEvent}
+import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, RedistributeGraph, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
@@ -31,12 +30,7 @@ object ClusterCoordinator {
 
   final case object CorrectFinishedNNDescent extends CoordinationEvent
 
-  // redistributing the graph
-  final case class RedistributerDistributionInfo(responsibility: Seq[Int], sender: ActorRef[RedistributionEvent]) extends CoordinationEvent
-
-  final case class RedistributionNodeAssignments(nodeAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]]) extends CoordinationEvent
-
-  final case object DoneWithRedistribution extends CoordinationEvent
+  final case class RedistributionFinished(nodeLocator: NodeLocator[SearchOnGraphEvent]) extends CoordinationEvent
 
   // connecting the graph
   final case object ConnectionAchieved extends CoordinationEvent
@@ -175,83 +169,20 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         // Right now the only query being asked for is the NavigationNode, so that has been found
         val navigatingNode = neighbors.head
         ctx.log.info("The navigating node has the index: {}", navigatingNode)
-        ctx.log.info("Now connecting graph for redistribution")
-        val connectorCoordinator =  ctx.spawn(GraphConnectorCoordinator(neighbors.head, nodeLocator, ctx.self), name="GraphConnectorCoordinator")
-        connectGraphForRedistribution(neighbors.head, connectorCoordinator, nodeLocator, nodeCoordinators, dataHolder)
         // TODO make dataRedistribution optional
-        // nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
-        // waitOnNSG(Set.empty, navigatingNode, nodeLocator, graphHolders, nodeCoordinators, dataHolder)
+        ctx.log.info("Now connecting graph for redistribution")
+        // TODo get replication model from settings
+        ctx.spawn(GraphRedistributionCoordinator(neighbors.head, AllSharedReplication, nodeLocator, dataHolder, ctx.self), name="GraphRedistributionCoordinator")
+        waitOnRedistribution(neighbors.head, nodeCoordinators, dataHolder)
     }
 
-  def connectGraphForRedistribution(navigatingNodeIndex: Int,
-                                    connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
-                                    nodeLocator: NodeLocator[SearchOnGraphEvent],
-                                    nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
-                                    dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
+  def waitOnRedistribution(navigatingNode: Int,
+                           nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
+                           dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
-      case ConnectionAchieved =>
-        ctx.log.info("All Search on Graph actors updated to connected graph, can start redistribution now")
-        connectorCoordinator ! StartGraphRedistribution
-        waitOnRedistributionDistributionInfo(navigatingNodeIndex, connectorCoordinator, NodeLocatorBuilder(nodeLocator.graphSize), nodeLocator, nodeCoordinators, dataHolder)
-    }
-
-  def waitOnRedistributionDistributionInfo(navigatingNodeIndex: Int,
-                                           connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
-                                           redistributionLocations: NodeLocatorBuilder[ActorRef[RedistributionEvent]],
-                                           sogNodeLocator: NodeLocator[SearchOnGraphEvent],
-                                           nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
-                                           dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
-    Behaviors.receiveMessagePartial {
-      case RedistributerDistributionInfo(responsibilities, redistributer) =>
-        redistributionLocations.addLocation(responsibilities, redistributer) match {
-          case Some(redistributionLocator) =>
-            // TODO take replicationMode from settings
-            ctx.log.info("All redistributers started")
-            redistributionLocator.allActors.foreach(graphRedistributer => graphRedistributer ! DistributeData(sogNodeLocator.allActors, AllSharedReplication, redistributionLocator))
-            waitOnRedistributionAssignments(navigatingNodeIndex, connectorCoordinator, NodeLocatorBuilder(sogNodeLocator.graphSize), sogNodeLocator, nodeCoordinators, dataHolder)
-          case None =>
-            waitOnRedistributionDistributionInfo(navigatingNodeIndex, connectorCoordinator, redistributionLocations, sogNodeLocator, nodeCoordinators, dataHolder)
-        }
-    }
-
-  def waitOnRedistributionAssignments(navigatingNodeIndex: Int,
-                                      connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
-                                      redistributionAssignments: NodeLocatorBuilder[Set[ActorRef[SearchOnGraphEvent]]],
-                                      sogNodeLocator: NodeLocator[SearchOnGraphEvent],
-                                      nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
-                                      dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
-    Behaviors.receiveMessagePartial {
-      case RedistributionNodeAssignments(assignments) =>
-        redistributionAssignments.addFromMap(assignments) match {
-          case Some(redistributionAssignments) =>
-            ctx.log.info("Calculated redistribution, now telling actors to do it")
-            sogNodeLocator.allActors.foreach(graphHolder => graphHolder ! RedistributeGraph(redistributionAssignments))
-            dataHolder ! StartRedistributingData(redistributionAssignments)
-            // TODO have graphRedistributer return slightly different datastructure that shows assignWithChildren vs assignWithParents?
-            val simplifiedLocator = NodeLocator(redistributionAssignments.locationData.map(_.head), sogNodeLocator.allActors)
-            waitForRedistribution(navigatingNodeIndex, connectorCoordinator, 0, simplifiedLocator, nodeCoordinators, dataHolder)
-          case None =>
-            waitOnRedistributionAssignments(navigatingNodeIndex, connectorCoordinator, redistributionAssignments, sogNodeLocator, nodeCoordinators, dataHolder)
-        }
-    }
-
-  def waitForRedistribution(navigatingNode: Int,
-                            connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
-                            finishedWorkers: Int,
-                            nodeLocator: NodeLocator[SearchOnGraphEvent],
-                            nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
-                            dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
-    Behaviors.receiveMessagePartial {
-      case DoneWithRedistribution =>
-        ctx.log.info("{} graphHolders done with redistribution", finishedWorkers + 1)
-        if (finishedWorkers + 1 == nodeLocator.allActors.size) {
-          ctx.log.info("Done with data redistribution, starting with NSG")
-          connectorCoordinator ! DoneWithConnecting
-          nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
-          waitOnNSG(Set.empty, navigatingNode, nodeLocator, nodeCoordinators, dataHolder)
-        } else {
-          waitForRedistribution(navigatingNode, connectorCoordinator, finishedWorkers + 1, nodeLocator, nodeCoordinators, dataHolder)
-        }
+      case RedistributionFinished(nodeLocator) =>
+        nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
+        waitOnNSG(Set.empty, navigatingNode, nodeLocator, nodeCoordinators, dataHolder)
     }
 
   def waitOnNSG(finishedNsgMergers: Set[ActorRef[MergeNSGEvent]],
