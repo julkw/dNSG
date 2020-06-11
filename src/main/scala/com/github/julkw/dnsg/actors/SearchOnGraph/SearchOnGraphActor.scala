@@ -23,7 +23,7 @@ object SearchOnGraphActor {
 
   final case class GraphReceived(graphHolder: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
-  final case class GraphDistribution(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]) extends SearchOnGraphEvent
+  final case class GraphDistribution(nodeLocator: NodeLocator[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
   // redistribution
   final case class RedistributeGraph(nodeAssignments: NodeLocator[Set[ActorRef[SearchOnGraphEvent]]]) extends SearchOnGraphEvent
@@ -98,7 +98,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
   def searchOnGraph(graph: Map[Int, Seq[Int]],
                     data: CacheData[Float],
-                    nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                    nodeLocator: NodeLocator[SearchOnGraphEvent],
                     neighborQueries: Map[Int, QueryInfo],
                     respondTo: Map[Int, ActorRef[CoordinationEvent]],
                     lastIdUsed: Int): Behavior[SearchOnGraphEvent] =
@@ -223,7 +223,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
   def redistributeGraph(toSend: Map[ActorRef[SearchOnGraphEvent], Seq[Int]],
                         oldGraph: Map[Int, Seq[Int]],
-                        nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                        nodeLocator: NodeLocator[SearchOnGraphEvent],
                         newGraph: Map[Int, Seq[Int]],
                         nodesExpected: Int,
                         data: CacheData[Float],
@@ -252,7 +252,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
   def checkIfRedistributionDone(toSend: Map[ActorRef[SearchOnGraphEvent], Seq[Int]],
                                 oldGraph: Map[Int, Seq[Int]],
-                                nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                                nodeLocator: NodeLocator[SearchOnGraphEvent],
                                 newGraph: Map[Int, Seq[Int]],
                                 nodesExpected: Int,
                                 data: CacheData[Float],
@@ -269,7 +269,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
   def searchOnGraphForNSG(graph: Map[Int, Seq[Int]],
                           data: CacheData[Float],
-                          nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                          nodeLocator: NodeLocator[SearchOnGraphEvent],
                           pathQueries: Map[Int, QueryInfo],
                           respondTo: Map[Int, ActorRef[BuildNSGEvent]],
                           responseLocations: QueryResponseLocations[Float]): Behavior[SearchOnGraphEvent] =
@@ -353,7 +353,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         waitForNSG(nodeLocator, data)
     }
 
-  def waitForNSG(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
+  def waitForNSG(nodeLocator: NodeLocator[SearchOnGraphEvent], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case PartialNSG(graph) =>
         ctx.log.info("Received nsg, ready for queries")

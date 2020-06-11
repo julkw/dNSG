@@ -26,7 +26,7 @@ object NodeCoordinator {
 
   final case object StartSearchOnGraph extends NodeCoordinationEvent
 
-  final case class StartBuildingNSG(navigatingNode: Int, nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]]) extends NodeCoordinationEvent
+  final case class StartBuildingNSG(navigatingNode: Int, nodeLocator: NodeLocator[SearchOnGraphEvent]) extends NodeCoordinationEvent
 
 
   final case class LocalKnngWorker(worker: ActorRef[BuildGraphEvent]) extends NodeCoordinationEvent
@@ -120,7 +120,7 @@ class NodeCoordinator(settings: Settings,
     }
 
   def startBuildingNSG(data: LocalData[Float],
-                       nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                       nodeLocator: NodeLocator[SearchOnGraphEvent],
                        navigatingNode: Int): Behavior[NodeCoordinationEvent] = {
     val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, data.localIndices, settings.nodesExpected, nodeLocator), name = "NSGMerger")
     var index = 0

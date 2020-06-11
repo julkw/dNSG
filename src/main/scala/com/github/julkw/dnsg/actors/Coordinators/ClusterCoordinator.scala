@@ -88,7 +88,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       setUp(nodeCoordinators)
   }
 
-  def distributeDataForKnng(nodeLocatorBuilder: NodeLocatorBuilder[ActorRef[BuildGraphEvent]],
+  def distributeDataForKnng(nodeLocatorBuilder: NodeLocatorBuilder[BuildGraphEvent],
                             nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                             dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
@@ -144,7 +144,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         waitForNnDescent(knngWorkers, workersDone - 1, graphSize, nodeCoordinators, dataHolder)
     }
 
-  def waitOnSearchOnGraphDistributionInfo(nodeLocatorBuilder: NodeLocatorBuilder[ActorRef[SearchOnGraphEvent]],
+  def waitOnSearchOnGraphDistributionInfo(nodeLocatorBuilder: NodeLocatorBuilder[SearchOnGraphEvent],
                                           nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                                           dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
@@ -161,7 +161,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         }
     }
 
-  def findNavigatingNode(nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+  def findNavigatingNode(nodeLocator: NodeLocator[SearchOnGraphEvent],
                          nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                          dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
@@ -185,7 +185,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
 
   def connectGraphForRedistribution(navigatingNodeIndex: Int,
                                     connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
-                                    nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                                    nodeLocator: NodeLocator[SearchOnGraphEvent],
                                     nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                                     dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
@@ -198,7 +198,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
   def waitOnRedistributionDistributionInfo(navigatingNodeIndex: Int,
                                            connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
                                            redistributionLocations: NodeLocatorBuilder[ActorRef[RedistributionEvent]],
-                                           sogNodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                                           sogNodeLocator: NodeLocator[SearchOnGraphEvent],
                                            nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                                            dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
@@ -217,7 +217,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
   def waitOnRedistributionAssignments(navigatingNodeIndex: Int,
                                       connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
                                       redistributionAssignments: NodeLocatorBuilder[Set[ActorRef[SearchOnGraphEvent]]],
-                                      sogNodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                                      sogNodeLocator: NodeLocator[SearchOnGraphEvent],
                                       nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                                       dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
@@ -238,7 +238,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
   def waitForRedistribution(navigatingNode: Int,
                             connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
                             finishedWorkers: Int,
-                            nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                            nodeLocator: NodeLocator[SearchOnGraphEvent],
                             nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                             dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
@@ -256,7 +256,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
 
   def waitOnNSG(finishedNsgMergers: Set[ActorRef[MergeNSGEvent]],
                 navigatingNodeIndex: Int,
-                nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                nodeLocator: NodeLocator[SearchOnGraphEvent],
                 nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                 dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial{
@@ -273,7 +273,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
 
   def moveNSGToSog(waitingOnGraphHolders: Int,
                    navigatingNodeIndex: Int,
-                   nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                   nodeLocator: NodeLocator[SearchOnGraphEvent],
                    nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                    dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
@@ -288,7 +288,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
     }
 
     def waitForConnectedGraphs(navigatingNodeIndex: Int,
-                               nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                               nodeLocator: NodeLocator[SearchOnGraphEvent],
                                nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                                dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial {
@@ -300,7 +300,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       }
 
     def testNSG(navigatingNodeIndex: Int,
-                nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                nodeLocator: NodeLocator[SearchOnGraphEvent],
                 nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                 queries: Map[Seq[Float], Seq[Int]],
                 sumOfNeighborsFound: Int): Behavior[CoordinationEvent] =

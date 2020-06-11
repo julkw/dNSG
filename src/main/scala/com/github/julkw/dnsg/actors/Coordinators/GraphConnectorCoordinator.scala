@@ -28,7 +28,7 @@ object GraphConnectorCoordinator {
   final case class WrappedCoordinationEvent(event: CoordinationEvent) extends ConnectionCoordinationEvent
 
   def apply(navigatingNodeIndex: Int,
-            graphNodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+            graphNodeLocator: NodeLocator[SearchOnGraphEvent],
             clusterCoordinator: ActorRef[CoordinationEvent]): Behavior[ConnectionCoordinationEvent] =
     Behaviors.setup { ctx =>
       val coordinationEventAdapter: ActorRef[CoordinationEvent] =
@@ -40,19 +40,19 @@ object GraphConnectorCoordinator {
 }
 
 class GraphConnectorCoordinator(navigatingNodeIndex: Int,
-                                graphNodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                                graphNodeLocator: NodeLocator[SearchOnGraphEvent],
                                 clusterCoordinator: ActorRef[CoordinationEvent],
                                 coordinationEventAdapter: ActorRef[CoordinationEvent],
                                 ctx: ActorContext[GraphConnectorCoordinator.ConnectionCoordinationEvent]) {
   import GraphConnectorCoordinator._
 
   def setup(): Behavior[ConnectionCoordinationEvent] = {
-    graphNodeLocator.allActors().foreach( graphHolder => graphHolder ! ConnectGraph(ctx.self))
+    graphNodeLocator.allActors.foreach( graphHolder => graphHolder ! ConnectGraph(ctx.self))
     // TODO tell all graphHolders to start connecting the graph
     waitForGraphConnectors(Set.empty, NodeLocatorBuilder(graphNodeLocator.graphSize))
   }
   def waitForGraphConnectors(graphConnectors: Set[ActorRef[ConnectGraphEvent]],
-                             graphConnectorLocator: NodeLocatorBuilder[ActorRef[ConnectGraphEvent]]): Behavior[ConnectionCoordinationEvent] =
+                             graphConnectorLocator: NodeLocatorBuilder[ConnectGraphEvent]): Behavior[ConnectionCoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case GraphConnectorDistributionInfo(responsibility, graphConnector) =>
         val updatedConnectors = graphConnectors + graphConnector
@@ -67,7 +67,7 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
         }
     }
 
-  def connectGraph(connectorLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
+  def connectGraph(connectorLocator: NodeLocator[ConnectGraphEvent],
                    graphConnectors: Set[ActorRef[ConnectGraphEvent]],
                    waitOnNodeAck: Int,
                    latestUnconnectedNodeIndex: Int,

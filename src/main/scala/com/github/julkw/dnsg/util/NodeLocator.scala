@@ -1,19 +1,18 @@
 package com.github.julkw.dnsg.util
 
-import scala.reflect.ClassTag
-import scala.reflect.runtime.universe._
+import akka.actor.typed.ActorRef
 
-case class NodeLocatorBuilder[T:ClassTag](dataLength: Int) {
-  protected val nodeMap: Array[Option[T]] = Array.fill(dataLength){None}
+case class NodeLocatorBuilder[T](dataLength: Int) {
+  protected val nodeMap: Array[Option[ActorRef[T]]] = Array.fill(dataLength){None}
 
-  def addLocation(indices: Seq[Int], location: T): Option[NodeLocator[T]] = {
+  def addLocation(indices: Seq[Int], location: ActorRef[T]): Option[NodeLocator[T]] = {
     indices.foreach { index =>
       nodeMap(index) = Some(location)
     }
     checkIfFull()
   }
 
-  def addFromMap(locations: Map[Int, T])(implicit tag: TypeTag[T]): Option[NodeLocator[T]] = {
+  def addFromMap(locations: Map[Int, ActorRef[T]]): Option[NodeLocator[T]] = {
     locations.foreach { case (nodeIndex, location) =>
       nodeMap(nodeIndex) = Some(location)
     }
@@ -30,10 +29,10 @@ case class NodeLocatorBuilder[T:ClassTag](dataLength: Int) {
   }
 }
 
-case class NodeLocator[T](locationData: Array[T], allActors: Set[T]) {
+case class NodeLocator[T](locationData: Array[ActorRef[T]], allActors: Set[ActorRef[T]]) {
   val graphSize: Int = locationData.length
 
-  def findResponsibleActor (nodeIndex: Int): T = {
+  def findResponsibleActor (nodeIndex: Int): ActorRef[T] = {
    locationData(nodeIndex)
   }
 }

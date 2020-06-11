@@ -8,12 +8,12 @@ import com.github.julkw.dnsg.util.{Distance, NodeLocator}
 
 abstract class Joiner(sampleRate: Double, data: CacheData[Float]) extends Distance {
 
-  def joinLocals(n1Index: Int, n1Data: Seq[Float], n2Index: Int, n2Data: Seq[Float], nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]]): Unit = {
+  def joinLocals(n1Index: Int, n1Data: Seq[Float], n2Index: Int, n2Data: Seq[Float], nodeLocator: NodeLocator[BuildGraphEvent]): Unit = {
     val dist = euclideanDist(n1Data, n2Data)
     nodeLocator.findResponsibleActor(n1Index) ! PotentialNeighbor(n1Index, (n2Index, dist))
   }
 
-  def joinNode(node: Int, neighbors: Seq[Int], nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]]): Unit = {
+  def joinNode(node: Int, neighbors: Seq[Int], nodeLocator: NodeLocator[BuildGraphEvent]): Unit = {
     if (data.isLocal(node)) {
       val newData = data.get(node)
       val (localNeighbors, remoteNeighbors) = neighbors.partition(neighbor => data.isLocal(neighbor))
@@ -31,7 +31,7 @@ abstract class Joiner(sampleRate: Double, data: CacheData[Float]) extends Distan
     }
   }
 
-  def joinNeighbors(neighbors: Seq[(Int, Double)], nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]]): Unit = {
+  def joinNeighbors(neighbors: Seq[(Int, Double)], nodeLocator: NodeLocator[BuildGraphEvent]): Unit = {
     val sampledNeighbors = neighbors.filter(_ => scala.util.Random.nextFloat() < sampleRate).map(_._1)
     for (n1 <- 0 until sampledNeighbors.length) {
       val neighbor1 = sampledNeighbors(n1)
@@ -39,7 +39,7 @@ abstract class Joiner(sampleRate: Double, data: CacheData[Float]) extends Distan
     }
   }
 
-  def joinNewNeighbor(neighbors: Seq[(Int, Double)], oldReverseNeighbors: Set[Int], newNeighbor: Int, nodeLocator: NodeLocator[ActorRef[BuildGraphEvent]]): Unit = {
+  def joinNewNeighbor(neighbors: Seq[(Int, Double)], oldReverseNeighbors: Set[Int], newNeighbor: Int, nodeLocator: NodeLocator[BuildGraphEvent]): Unit = {
     // use set to prevent duplication of nodes that are both neighbors and reverse neighbors
     val allNeighbors = (neighbors.map(_._1).toSet ++ oldReverseNeighbors).filter(_ => scala.util.Random.nextFloat() < sampleRate)
     joinNode(newNeighbor, allNeighbors.toSeq, nodeLocator)

@@ -14,7 +14,7 @@ object GraphRedistributer {
 
   sealed trait RedistributionEvent extends dNSGSerializable
 
-  final case class DistributeData(workers: Set[ActorRef[SearchOnGraphEvent]], dataReplication: DataReplicationModel, nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]) extends RedistributionEvent
+  final case class DistributeData(workers: Set[ActorRef[SearchOnGraphEvent]], dataReplication: DataReplicationModel, nodeLocator: NodeLocator[RedistributionEvent]) extends RedistributionEvent
 
   // calculating subtree-sizes
   final case class ChildSubtreeSize(g_node: Int, childIndex: Int, childSubtreeSize: Int) extends RedistributionEvent
@@ -86,7 +86,7 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
   def calculateNodeSizes(distributionTree: Map[Int, DistributionTreeInfo],
                          workers: Set[ActorRef[SearchOnGraphEvent]],
                          replicationStrategy: DataReplicationModel,
-                         nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): Behavior[RedistributionEvent] =
+                         nodeLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionEvent] =
     Behaviors.receiveMessagePartial {
       case ChildSubtreeSize(g_node, childIndex, childSubtreeSize) =>
         val currentNode = distributionTree(g_node)
@@ -120,7 +120,7 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
   def distributeUsingTree(distributionTree: Map[Int, DistributionTreeInfo],
                           replicationStrategy: DataReplicationModel,
                           workers: Set[ActorRef[SearchOnGraphEvent]],
-                          nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): Behavior[RedistributionEvent] =
+                          nodeLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionEvent] =
     Behaviors.receiveMessagePartial {
       case FindNodesInRange(g_node, minNodes, maxNodes, removeFromDescendants, waitingList, workersLeft, nodesLeft) =>
         val alreadyCollected = waitingList.map(_.subTreeSize).sum
@@ -200,7 +200,7 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
   def startDistribution(distributionTree: Map[Int, DistributionTreeInfo],
                         workers: Set[ActorRef[SearchOnGraphEvent]],
                         replicationStrategy: DataReplicationModel,
-                        nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): Behavior[RedistributionEvent] = {
+                        nodeLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionEvent] = {
     ctx.log.info("Done with tree, now assigning g_nodes to workers")
     distributionTree.valuesIterator.foreach(nodeInfo => nodeInfo.stillToDistribute = nodeInfo.subTreeSize)
     distributeUsingTree(distributionTree, replicationStrategy, workers, nodeLocator)
@@ -209,7 +209,7 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
   def assignNodesToWorker(waitingList: Seq[WaitingListEntry],
                           worker: ActorRef[SearchOnGraphEvent],
                           replicationStrategy: DataReplicationModel,
-                          nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): Unit = {
+                          nodeLocator: NodeLocator[RedistributionEvent]): Unit = {
     val inList = waitingList.map(_.g_node)
     ctx.log.info("WL: {}", inList)
     waitingList.foreach { entry =>
@@ -226,7 +226,7 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
                                      nodesToDistribute: Int,
                                      workersLeft: Set[ActorRef[SearchOnGraphEvent]],
                                      replicationStrategy: DataReplicationModel,
-                                     nodeLocator: NodeLocator[ActorRef[RedistributionEvent]]): Unit = {
+                                     nodeLocator: NodeLocator[RedistributionEvent]): Unit = {
     if (workersLeft.isEmpty) {
       ctx.log.info("All workers assigned")
       if (replicationStrategy == NoReplication) {

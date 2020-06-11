@@ -13,7 +13,7 @@ import scala.collection.mutable
 object GraphConnector {
   sealed trait ConnectGraphEvent extends dNSGSerializable
 
-  final case class ConnectorDistributionInfo(nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]]) extends ConnectGraphEvent
+  final case class ConnectorDistributionInfo(nodeLocator: NodeLocator[ConnectGraphEvent]) extends ConnectGraphEvent
 
   final case class BuildTreeFrom(root: Int) extends ConnectGraphEvent
 
@@ -89,9 +89,13 @@ class GraphConnector(data: LocalData[Float],
     case BuildTreeFrom(root) =>
       ctx.self ! BuildTreeFrom(root)
       waitForDistInfo()
+
+    case _ =>
+      ctx.log.info("A message to the graphConnector was unhandeled while it was still waiting for the nodeLocator.")
+      waitForDistInfo()
   }
 
-  def buildTree(nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
+  def buildTree(nodeLocator: NodeLocator[ConnectGraphEvent],
                 root: Int,
                 tree: Map[Int, CTreeNode],
                 alreadyConnected: Array[Boolean],
@@ -173,7 +177,7 @@ class GraphConnector(data: LocalData[Float],
                   tree: Map[Int, CTreeNode],
                   alreadyConnected: Array[Boolean],
                   root: Int,
-                  nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
+                  nodeLocator: NodeLocator[ConnectGraphEvent],
                   toSend: Map[ActorRef[ConnectGraphEvent], SendInformation]): Seq[(Int, CTreeNode)] = {
     val (knownNodes, unknownNodes) = connectedNodes.partition(treeEdge => tree.contains(treeEdge.child))
     knownNodes.foreach { treeEdge =>
@@ -189,7 +193,7 @@ class GraphConnector(data: LocalData[Float],
   def notMyChildren(connectedNodes: Seq[TreeEdge],
                     tree: Map[Int, CTreeNode],
                     root: Int,
-                    nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
+                    nodeLocator: NodeLocator[ConnectGraphEvent],
                     toSend: Map[ActorRef[ConnectGraphEvent], SendInformation]): Unit = {
     connectedNodes.foreach { treeEdge =>
       val node = tree(treeEdge.parent)
@@ -201,7 +205,7 @@ class GraphConnector(data: LocalData[Float],
   def doneChildren(connectedNodes: Seq[TreeEdge],
                    tree: Map[Int, CTreeNode],
                    root: Int,
-                   nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
+                   nodeLocator: NodeLocator[ConnectGraphEvent],
                    toSend: Map[ActorRef[ConnectGraphEvent], SendInformation]): Unit = {
     connectedNodes.foreach { treeEdge =>
       val node = tree(treeEdge.parent)
@@ -214,7 +218,7 @@ class GraphConnector(data: LocalData[Float],
   def checkIfDone(node: CTreeNode,
                   nodeIndex: Int,
                   root: Int,
-                  nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
+                  nodeLocator: NodeLocator[ConnectGraphEvent],
                   toSend: Map[ActorRef[ConnectGraphEvent], SendInformation]): Unit = {
     //ctx.log.info("{} still waiting on {}", nodeIndex, node.awaitingAnswer)
     if (node.awaitingAnswer.isEmpty) {
@@ -229,7 +233,7 @@ class GraphConnector(data: LocalData[Float],
   def addEdge(treeEdge: TreeEdge,
               parentNode: CTreeNode,
               alreadyConnected: Array[Boolean],
-              nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
+              nodeLocator: NodeLocator[ConnectGraphEvent],
               toSend: Map[ActorRef[ConnectGraphEvent], SendInformation]): Unit = {
     val newChild = treeEdge.child
     toSend(nodeLocator.findResponsibleActor(newChild)).connectivityInformation.addChildren :+= treeEdge
@@ -258,7 +262,7 @@ class GraphConnector(data: LocalData[Float],
                                   root: Int,
                                   alreadyConnected: Array[Boolean],
                                   sendResultTo: ActorRef[ConnectionCoordinationEvent],
-                                  nodeLocator: NodeLocator[ActorRef[ConnectGraphEvent]],
+                                  nodeLocator: NodeLocator[ConnectGraphEvent],
                                   toSend: Map[ActorRef[ConnectGraphEvent], SendInformation]): CTreeNode = {
     // tell all neighbors they are connected
     val nodeInfo = CTreeNode(newEdge.parent, mutable.Set.empty, mutable.Set.empty)

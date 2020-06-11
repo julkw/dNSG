@@ -26,7 +26,7 @@ object NSGWorker {
             navigatingNode: Int,
             k: Int,
             maxReverseNeighbors: Int,
-            nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+            nodeLocator: NodeLocator[SearchOnGraphEvent],
             nsgMerger: ActorRef[MergeNSGEvent]): Behavior[BuildNSGEvent] = Behaviors.setup { ctx =>
     //ctx.log.info("Started NSGWorker")
     Behaviors.setup(ctx =>
@@ -39,18 +39,19 @@ class NSGWorker(clusterCoordinator: ActorRef[CoordinationEvent],
                 navigatingNode: Int,
                 k: Int,
                 maxReverseNeighbors: Int,
-                nodeLocator: NodeLocator[ActorRef[SearchOnGraphEvent]],
+                nodeLocator: NodeLocator[SearchOnGraphEvent],
                 nsgMerger: ActorRef[MergeNSGEvent],
                 ctx: ActorContext[NSGWorker.BuildNSGEvent]) extends Distance {
 
   import NSGWorker._
 
-  def setup(): Behavior[BuildNSGEvent] = {
-    ctx.self ! StartEdgeFindingProcessFor(0)
-    val responsibility = nodeLocator.locationData.zipWithIndex.filter(assignment => assignment._1 == ctx.self).map(_._2)
-    buildNSG(responsibility)
+  def setup(): Behavior[BuildNSGEvent] = Behaviors.receiveMessagePartial {
+    case Responsibility(responsibility) =>
+      if (responsibility.nonEmpty) {
+        ctx.self ! StartEdgeFindingProcessFor(0)
+      }
+      buildNSG(responsibility)
   }
-
 
   def buildNSG(responsibility: Seq[Int]): Behavior[BuildNSGEvent] =
     Behaviors.receiveMessagePartial {
