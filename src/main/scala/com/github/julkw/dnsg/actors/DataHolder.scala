@@ -233,8 +233,10 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSi
         holdData(data, dataHolders)
 
       case RedistributeData(primaryAssignments, secondaryAssignments) =>
-        val toGet = primaryAssignments.locationData.count(worker => worker.path.root == ctx.self.path.root) +
-          secondaryAssignments.valuesIterator.count(assignments => assignments.exists(worker => worker.path.root == ctx.self.path.root))
+        val expectedDataSize = (0 until primaryAssignments.graphSize).count { nodeIndex =>
+          primaryAssignments.findResponsibleActor(nodeIndex).path.root == ctx.self.path.root ||
+            secondaryAssignments.getOrElse(nodeIndex, Set.empty).exists(worker => worker.path.root == ctx.self.path.root)
+        }
         val toSend = data.localIndices.groupBy(index => primaryAssignments.findResponsibleActor(index))
         val sendToDHs = dataHolders.map { dataHolder =>
           val correspondingWorkers = toSend.keys.filter(actor => actor.path.root == dataHolder.path.root)
@@ -245,7 +247,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSi
         }.toMap
         sendToDHs.keys.foreach(dataHolder => dataHolder ! PrepareForRedistributedData(ctx.self))
         ctx.log.info("dataHolder received nodeAssignments")
-        redistributeData(data, Map.empty, toGet, sendToDHs, dataHolders)
+        redistributeData(data, Map.empty, expectedDataSize, sendToDHs, dataHolders)
 
       case PrepareForRedistributedData(sender) =>
         ctx.self ! PrepareForRedistributedData(sender)
@@ -275,24 +277,29 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSi
                        dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial {
       case PrepareForRedistributedData(sender) =>
-        // TODO one one node (not tested on multiples yet) data redistribution stops here for some reason
         ctx.log.info("Asking for redistributed data")
         sender ! GetRedistributedData(ctx.self)
         redistributeData(oldData, newData, expectedNewData, toSend, dataHolders)
 
       case GetRedistributedData(sender) =>
-        val indicesToSend = toSend(sender)
-        if (indicesToSend.nonEmpty) {
-          val dataToSend = indicesToSend.slice(0, dataMessageSize).map(index => index -> oldData.get(index)).toMap
-          sender ! PartialRedistributedData(dataToSend, ctx.self)
-          redistributeData(oldData, newData, expectedNewData, toSend + (sender -> indicesToSend.slice(dataMessageSize, indicesToSend.length)), dataHolders)
-        } else if (toSend.size == 1 && newData.size == expectedNewData) {
-          ctx.log.info("Received and send all the data")
-          val localData = LocalUnorderedData(newData)
-          nodeCoordinator ! DataRef(localData)
-          holdData(localData, dataHolders)
+        if (toSend.contains(sender)) {
+          val indicesToSend = toSend(sender)
+          if (indicesToSend.nonEmpty) {
+            val dataToSend = indicesToSend.slice(0, dataMessageSize).map(index => index -> oldData.get(index)).toMap
+            sender ! PartialRedistributedData(dataToSend, ctx.self)
+            redistributeData(oldData, newData, expectedNewData, toSend + (sender -> indicesToSend.slice(dataMessageSize, indicesToSend.length)), dataHolders)
+          } else if (toSend.size == 1 && newData.size == expectedNewData) {
+            ctx.log.info("Received and send all the data")
+            val localData = LocalUnorderedData(newData)
+            nodeCoordinator ! DataRef(localData)
+            holdData(localData, dataHolders)
+          } else {
+            redistributeData(oldData, newData, expectedNewData, toSend - sender, dataHolders)
+          }
         } else {
-          redistributeData(oldData, newData, expectedNewData, toSend - sender, dataHolders)
+          ctx.log.info("Got asked to send data by a dataHolder that I have no assigned data for")
+          sender ! PartialRedistributedData(Map.empty, ctx.self)
+          redistributeData(oldData, newData, expectedNewData, toSend, dataHolders)
         }
 
       case PartialRedistributedData(data, sender) =>

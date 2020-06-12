@@ -2,7 +2,7 @@ package com.github.julkw.dnsg.actors.Coordinators
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.AllSharedReplication
+import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{AllSharedReplication, NoReplication}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
 import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, RedistributeGraph, SearchOnGraphEvent}
@@ -171,7 +171,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         ctx.log.info("The navigating node has the index: {}", navigatingNode)
         // TODO make dataRedistribution optional
         ctx.log.info("Now connecting graph for redistribution")
-        // TODo get replication model from settings
+        // TODO get replication model from settings
         ctx.spawn(GraphRedistributionCoordinator(neighbors.head, AllSharedReplication, nodeLocator, dataHolder, ctx.self), name="GraphRedistributionCoordinator")
         waitOnRedistribution(neighbors.head, nodeCoordinators, dataHolder)
     }

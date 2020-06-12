@@ -49,13 +49,15 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
 
   def setup(): Behavior[ConnectionCoordinationEvent] = {
     graphNodeLocator.allActors.foreach( graphHolder => graphHolder ! ConnectGraph(ctx.self))
-    // TODO tell all graphHolders to start connecting the graph
     waitForGraphConnectors(Set.empty, NodeLocatorBuilder(graphNodeLocator.graphSize))
   }
+
   def waitForGraphConnectors(graphConnectors: Set[ActorRef[ConnectGraphEvent]],
                              graphConnectorLocator: NodeLocatorBuilder[ConnectGraphEvent]): Behavior[ConnectionCoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case GraphConnectorDistributionInfo(responsibility, graphConnector) =>
+        ctx.log.info("Got DistributionInfo from a graphConnector for {} nodes", responsibility)
+        // TODO for some reason this doesn't add up to a full nodeLocator after building of the NSG
         val updatedConnectors = graphConnectors + graphConnector
         val gcLocator = graphConnectorLocator.addLocation(responsibility, graphConnector)
         gcLocator match {
@@ -82,6 +84,7 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, allConnected)
 
       case UnconnectedNode(nodeIndex, nodeData) =>
+        ctx.log.info("Unconnected node found: {}", nodeIndex)
         graphNodeLocator.findResponsibleActor(nodeIndex) !
           FindNearestNeighborsStartingFrom(nodeData, navigatingNodeIndex, 1, coordinationEventAdapter)
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, nodeIndex, allConnected)
@@ -91,6 +94,7 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
           case KNearestNeighbors(query, neighbors) =>
             // the only query being asked for is to connect unconnected nodes
             assert(latestUnconnectedNodeIndex >= 0)
+            assert(neighbors.head != latestUnconnectedNodeIndex)
             graphNodeLocator.findResponsibleActor(neighbors.head) ! AddToGraph(neighbors.head, latestUnconnectedNodeIndex, ctx.self)
             connectorLocator.findResponsibleActor(neighbors.head) ! AddEdgeAndContinue(neighbors.head, latestUnconnectedNodeIndex)
             connectGraph(connectorLocator, graphConnectors, waitOnNodeAck + 1, -1, allConnected)
@@ -114,6 +118,7 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, allConnected)
 
       case DoneWithConnecting =>
+        ctx.log.info("Tell all connectors to shut themselves down")
         graphConnectors.foreach(graphConnector => graphConnector ! GraphConnected)
         Behaviors.stopped
     }

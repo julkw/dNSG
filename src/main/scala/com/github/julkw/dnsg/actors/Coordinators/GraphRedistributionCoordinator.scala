@@ -167,7 +167,7 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
       case SecondaryNodeAssignments(nodeAssignments) =>
         if (waitingOn == 1) {
           if (replicationModel == AllSharedReplication) {
-            val updatedSecondaryAssignments = (secondaryAssignments ++ nodeAssignments).transform((_, assignees) => redistributionAssignments.allActors)
+            val updatedSecondaryAssignments = (secondaryAssignments ++ nodeAssignments).transform((node, assignees) => redistributionAssignments.allActors - redistributionAssignments.findResponsibleActor(node))
             startRedistribution(connectorCoordinator, redistributionAssignments, updatedSecondaryAssignments)
           } else {
             startRedistribution(connectorCoordinator, redistributionAssignments, secondaryAssignments ++ nodeAssignments)

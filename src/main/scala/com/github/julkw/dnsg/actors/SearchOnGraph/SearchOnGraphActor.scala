@@ -202,14 +202,16 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case ConnectGraph(graphConnectorSupervisor) =>
         ctx.log.info("Told to connect the graph")
-        ctx.spawn(GraphConnector(data.data, graph, graphConnectorSupervisor), name="graphConnector")
+        val responsibility = graph.keys.filter(node => nodeLocator.findResponsibleActor(node) == ctx.self).toSeq
+        ctx.spawn(GraphConnector(data.data, graph, responsibility, graphConnectorSupervisor), name="graphConnector")
         searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
 
       case RedistributeGraph(primaryAssignments, secondaryAssignments, redistributionCoordinator) =>
+        // if a worker is the primary assignee for a graph_node it should not appear with the secondary assignees
         val nodesExpected = primaryAssignments.locationData.count(assignee => assignee == ctx.self) +
           secondaryAssignments.valuesIterator.count(assignees => assignees.contains(ctx.self))
         val toSend = graph.keys.groupBy(index => primaryAssignments.findResponsibleActor(index)).transform { (worker, nodes) =>
-          val alsoSend = graph.keys.filter(node => secondaryAssignments.getOrElse(node, Set.empty).contains(worker))
+          val alsoSend = secondaryAssignments.keys.filter(node => graph.contains(node) && secondaryAssignments(node).contains(worker))
           (nodes ++ alsoSend).toSeq
         }
         toSend.keys.foreach(graphHolder => graphHolder ! SendPartialGraph(settings.graphMessageSize, ctx.self))
@@ -243,11 +245,17 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         checkIfRedistributionDone(toSend, oldGraph, nodeLocator, updatedGraph, nodesExpected, data, dataUpdated, redistributionCoordinator)
 
       case SendPartialGraph(size, sender) =>
-        val stillToSend = toSend(sender)
-        val partialGraph = stillToSend.slice(0, size).map(node => (node, oldGraph(node)))
-        sender ! PartialGraph(partialGraph, ctx.self)
-        val updatedToSend = toSend + (sender -> stillToSend.slice(size, stillToSend.size))
-        checkIfRedistributionDone(updatedToSend, oldGraph, nodeLocator, newGraph, nodesExpected, data, dataUpdated, redistributionCoordinator)
+        if (toSend.contains(sender)) {
+          val stillToSend = toSend(sender)
+          val partialGraph = stillToSend.slice(0, size).map(node => (node, oldGraph(node)))
+          sender ! PartialGraph(partialGraph, ctx.self)
+          val updatedToSend = toSend + (sender -> stillToSend.slice(size, stillToSend.size))
+          checkIfRedistributionDone(updatedToSend, oldGraph, nodeLocator, newGraph, nodesExpected, data, dataUpdated, redistributionCoordinator)
+        } else {
+          // none of my nodes have been assigned to this specific actor
+          sender ! PartialGraph(Seq.empty, ctx.self)
+          checkIfRedistributionDone(toSend, oldGraph, nodeLocator, newGraph, nodesExpected, data, dataUpdated, redistributionCoordinator)
+        }
   }
 
   def checkIfRedistributionDone(toSend: Map[ActorRef[SearchOnGraphEvent], Seq[Int]],
@@ -349,7 +357,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         searchOnGraphForNSG(graph, data, nodeLocator, pathQueries -- removedQueries, respondTo -- removedQueries, responseLocations)
 
       case GetNSGFrom(nsgMerger) =>
-        //ctx.log.info("Asking NSG Merger for my part of the NSG")
+        ctx.log.info("Asking NSG Merger for my part of the NSG")
         nsgMerger ! GetPartialNSG(graph.keys.toSet, ctx.self)
         waitForNSG(nodeLocator, data)
     }

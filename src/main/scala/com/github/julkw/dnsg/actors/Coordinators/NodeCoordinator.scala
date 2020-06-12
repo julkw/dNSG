@@ -106,41 +106,43 @@ class NodeCoordinator(settings: Settings,
     waitForNavigatingNode(data, graphHolders)
   }
 
-  def waitForNavigatingNode(data: LocalData[Float], graphHolders: Set[ActorRef[SearchOnGraphEvent]]): Behavior[NodeCoordinationEvent] =
+  def waitForNavigatingNode(data: LocalData[Float], localGraphHolders: Set[ActorRef[SearchOnGraphEvent]]): Behavior[NodeCoordinationEvent] =
     Behaviors.receiveMessagePartial {
       // In case of data redistribution
       case DataRef(newData) =>
         ctx.log.info("Received new data, forwarding to graphHolders")
-        graphHolders.foreach(graphHolder=> graphHolder ! UpdatedLocalData(newData))
-        waitForNavigatingNode(newData, graphHolders)
+        localGraphHolders.foreach(graphHolder => graphHolder ! UpdatedLocalData(newData))
+        waitForNavigatingNode(newData, localGraphHolders)
 
-      // TODO this was unhandled in one runthrough
       case StartBuildingNSG(navigatingNode, nodeLocator) =>
-        startBuildingNSG(data, nodeLocator, navigatingNode)
+        startBuildingNSG(data, localGraphHolders, nodeLocator, navigatingNode)
     }
 
   def startBuildingNSG(data: LocalData[Float],
+                       localGraphHolders: Set[ActorRef[SearchOnGraphEvent]],
                        nodeLocator: NodeLocator[SearchOnGraphEvent],
                        navigatingNode: Int): Behavior[NodeCoordinationEvent] = {
-    val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, data.localIndices, settings.nodesExpected, nodeLocator), name = "NSGMerger")
+    val responsibilityPerGraphHolder = nodeLocator.locationData.zipWithIndex.groupBy(assignment => assignment._1).transform((graphHolder, responsibility) => responsibility.map(_._2))
+    val mergerResponsibility = localGraphHolders.flatMap(graphHolder => responsibilityPerGraphHolder(graphHolder))
+    val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, mergerResponsibility.toSeq, settings.nodesExpected, nodeLocator), name = "NSGMerger")
     var index = 0
-    nodeLocator.allActors.foreach { graphHolder =>
+    localGraphHolders.foreach { graphHolder =>
       val nsgWorker = ctx.spawn(NSGWorker(clusterCoordinator, data, navigatingNode, settings.k, settings.maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)
       index += 1
       // 1 to 1 mapping from seachOnGraphActors to NSGWorkers
-      val responsibilities = nodeLocator.locationData.zipWithIndex.filter(assignment => assignment._1 == graphHolder).map(_._2)
+      val responsibilities = responsibilityPerGraphHolder(graphHolder)
       nsgWorker ! Responsibility(responsibilities)
       nsgWorker
     }
-    moveNSGToSearchOnGraph(nodeLocator.allActors, nsgMerger)
+    moveNSGToSearchOnGraph(localGraphHolders, nsgMerger)
   }
 
   // this happens here for mapping to the correct NSGMerger
-  def moveNSGToSearchOnGraph(graphHolders: Set[ActorRef[SearchOnGraphEvent]],
+  def moveNSGToSearchOnGraph(localGraphHolders: Set[ActorRef[SearchOnGraphEvent]],
                              nsgMerger: ActorRef[MergeNSGEvent]): Behavior[NodeCoordinationEvent] =
     Behaviors.receiveMessagePartial{
       case StartSearchOnGraph =>
-        graphHolders.foreach(graphHolder => graphHolder ! GetNSGFrom(nsgMerger))
+        localGraphHolders.foreach(graphHolder => graphHolder ! GetNSGFrom(nsgMerger))
         waitForShutdown()
     }
 
