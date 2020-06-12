@@ -35,6 +35,8 @@ object ClusterCoordinator {
   // connecting the graph
   final case object ConnectionAchieved extends CoordinationEvent
 
+  final case object ConnectorsCleanedUp extends CoordinationEvent
+
   // building the NSG
 
   final case class AverageValue(average: Seq[Float]) extends CoordinationEvent

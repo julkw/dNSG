@@ -98,6 +98,15 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
     }
   }
 
+  def getNeighbors(node: Int, queryId: Int, graph: Map[Int, Seq[Int]], nodeLocator: NodeLocator[SearchOnGraphEvent]): Unit = {
+    // in case of data replication the actor should check if it has the required information itself before asking the primary assignee
+    if (graph.contains(node)) {
+      ctx.self ! GetNeighbors(node, queryId, ctx.self)
+    } else {
+      nodeLocator.findResponsibleActor(node) ! GetNeighbors(node, queryId, ctx.self)
+    }
+  }
+
   def askForLocation(remoteIndex: Int, queryId: Int, queryInfo: QueryInfo, nodeLocator: NodeLocator[SearchOnGraphEvent]): Unit = {
     if (!waitingOnLocation.alreadyIn(remoteIndex, queryId)) {
       queryInfo.waitingOn += 1
@@ -114,6 +123,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
                    queryId: Int,
                    candidateId: Int,
                    candidateLocation: Seq[Float],
+                   graph: Map[Int, Seq[Int]],
                    nodeLocator: NodeLocator[SearchOnGraphEvent]): Boolean = {
     // return if this means the query is finished
     val currentCandidates = queryInfo.candidates
@@ -131,7 +141,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
       queryInfo.candidates = updatedCandidates
       // If all other candidates have already been processed, the new now needs to be processed
       if (allProcessed) {
-        nodeLocator.findResponsibleActor(candidateId) ! GetNeighbors(candidateId, queryId, ctx.self)
+        getNeighbors(candidateId, queryId, graph, nodeLocator)
       }
     }
     // return if the query is finished

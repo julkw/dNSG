@@ -2,7 +2,7 @@ package com.github.julkw.dnsg.actors.Coordinators
 
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionAchieved, CoordinationEvent, KNearestNeighbors}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionAchieved, ConnectorsCleanedUp, CoordinationEvent, KNearestNeighbors}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.RedistributionCoordinationEvent
 import com.github.julkw.dnsg.actors.GraphConnector.{AddEdgeAndContinue, BuildTreeFrom, ConnectGraphEvent, ConnectorDistributionInfo, FindUnconnectedNode, GraphConnected, StartGraphRedistributers}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{AddToGraph, ConnectGraph, FindNearestNeighborsStartingFrom, SearchOnGraphEvent}
@@ -24,25 +24,27 @@ object GraphConnectorCoordinator {
 
   final case class StartGraphRedistribution(redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]) extends ConnectionCoordinationEvent
 
-  final case object DoneWithConnecting extends ConnectionCoordinationEvent
+  final case object CleanUpConnectors extends ConnectionCoordinationEvent
+
+  final case object ConnectorShutdown extends ConnectionCoordinationEvent
 
   final case class WrappedCoordinationEvent(event: CoordinationEvent) extends ConnectionCoordinationEvent
 
   def apply(navigatingNodeIndex: Int,
             graphNodeLocator: NodeLocator[SearchOnGraphEvent],
-            clusterCoordinator: ActorRef[CoordinationEvent]): Behavior[ConnectionCoordinationEvent] =
+            supervisor: ActorRef[CoordinationEvent]): Behavior[ConnectionCoordinationEvent] =
     Behaviors.setup { ctx =>
       val coordinationEventAdapter: ActorRef[CoordinationEvent] =
         ctx.messageAdapter { event => WrappedCoordinationEvent(event)}
 
-      new GraphConnectorCoordinator(navigatingNodeIndex, graphNodeLocator, clusterCoordinator, coordinationEventAdapter, ctx).setup()
+      new GraphConnectorCoordinator(navigatingNodeIndex, graphNodeLocator, supervisor, coordinationEventAdapter, ctx).setup()
     }
 
 }
 
 class GraphConnectorCoordinator(navigatingNodeIndex: Int,
                                 graphNodeLocator: NodeLocator[SearchOnGraphEvent],
-                                clusterCoordinator: ActorRef[CoordinationEvent],
+                                supervisor: ActorRef[CoordinationEvent],
                                 coordinationEventAdapter: ActorRef[CoordinationEvent],
                                 ctx: ActorContext[GraphConnectorCoordinator.ConnectionCoordinationEvent]) {
   import GraphConnectorCoordinator._
@@ -102,14 +104,14 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
 
       case ReceivedNewEdge =>
         if (allConnected && waitOnNodeAck == 1) {
-          clusterCoordinator ! ConnectionAchieved
+          supervisor ! ConnectionAchieved
         }
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck - 1, latestUnconnectedNodeIndex, allConnected)
 
       case AllConnected =>
         ctx.log.info("Graph now fully connected")
         if (waitOnNodeAck == 0) {
-          clusterCoordinator ! ConnectionAchieved
+          supervisor ! ConnectionAchieved
         }
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, true)
 
@@ -117,9 +119,20 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
         graphConnectors.foreach(graphConnector => graphConnector ! StartGraphRedistributers(redistributionCoordinator))
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, allConnected)
 
-      case DoneWithConnecting =>
+      case CleanUpConnectors =>
         ctx.log.info("Tell all connectors to shut themselves down")
         graphConnectors.foreach(graphConnector => graphConnector ! GraphConnected)
-        Behaviors.stopped
+        cleanup(graphConnectors.size)
+    }
+
+  def cleanup(waitOnConnectors: Int): Behavior[ConnectionCoordinationEvent] =
+    Behaviors.receiveMessagePartial {
+      case ConnectorShutdown =>
+        if (waitOnConnectors == 1) {
+          supervisor ! ConnectorsCleanedUp
+          Behaviors.stopped
+        } else {
+          cleanup(waitOnConnectors - 1)
+        }
     }
 }

@@ -118,6 +118,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         val queryId = lastIdUsed + 1
         val queryInfo = if (data.isLocal(startingPoint)) {
           val location = data.get(startingPoint)
+          getNeighbors(startingPoint, queryId, graph, nodeLocator)
           nodeLocator.findResponsibleActor(startingPoint) ! GetNeighbors(startingPoint, queryId, ctx.self)
           QueryInfo(query, k, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false)), 0)
         } else {
@@ -125,7 +126,8 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           askForLocation(startingPoint, queryId, qi, nodeLocator)
           qi
         }
-        nodeLocator.findResponsibleActor(startingPoint) ! GetNeighbors(startingPoint, queryId, ctx.self)
+        // TODO what was this doing here?
+        //nodeLocator.findResponsibleActor(startingPoint) ! GetNeighbors(startingPoint, queryId, ctx.self)
         searchOnGraph(graph, data, nodeLocator, neighborQueries + (queryId -> queryInfo), respondTo + (queryId -> asker), queryId)
 
       case GetNeighbors(index, queryId, sender) =>
@@ -141,7 +143,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           nextCandidateToProcess match {
             case Some(nextCandidate) =>
               // find the neighbors of the next candidate to be processed and update queries
-              nodeLocator.findResponsibleActor(nextCandidate.index) ! GetNeighbors(nextCandidate.index, queryId, ctx.self)
+              getNeighbors(nextCandidate.index, queryId, graph, nodeLocator)
               searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
             case None =>
               if (neighborQueries(queryId).waitingOn > 0) {
@@ -175,7 +177,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           if (neighborQueries.contains(queryId)) {
             val queryInfo = neighborQueries(queryId)
             queryInfo.waitingOn -= 1
-            val queryFinished = addCandidate(queryInfo, queryId, index, location, nodeLocator)
+            val queryFinished = addCandidate(queryInfo, queryId, index, location, graph, nodeLocator)
             if (queryFinished) {
               val finalNeighbors = queryInfo.candidates.map(_.index)
               respondTo(queryId) ! KNearestNeighbors(queryInfo.query, finalNeighbors)
@@ -291,7 +293,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         val pathQueryInfo = if (responseLocations.hasLocation(startingPoint)) {
           val location = responseLocations.location(startingPoint)
           responseLocations.addedToCandidateList(startingPoint, location)
-          nodeLocator.findResponsibleActor(startingPoint) ! GetNeighbors(startingPoint, queryId, ctx.self)
+          getNeighbors(startingPoint, queryId, graph, nodeLocator)
           QueryInfo(query, neighborsWanted, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false)), 0)
         } else {
           val queryInfo = QueryInfo(query, neighborsWanted, Seq.empty, 0)
@@ -315,7 +317,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         nextCandidateToProcess match {
           case Some(nextCandidate) =>
             // find the neighbors of the next candidate to be processed and update queries
-            nodeLocator.findResponsibleActor(nextCandidate.index) ! GetNeighbors(nextCandidate.index, queryId, ctx.self)
+            getNeighbors(nextCandidate.index, queryId, graph, nodeLocator)
             searchOnGraphForNSG(graph, data, nodeLocator, pathQueries, respondTo, responseLocations)
           case None =>
             if (pathQueries(queryId).waitingOn > 0) {
@@ -344,7 +346,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
             val queryInfo = pathQueries(queryId)
             queryInfo.waitingOn -= 1
             val oldNumberOfCandidates = queryInfo.candidates.length
-            val queryFinished = addCandidate(queryInfo, queryId, index, location, nodeLocator)
+            val queryFinished = addCandidate(queryInfo, queryId, index, location, graph, nodeLocator)
             if (queryInfo.candidates.length > oldNumberOfCandidates) { // the candidate has been added
               responseLocations.addedToCandidateList(index, location)
             }
@@ -369,7 +371,6 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         clusterCoordinator ! NSGonSOG
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, -1)
     }
-
 }
 
 

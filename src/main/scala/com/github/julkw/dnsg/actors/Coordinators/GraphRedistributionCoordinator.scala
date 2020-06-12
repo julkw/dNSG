@@ -3,8 +3,8 @@ package com.github.julkw.dnsg.actors.Coordinators
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionAchieved, CoordinationEvent, RedistributionFinished}
-import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{ConnectionCoordinationEvent, DoneWithConnecting, StartGraphRedistribution}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionAchieved, ConnectorsCleanedUp, CoordinationEvent, RedistributionFinished}
+import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{CleanUpConnectors, ConnectionCoordinationEvent, StartGraphRedistribution}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{NodeCoordinationEvent, StartBuildingNSG}
 import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, StartRedistributingData}
 import com.github.julkw.dnsg.actors.GraphRedistributer.{AssignWithParents, DistributeData, RedistributionEvent, SendSecondaryAssignments}
@@ -194,11 +194,20 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
         if (finishedWorkers + 1 == nodeLocator.allActors.size) {
           ctx.log.info("Done with data redistribution, starting with NSG")
           // shutdown the connection establishing workers
-          connectorCoordinator ! DoneWithConnecting
-          clusterCoordinator ! RedistributionFinished(nodeLocator)
-          Behaviors.stopped
+          connectorCoordinator ! CleanUpConnectors
+          cleanup(nodeLocator, false)
         } else {
           waitForRedistribution(connectorCoordinator, finishedWorkers + 1, nodeLocator)
+        }
+    }
+
+  def cleanup(newDistribution: NodeLocator[SearchOnGraphEvent], coordinatorShutdown: Boolean): Behavior[RedistributionCoordinationEvent] =
+    Behaviors.receiveMessagePartial {
+      case WrappedCoordinationEvent(event) =>
+        event match {
+          case ConnectorsCleanedUp =>
+            clusterCoordinator ! RedistributionFinished(newDistribution)
+            Behaviors.stopped
         }
     }
 }
