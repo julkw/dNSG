@@ -22,7 +22,10 @@ case class Settings(config: Config) {
 
   val cacheSize: Int = config.getInt(s"$namespace.cache-size")
 
+  // TODO replace with one message size for all message kinds that is defined over max number of ints/floats to be send in one message
   val dataMessageSize: Int = config.getInt(s"$namespace.data-message-size")
+
+  val nnDescentMessageSize: Int = config.getInt(s"$namespace.nnDescent-message-size")
 
   val graphMessageSize: Int = config.getInt(s"$namespace.graph-message-size")
 
