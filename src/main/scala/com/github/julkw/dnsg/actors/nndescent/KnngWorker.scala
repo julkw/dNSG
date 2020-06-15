@@ -229,11 +229,20 @@ class KnngWorker(data: CacheData[Float],
       case GetNNDescentInfo(sender) =>
         // TODO check if anything to send there, if not remember to send when there is
         val messagesToSend = toSend(sender).sendMessage(settings.nnDescentMessageSize)
-        sender ! NNDescentInfo(messagesToSend, ctx.self)
+        if (messagesToSend.nonEmpty) {
+          sender ! NNDescentInfo(messagesToSend, ctx.self)
+        } else {
+          toSend(sender).sendImmediately = true
+        }
         nnDescent(nodeLocator, graph, reverseNeighbors, toSend)
 
       case NNDescentInfo(info, sender) =>
-        timers.cancel(NNDescentTimerKey)
+        if (timers.isTimerActive(NNDescentTimerKey)) {
+          timers.cancel(NNDescentTimerKey)
+        } else {
+          // if the timer is inactive, it has already run out and the actor has mistakenly told its supervisor that it is done
+          clusterCoordinator ! CorrectFinishedNNDescent
+        }
         // TODO find a nicer way to do this
         var updatedGraph = graph
         var updatedReverseNeighbors = reverseNeighbors
@@ -275,6 +284,7 @@ class KnngWorker(data: CacheData[Float],
             updatedReverseNeighbors += (g_nodeIndex -> (updatedReverseNeighbors(g_nodeIndex) - neighborIndex))
         }
         sender ! GetNNDescentInfo(ctx.self)
+        sendChangesImmediately(toSend)
         timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
         nnDescent(nodeLocator, updatedGraph, updatedReverseNeighbors, toSend)
 
@@ -322,18 +332,11 @@ class KnngWorker(data: CacheData[Float],
     val isNew: Boolean = !(currentNeighbors.exists(neighbor => neighbor._1 == potentialNeighbor._1)
       || currentReverseNeighbors.contains(potentialNeighbor._1))
     if (currentMaxDist > potentialNeighbor._2 && potentialNeighbor._1 != g_node && isNew) {
-      if (timers.isTimerActive(NNDescentTimerKey)) {
-        timers.cancel(NNDescentTimerKey)
-      } else {
-        // if the timer is inactive, it has already run out and the actor has mistakenly told its supervisor that it is done
-        clusterCoordinator ! CorrectFinishedNNDescent
-      }
       joinNewNeighbor(currentNeighbors.slice(0, settings.k-1), currentReverseNeighbors, potentialNeighbor._1, toSend, nodeLocator)
       val removedNeighbor = currentNeighbors.last._1
       val responsibleActor = nodeLocator.findResponsibleActor(removedNeighbor)
       toSend(responsibleActor).addMessage(RemoveReverseNeighbor(removedNeighbor, g_node))
       val updatedNeighbors = (currentNeighbors :+ potentialNeighbor).sortBy(_._2).slice(0, settings.k)
-      timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
       graph + (g_node -> updatedNeighbors)
     } else {
       graph
@@ -344,6 +347,18 @@ class KnngWorker(data: CacheData[Float],
     val sendForLocation = waitingOnLocation.insertMultiple(remoteIndex, waitingNodes.toSet)
     if (sendForLocation) {
       toSend(nodeLocator.findResponsibleActor(remoteIndex)).addMessage(SendLocation(remoteIndex))
+    }
+  }
+
+  def sendChangesImmediately(toSend: Map[ActorRef[BuildGraphEvent], NNDInfo]): Unit = {
+    toSend.foreach { case (worker, nndInfo) =>
+      if (nndInfo.sendImmediately) {
+        val messageToSend = nndInfo.sendMessage(settings.nnDescentMessageSize)
+        if (messageToSend.nonEmpty) {
+          worker ! NNDescentInfo(messageToSend, ctx.self)
+          nndInfo.sendImmediately = false
+        }
+      }
     }
   }
 }

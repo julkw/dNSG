@@ -9,25 +9,31 @@ import com.github.julkw.dnsg.util.{Distance, NodeLocator}
 
 abstract class Joiner(sampleRate: Double, data: CacheData[Float]) extends Distance {
 
-  def joinLocals(n1Index: Int, n1Data: Seq[Float], n2Index: Int, n2Data: Seq[Float], toSend: Map[ActorRef[BuildGraphEvent], NNDInfo], nodeLocator: NodeLocator[BuildGraphEvent]): Unit = {
+  def joinLocals(n1Index: Int,
+                 n1Data: Seq[Float],
+                 n2Index: Int,
+                 n2Data: Seq[Float],
+                 toSend: Map[ActorRef[BuildGraphEvent], NNDInfo],
+                 nodeLocator: NodeLocator[BuildGraphEvent]): Unit = {
     val dist = euclideanDist(n1Data, n2Data)
     toSend(nodeLocator.findResponsibleActor(n1Index)).addMessage(PotentialNeighbor(n1Index, (n2Index, dist)))
+    toSend(nodeLocator.findResponsibleActor(n2Index)).addMessage(PotentialNeighbor(n2Index, (n1Index, dist)))
   }
 
-  def joinNode(node: Int, neighbors: Seq[Int], toSend: Map[ActorRef[BuildGraphEvent], NNDInfo], nodeLocator: NodeLocator[BuildGraphEvent]): Unit = {
-    if (data.isLocal(node)) {
-      val newData = data.get(node)
+  def joinNode(nodeToJoin: Int, neighbors: Seq[Int], toSend: Map[ActorRef[BuildGraphEvent], NNDInfo], nodeLocator: NodeLocator[BuildGraphEvent]): Unit = {
+    if (data.isLocal(nodeToJoin)) {
+      val newData = data.get(nodeToJoin)
       val (localNeighbors, remoteNeighbors) = neighbors.partition(neighbor => data.isLocal(neighbor))
       localNeighbors.foreach(neighbor =>
-        joinLocals(node, newData, neighbor, data.get(neighbor), toSend, nodeLocator)
+        joinLocals(nodeToJoin, newData, neighbor, data.get(neighbor), toSend, nodeLocator)
       )
       remoteNeighbors.groupBy(neighbor => nodeLocator.findResponsibleActor(neighbor)).foreach { case (actor, oldNeighbors) =>
-        toSend(actor).addMessage(JoinNodes(oldNeighbors, node))
+        toSend(actor).addMessage(JoinNodes(oldNeighbors, nodeToJoin))
       }
     }
     else {
       neighbors.groupBy(neighbor => nodeLocator.findResponsibleActor(neighbor)).foreach { case (actor, groupedNeighbors) =>
-        toSend(actor).addMessage(JoinNodes(groupedNeighbors, node))
+        toSend(actor).addMessage(JoinNodes(groupedNeighbors, nodeToJoin))
       }
     }
   }
@@ -40,7 +46,11 @@ abstract class Joiner(sampleRate: Double, data: CacheData[Float]) extends Distan
     }
   }
 
-  def joinNewNeighbor(neighbors: Seq[(Int, Double)], oldReverseNeighbors: Set[Int], newNeighbor: Int, toSend: Map[ActorRef[BuildGraphEvent], NNDInfo], nodeLocator: NodeLocator[BuildGraphEvent]): Unit = {
+  def joinNewNeighbor(neighbors: Seq[(Int, Double)],
+                      oldReverseNeighbors: Set[Int],
+                      newNeighbor: Int,
+                      toSend: Map[ActorRef[BuildGraphEvent], NNDInfo],
+                      nodeLocator: NodeLocator[BuildGraphEvent]): Unit = {
     // use set to prevent duplication of nodes that are both neighbors and reverse neighbors
     val allNeighbors = (neighbors.map(_._1).toSet ++ oldReverseNeighbors).filter(_ => scala.util.Random.nextFloat() < sampleRate)
     joinNode(newNeighbor, allNeighbors.toSeq, toSend, nodeLocator)

@@ -166,7 +166,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSi
             ctx.log.info("Done distributing data")
             val localOffset = remainingPartitionInfo(ctx.self)._1
             val localDataSize = remainingPartitionInfo(ctx.self)._2
-            val localData = LocalSequentialData(data.slice(localOffset, localDataSize), localOffset)
+            val localData = LocalSequentialData(data.slice(localOffset, localOffset + localDataSize), localOffset)
             nodeCoordinator ! DataRef(localData)
             holdData(localData, dataHolders)
           } else {
