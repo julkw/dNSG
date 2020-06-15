@@ -1,7 +1,8 @@
 package com.github.julkw.dnsg.actors.nndescent
 
+import akka.actor.typed.ActorRef
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildGraphEvent, JoinNodes, PotentialNeighbor}
-import com.github.julkw.dnsg.util.Data.{CacheData}
+import com.github.julkw.dnsg.util.Data.CacheData
 import com.github.julkw.dnsg.util.{Distance, NodeLocator}
 
 

@@ -1,14 +1,16 @@
-package com.github.julkw.dnsg.actors
+package com.github.julkw.dnsg.actors.Coordinators
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import akka.cluster.typed.{ClusterSingleton, SingletonActor}
-import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, NodeCoordinatorIntroduction}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, NodeCoordinatorIntroduction}
+import com.github.julkw.dnsg.actors.DataHolder
 import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, LoadPartialDataFromFile}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetNSGFrom, SearchOnGraphEvent, SendResponsibleIndicesTo}
-import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetNSGFrom, SearchOnGraphEvent, UpdatedLocalData}
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
+import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
+import com.github.julkw.dnsg.actors.createNSG.NSGWorker.Responsibility
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildGraphEvent, MoveGraph, ResponsibleFor}
 import com.github.julkw.dnsg.util.Data.LocalData
@@ -25,6 +27,7 @@ object NodeCoordinator {
   final case object StartSearchOnGraph extends NodeCoordinationEvent
 
   final case class StartBuildingNSG(navigatingNode: Int, nodeLocator: NodeLocator[SearchOnGraphEvent]) extends NodeCoordinationEvent
+
 
   final case class LocalKnngWorker(worker: ActorRef[BuildGraphEvent]) extends NodeCoordinationEvent
 
@@ -73,6 +76,8 @@ class NodeCoordinator(settings: Settings,
 
     case DataRef(dataRef) =>
       val data = dataRef
+      // TODO this fails sometimes
+      assert(data.localDataSize > 0)
       ctx.log.info("Successfully loaded data")
       // create Actor to start distribution of data
       val maxResponsibilityPerNode: Int = data.localDataSize / settings.workers + data.localDataSize / 10
@@ -90,9 +95,10 @@ class NodeCoordinator(settings: Settings,
     }
 
   def moveKnngToSearchOnGraph(knngWorkers: Set[ActorRef[BuildGraphEvent]], data: LocalData[Float]): Behavior[NodeCoordinationEvent] = {
+    ctx.log.info("Start moving graph to SearchOnGraph Actors")
     var sogIndex = 0
     val graphHolders = knngWorkers.map { worker =>
-      val nsgw = ctx.spawn(SearchOnGraphActor(clusterCoordinator, data), name = "SearchOnGraph" + sogIndex.toString)
+      val nsgw = ctx.spawn(SearchOnGraphActor(clusterCoordinator), name = "SearchOnGraph" + sogIndex.toString)
       sogIndex += 1
       worker ! MoveGraph(nsgw)
       nsgw
@@ -100,35 +106,43 @@ class NodeCoordinator(settings: Settings,
     waitForNavigatingNode(data, graphHolders)
   }
 
-  def waitForNavigatingNode(data: LocalData[Float], graphHolders: Set[ActorRef[SearchOnGraphEvent]]): Behavior[NodeCoordinationEvent] =
+  def waitForNavigatingNode(data: LocalData[Float], localGraphHolders: Set[ActorRef[SearchOnGraphEvent]]): Behavior[NodeCoordinationEvent] =
     Behaviors.receiveMessagePartial {
+      // In case of data redistribution
+      case DataRef(newData) =>
+        ctx.log.info("Received new data, forwarding to graphHolders")
+        localGraphHolders.foreach(graphHolder => graphHolder ! UpdatedLocalData(newData))
+        waitForNavigatingNode(newData, localGraphHolders)
+
       case StartBuildingNSG(navigatingNode, nodeLocator) =>
-        // TODO this is where data redistribution would take place
-        startBuildingNSG(data, nodeLocator, graphHolders, navigatingNode)
+        startBuildingNSG(data, localGraphHolders, nodeLocator, navigatingNode)
     }
 
   def startBuildingNSG(data: LocalData[Float],
+                       localGraphHolders: Set[ActorRef[SearchOnGraphEvent]],
                        nodeLocator: NodeLocator[SearchOnGraphEvent],
-                       graphHolders: Set[ActorRef[SearchOnGraphEvent]],
                        navigatingNode: Int): Behavior[NodeCoordinationEvent] = {
-    val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, data.localIndices, settings.nodesExpected, nodeLocator), name = "NSGMerger")
+    val responsibilityPerGraphHolder = nodeLocator.locationData.zipWithIndex.groupBy(assignment => assignment._1).transform((graphHolder, responsibility) => responsibility.map(_._2))
+    val mergerResponsibility = localGraphHolders.flatMap(graphHolder => responsibilityPerGraphHolder(graphHolder))
+    val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, mergerResponsibility.toSeq, settings.nodesExpected, nodeLocator), name = "NSGMerger")
     var index = 0
-    graphHolders.foreach { graphHolder =>
+    localGraphHolders.foreach { graphHolder =>
       val nsgWorker = ctx.spawn(NSGWorker(clusterCoordinator, data, navigatingNode, settings.k, settings.maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)
       index += 1
-      // for now this is the easiest way to distribute responsibility
-      graphHolder ! SendResponsibleIndicesTo(nsgWorker)
+      // 1 to 1 mapping from seachOnGraphActors to NSGWorkers
+      val responsibilities = responsibilityPerGraphHolder(graphHolder)
+      nsgWorker ! Responsibility(responsibilities)
       nsgWorker
     }
-    moveNSGToSearchOnGraph(graphHolders, nsgMerger, data)
+    moveNSGToSearchOnGraph(localGraphHolders, nsgMerger)
   }
 
-  def moveNSGToSearchOnGraph(graphHolders: Set[ActorRef[SearchOnGraphEvent]],
-                             nsgMerger: ActorRef[MergeNSGEvent],
-                             data: LocalData[Float]): Behavior[NodeCoordinationEvent] =
+  // this happens here for mapping to the correct NSGMerger
+  def moveNSGToSearchOnGraph(localGraphHolders: Set[ActorRef[SearchOnGraphEvent]],
+                             nsgMerger: ActorRef[MergeNSGEvent]): Behavior[NodeCoordinationEvent] =
     Behaviors.receiveMessagePartial{
       case StartSearchOnGraph =>
-        graphHolders.foreach(graphHolder => graphHolder ! GetNSGFrom(nsgMerger))
+        localGraphHolders.foreach(graphHolder => graphHolder ! GetNSGFrom(nsgMerger))
         waitForShutdown()
     }
 

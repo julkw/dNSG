@@ -2,7 +2,7 @@ package com.github.julkw.dnsg
 import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.{ActorSystem, Behavior}
 import akka.cluster.typed.{Cluster, Join}
-import com.github.julkw.dnsg.actors.NodeCoordinator
+import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator
 import com.typesafe.config.ConfigFactory
 
 object Main {

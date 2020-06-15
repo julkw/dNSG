@@ -9,12 +9,12 @@ import akka.actor.typed.ActorRef
 import akka.actor.typed.Behavior
 import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import com.github.julkw.dnsg.actors.ClusterCoordinator.{AverageValue, CoordinationEvent, DataSize, TestQueries}
-import com.github.julkw.dnsg.actors.NodeCoordinator.{DataRef, NodeCoordinationEvent}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{AverageValue, CoordinationEvent, DataSize, TestQueries}
+import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{DataRef, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetGraph, Graph, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.Data.LocalData
-import com.github.julkw.dnsg.util.dNSGSerializable
+import com.github.julkw.dnsg.util.Data.{LocalData, LocalSequentialData, LocalUnorderedData}
+import com.github.julkw.dnsg.util.{NodeLocator, Settings, dNSGSerializable}
 
 import scala.language.postfixOps
 
@@ -34,6 +34,16 @@ object DataHolder {
 
   final case class GetNext(alreadyReceived: Int, dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
+  final case class StartRedistributingData(primaryAssignments: NodeLocator[SearchOnGraphEvent], secondaryAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
+
+  final case class RedistributeData(primaryAssignments: NodeLocator[SearchOnGraphEvent], secondaryAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
+
+  final case class PrepareForRedistributedData(sender: ActorRef[LoadDataEvent]) extends LoadDataEvent
+
+  final case class GetRedistributedData(sender: ActorRef[LoadDataEvent]) extends LoadDataEvent
+
+  final case class PartialRedistributedData(data: Map[Int, Seq[Float]], sender: ActorRef[LoadDataEvent]) extends LoadDataEvent
+
   // other stuff
   final case class GetAverageValue(replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
@@ -52,18 +62,17 @@ object DataHolder {
 
   private case class ListingResponse(listing: Receptionist.Listing) extends LoadDataEvent
 
-  val dataMessageSize = 100
-
   def apply(nodeCoordinator: ActorRef[NodeCoordinationEvent]): Behavior[LoadDataEvent] = Behaviors.setup { ctx =>
     ctx.log.info("Started up DataHolder")
 
     val listingResponseAdapter = ctx.messageAdapter[Receptionist.Listing](ListingResponse)
 
-    new DataHolder(nodeCoordinator, ctx, listingResponseAdapter).setup()
+    val dataMessageSize = Settings(ctx.system.settings.config).dataMessageSize
+    new DataHolder(nodeCoordinator, dataMessageSize, ctx, listingResponseAdapter).setup()
   }
 }
 
-class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorContext[DataHolder.LoadDataEvent], listingAdapter: ActorRef[Receptionist.Listing]) {
+class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSize: Int, ctx: ActorContext[DataHolder.LoadDataEvent], listingAdapter: ActorRef[Receptionist.Listing]) {
   import DataHolder._
 
   def setup(): Behavior[LoadDataEvent] = {
@@ -85,7 +94,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
         clusterCoordinator ! DataSize(data.length, ctx.self)
         if (expectedNodes == 1) {
           // I am the only node in the cluster
-          val localData = LocalData(data, 0)
+          val localData = LocalSequentialData(data, 0)
           nodeCoordinator ! DataRef(localData)
           holdData(localData, dataHolders)
         } else if (dataHolders.size < expectedNodes) {
@@ -102,7 +111,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
         clusterCoordinator ! DataSize(data.length, ctx.self)
         if (expectedNodes == 1) {
           // I am the only node in the cluster
-          val localData = LocalData(data, 0)
+          val localData = LocalSequentialData(data, 0)
           nodeCoordinator ! DataRef(localData)
           holdData(localData, dataHolders)
         } else if (dataHolders.size < expectedNodes) {
@@ -157,7 +166,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
             ctx.log.info("Done distributing data")
             val localOffset = remainingPartitionInfo(ctx.self)._1
             val localDataSize = remainingPartitionInfo(ctx.self)._2
-            val localData = LocalData(data.slice(localOffset, localDataSize), localOffset)
+            val localData = LocalSequentialData(data.slice(localOffset, localDataSize), localOffset)
             nodeCoordinator ! DataRef(localData)
             holdData(localData, dataHolders)
           } else {
@@ -180,7 +189,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
         val updatedPointsReceived = pointsReceived + partialData.length
         if (updatedPointsReceived == expectedDataSize) {
           // all data received
-          val localData: LocalData[Float] = LocalData(updatedData, localOffset)
+          val localData: LocalData[Float] = LocalSequentialData(updatedData, localOffset)
           nodeCoordinator ! DataRef(localData)
           ctx.log.info("got all my data")
           holdData(localData, dataHolders)
@@ -188,6 +197,10 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
           dataHolder ! GetNext(updatedPointsReceived, ctx.self)
           receiveData(updatedData, expectedDataSize, localOffset, updatedPointsReceived, dataHolders)
         }
+
+      case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
+        ctx.log.info("{} dataHolders found", listings.size)
+        receiveData(data, expectedDataSize, localOffset, pointsReceived, listings)
     }
 
   def holdData(data: LocalData[Float], dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
@@ -199,7 +212,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
           }
         }
         val averageValue: Seq[Float] = (0 until data.dimension).map{ index =>
-          data.data.map(value => value(index)).sum / data.localDataSize
+          data.rawData.map(value => value(index)).sum / data.localDataSize
         }
         if (dataHolders.size > 1) {
           calculateAverages(data, dataHolders, averageValue, data.localDataSize, dataHolders.size - 1, replyTo)
@@ -210,9 +223,34 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
 
       case GetLocalAverage(replyTo) =>
         val averageValue: Seq[Float] = (0 until data.dimension).map{ index =>
-          data.data.map(value => value(index)).sum / data.localDataSize
+          data.rawData.map(value => value(index)).sum / data.localDataSize
         }
         replyTo ! LocalAverage(averageValue, data.localDataSize)
+        holdData(data, dataHolders)
+
+      case StartRedistributingData(primaryAssignments, secondaryAssignments) =>
+        dataHolders.foreach(dataHolder => dataHolder ! RedistributeData(primaryAssignments, secondaryAssignments))
+        holdData(data, dataHolders)
+
+      case RedistributeData(primaryAssignments, secondaryAssignments) =>
+        val expectedDataSize = (0 until primaryAssignments.graphSize).count { nodeIndex =>
+          primaryAssignments.findResponsibleActor(nodeIndex).path.root == ctx.self.path.root ||
+            secondaryAssignments.getOrElse(nodeIndex, Set.empty).exists(worker => worker.path.root == ctx.self.path.root)
+        }
+        val toSend = data.localIndices.groupBy(index => primaryAssignments.findResponsibleActor(index))
+        val sendToDHs = dataHolders.map { dataHolder =>
+          val correspondingWorkers = toSend.keys.filter(actor => actor.path.root == dataHolder.path.root)
+          val sendToDH = correspondingWorkers.flatMap { worker =>
+            toSend(worker) ++ secondaryAssignments.keys.filter ( index => data.isLocal(index) && secondaryAssignments(index).contains(worker))
+          }
+          dataHolder -> sendToDH.toSeq
+        }.toMap
+        sendToDHs.keys.foreach(dataHolder => dataHolder ! PrepareForRedistributedData(ctx.self))
+        ctx.log.info("dataHolder received nodeAssignments")
+        redistributeData(data, Map.empty, expectedDataSize, sendToDHs, dataHolders)
+
+      case PrepareForRedistributedData(sender) =>
+        ctx.self ! PrepareForRedistributedData(sender)
         holdData(data, dataHolders)
 
       case ReadTestQueries(filename, replyTo) =>
@@ -226,7 +264,57 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], ctx: ActorCon
           ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
         graphHolders.foreach(gh => gh ! GetGraph(searchOnGraphEventAdapter))
         saveToFile(filename, graphHolders, k, searchOnGraphEventAdapter, data, dataHolders)
+
+      case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
+        ctx.log.info("{} dataHolders found", listings.size)
+        holdData(data, listings)
     }
+
+  def redistributeData(oldData: LocalData[Float],
+                       newData: Map[Int, Seq[Float]],
+                       expectedNewData: Int,
+                       toSend: Map[ActorRef[LoadDataEvent], Seq[Int]],
+                       dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
+    Behaviors.receiveMessagePartial {
+      case PrepareForRedistributedData(sender) =>
+        ctx.log.info("Asking for redistributed data")
+        sender ! GetRedistributedData(ctx.self)
+        redistributeData(oldData, newData, expectedNewData, toSend, dataHolders)
+
+      case GetRedistributedData(sender) =>
+        if (toSend.contains(sender)) {
+          val indicesToSend = toSend(sender)
+          if (indicesToSend.nonEmpty) {
+            val dataToSend = indicesToSend.slice(0, dataMessageSize).map(index => index -> oldData.get(index)).toMap
+            sender ! PartialRedistributedData(dataToSend, ctx.self)
+            redistributeData(oldData, newData, expectedNewData, toSend + (sender -> indicesToSend.slice(dataMessageSize, indicesToSend.length)), dataHolders)
+          } else if (toSend.size == 1 && newData.size == expectedNewData) {
+            ctx.log.info("Received and send all the data")
+            val localData = LocalUnorderedData(newData)
+            nodeCoordinator ! DataRef(localData)
+            holdData(localData, dataHolders)
+          } else {
+            redistributeData(oldData, newData, expectedNewData, toSend - sender, dataHolders)
+          }
+        } else {
+          ctx.log.info("Got asked to send data by a dataHolder that I have no assigned data for")
+          sender ! PartialRedistributedData(Map.empty, ctx.self)
+          redistributeData(oldData, newData, expectedNewData, toSend, dataHolders)
+        }
+
+      case PartialRedistributedData(data, sender) =>
+        sender ! GetRedistributedData(ctx.self)
+        val updatedData = newData ++ data
+        if (updatedData.size == expectedNewData && toSend.isEmpty) {
+          ctx.log.info("Received and send all the data")
+          val localData = LocalUnorderedData(updatedData)
+          nodeCoordinator ! DataRef(localData)
+          holdData(localData, dataHolders)
+        } else {
+          redistributeData(oldData, updatedData, expectedNewData, toSend, dataHolders)
+        }
+    }
+
 
   def calculateAverages(data: LocalData[Float],
                         dataHolders: Set[ActorRef[LoadDataEvent]],

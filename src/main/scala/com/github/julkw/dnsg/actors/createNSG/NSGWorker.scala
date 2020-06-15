@@ -2,7 +2,7 @@ package com.github.julkw.dnsg.actors.createNSG
 
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import com.github.julkw.dnsg.actors.ClusterCoordinator.CoordinationEvent
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.CoordinationEvent
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{CheckedNodesOnSearch, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, ReverseNeighbors}
 import com.github.julkw.dnsg.util.Data.LocalData
@@ -21,7 +21,7 @@ object NSGWorker {
 
   final case class SortedCheckedNodes(queryIndex: Int, checkedNodes: Seq[(Int, Seq[Float])]) extends BuildNSGEvent
 
-  def apply(supervisor: ActorRef[CoordinationEvent],
+  def apply(clusterCoordinator: ActorRef[CoordinationEvent],
             data: LocalData[Float],
             navigatingNode: Int,
             k: Int,
@@ -30,11 +30,11 @@ object NSGWorker {
             nsgMerger: ActorRef[MergeNSGEvent]): Behavior[BuildNSGEvent] = Behaviors.setup { ctx =>
     //ctx.log.info("Started NSGWorker")
     Behaviors.setup(ctx =>
-      new NSGWorker(supervisor, data, navigatingNode, k, maxReverseNeighbors, nodeLocator, nsgMerger, ctx).setup())
+      new NSGWorker(clusterCoordinator, data, navigatingNode, k, maxReverseNeighbors, nodeLocator, nsgMerger, ctx).setup())
   }
 }
 
-class NSGWorker(supervisor: ActorRef[CoordinationEvent],
+class NSGWorker(clusterCoordinator: ActorRef[CoordinationEvent],
                 data: LocalData[Float],
                 navigatingNode: Int,
                 k: Int,
@@ -45,13 +45,13 @@ class NSGWorker(supervisor: ActorRef[CoordinationEvent],
 
   import NSGWorker._
 
-  def setup(): Behavior[BuildNSGEvent] =
-    Behaviors.receiveMessagePartial {
-      case Responsibility(responsibility) =>
-        //ctx.log.info("Received responsibilities")
+  def setup(): Behavior[BuildNSGEvent] = Behaviors.receiveMessagePartial {
+    case Responsibility(responsibility) =>
+      if (responsibility.nonEmpty) {
         ctx.self ! StartEdgeFindingProcessFor(0)
-        buildNSG(responsibility)
-    }
+      }
+      buildNSG(responsibility)
+  }
 
   def buildNSG(responsibility: Seq[Int]): Behavior[BuildNSGEvent] =
     Behaviors.receiveMessagePartial {

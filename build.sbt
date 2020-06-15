@@ -9,6 +9,7 @@ lazy val `dNSG` = project
     Compile / javacOptions ++= Seq("-Xlint:unchecked", "-Xlint:deprecation"),
     run / javaOptions ++= Seq("-Xms128m", "-Xmx1024m", "-Djava.library.path=./target/native"),
     libraryDependencies ++= Seq(
+      "org.scala-lang"    % "scala-reflect"               % scalaVersion.value,
       "com.typesafe.akka" %% "akka-actor-typed"           % akkaVersion,
       "com.typesafe.akka" %% "akka-actor"                 % akkaVersion,
       "com.typesafe.akka" %% "akka-cluster-typed"         % akkaVersion,

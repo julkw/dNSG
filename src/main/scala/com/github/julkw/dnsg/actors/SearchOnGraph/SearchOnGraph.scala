@@ -3,13 +3,12 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 import scala.concurrent.duration._
 import akka.actor.typed.ActorRef
 import akka.actor.typed.scaladsl.{ActorContext, TimerScheduler}
-import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, FinishedUpdatingConnectivity}
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{DoneConnectingChildren, GetLocation, GetNeighbors, IsConnected, ReaskForLocation, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetLocation, GetNeighbors, ReaskForLocation, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, SortedCheckedNodes}
 import com.github.julkw.dnsg.util.Data.CacheData
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, WaitingOnLocation}
 
-import scala.collection.mutable
 
 abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
                              waitingOnLocation: WaitingOnLocation,
@@ -21,36 +20,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
   // also refactor to remove vars?
   protected case class QueryInfo(query: Seq[Float], neighborsWanted: Int, var candidates: Seq[QueryCandidate], var waitingOn: Int)
 
-  //protected case class CandidateList(var candidates: Seq[QueryCandidate], var waitingOn: Int, neighborsWanted: Int)
-
-  protected case class MessageCounter(var waitingForMessages: Int, parentNode: Int)
-
-  protected case class ConnectivityInfo(connectedNodes: mutable.Set[Int], messageTracker: mutable.Map[Int, MessageCounter])
-
   protected case class LocationTimerKey(locationIndex: Int)
-
-  def updateNeighborConnectedness(node: Int,
-                                  parent: Int,
-                                  connectivityInfo: ConnectivityInfo,
-                                  graph: Map[Int, Seq[Int]],
-                                  nodeLocator: NodeLocator[SearchOnGraphEvent]): Unit = {
-    var sendMessages = 0
-    // tell all neighbors they are connected
-    graph(node).foreach { neighborIndex =>
-      if (!connectivityInfo.connectedNodes.contains(neighborIndex)) {
-        nodeLocator.findResponsibleActor(neighborIndex) ! IsConnected(neighborIndex, node)
-        sendMessages += 1
-      }
-    }
-    if (sendMessages > 0) {
-      connectivityInfo.messageTracker += (node -> MessageCounter(sendMessages, parent))
-    } else if (node != parent) {
-      nodeLocator.findResponsibleActor(parent) ! DoneConnectingChildren(parent)
-    } else { // no neighbors updated and this is the root
-      supervisor ! FinishedUpdatingConnectivity
-      ctx.log.info("None of the previously unconnected nodes are connected to the root")
-    }
-  }
 
   // TODO the next two functions are not great because of code duplication and working on data structures in place. Maybe Refactor
   def updateCandidates(queryInfo: QueryInfo,
@@ -128,6 +98,15 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
     }
   }
 
+  def getNeighbors(node: Int, queryId: Int, graph: Map[Int, Seq[Int]], nodeLocator: NodeLocator[SearchOnGraphEvent]): Unit = {
+    // in case of data replication the actor should check if it has the required information itself before asking the primary assignee
+    if (graph.contains(node)) {
+      ctx.self ! GetNeighbors(node, queryId, ctx.self)
+    } else {
+      nodeLocator.findResponsibleActor(node) ! GetNeighbors(node, queryId, ctx.self)
+    }
+  }
+
   def askForLocation(remoteIndex: Int, queryId: Int, queryInfo: QueryInfo, nodeLocator: NodeLocator[SearchOnGraphEvent]): Unit = {
     if (!waitingOnLocation.alreadyIn(remoteIndex, queryId)) {
       queryInfo.waitingOn += 1
@@ -144,6 +123,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
                    queryId: Int,
                    candidateId: Int,
                    candidateLocation: Seq[Float],
+                   graph: Map[Int, Seq[Int]],
                    nodeLocator: NodeLocator[SearchOnGraphEvent]): Boolean = {
     // return if this means the query is finished
     val currentCandidates = queryInfo.candidates
@@ -161,7 +141,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
       queryInfo.candidates = updatedCandidates
       // If all other candidates have already been processed, the new now needs to be processed
       if (allProcessed) {
-        nodeLocator.findResponsibleActor(candidateId) ! GetNeighbors(candidateId, queryId, ctx.self)
+        getNeighbors(candidateId, queryId, graph, nodeLocator)
       }
     }
     // return if the query is finished

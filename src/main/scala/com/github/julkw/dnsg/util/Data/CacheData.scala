@@ -5,7 +5,7 @@ case class CacheData[T](cacheSize: Int, data: LocalData[T]) {
 
   def get(globalIndex: Int): Seq[T] = {
     // this assumes, that whoever called this method checked isLocal first
-    if (data.isPermanentlyLocal(globalIndex)) {
+    if (data.isLocal(globalIndex)) {
       data.get(globalIndex)
     } else {
       cache.get(globalIndex)
@@ -13,11 +13,11 @@ case class CacheData[T](cacheSize: Int, data: LocalData[T]) {
   }
 
   def isPermanentlyLocal(globalIndex: Int): Boolean = {
-    data.isPermanentlyLocal(globalIndex)
+    data.isLocal(globalIndex)
   }
 
   def isLocal(globalIndex: Int): Boolean = {
-    data.isPermanentlyLocal(globalIndex) || cache.inCache(globalIndex)
+    data.isLocal(globalIndex) || cache.inCache(globalIndex)
   }
 
   def add(nodeIndex: Int, nodeData: Seq[T]): Unit = {

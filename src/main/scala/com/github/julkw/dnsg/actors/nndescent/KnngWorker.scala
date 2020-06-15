@@ -1,14 +1,14 @@
 package com.github.julkw.dnsg.actors.nndescent
 
-import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
+import akka.actor.typed.receptionist.Receptionist
 
 import scala.concurrent.duration._
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
-import com.github.julkw.dnsg.actors.ClusterCoordinator.{CoordinationEvent, CorrectFinishedNNDescent, FinishedApproximateGraph, FinishedNNDescent, KnngDistributionInfo}
-import com.github.julkw.dnsg.actors.NodeCoordinator.{LocalKnngWorker, NodeCoordinationEvent}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, CorrectFinishedNNDescent, FinishedApproximateGraph, FinishedNNDescent, KnngDistributionInfo}
+import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{LocalKnngWorker, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{Graph, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GraphAndData, SearchOnGraphEvent}
 import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
 import com.github.julkw.dnsg.util.KdTree.{IndexTree, KdTree, SplitNode, TreeBuilder, TreeNode}
 import com.github.julkw.dnsg.util.{NodeLocator, Settings, WaitingOnLocation, dNSGSerializable}
@@ -23,7 +23,7 @@ object KnngWorker {
   // setup
   final case class ResponsibleFor(responsibility: Seq[Int], treeDepth: Int) extends BuildGraphEvent
 
-  final case class BuildApproximateGraph(nodeLocator: NodeLocator[BuildGraphEvent], workers: Set[ActorRef[BuildGraphEvent]]) extends BuildGraphEvent
+  final case class BuildApproximateGraph(nodeLocator: NodeLocator[BuildGraphEvent]) extends BuildGraphEvent
 
   // build approximate graph
   final case class FindCandidates(index: Int) extends BuildGraphEvent
@@ -64,8 +64,6 @@ object KnngWorker {
 
   final case class SOGDistributionInfo(treeNode: TreeNode[ActorRef[SearchOnGraphEvent]], sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
 
-
-  val knngServiceKey: ServiceKey[BuildGraphEvent] = ServiceKey[BuildGraphEvent]("knngWorker")
   // TODO do over input
   val timeoutAfter = 3.second
 
@@ -95,6 +93,7 @@ class KnngWorker(data: CacheData[Float],
 
   def buildDistributionTree(): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
     case ResponsibleFor(responsibility, treeDepth) =>
+      ctx.log.info("Holding {} nodes of max {}", responsibility.length, maxResponsibility)
       val treeBuilder: TreeBuilder = TreeBuilder(data.data, settings.k)
       if(responsibility.length > maxResponsibility) {
         // further split the data
@@ -105,33 +104,25 @@ class KnngWorker(data: CacheData[Float],
         buildDistributionTree()
       } else {
         // this is a leaf node for data distribution
-        ctx.system.receptionist ! Receptionist.Register(knngServiceKey, ctx.self)
         clusterCoordinator ! KnngDistributionInfo(responsibility, ctx.self)
-
         // Build local tree while waiting on DistributionTree message
         val treeBuilder: TreeBuilder = TreeBuilder(data.data, settings.k)
         val kdTree: IndexTree = treeBuilder.construct(responsibility)
         ctx.log.info("Finished building kdTree")
         waitForDistributionInfo(kdTree, responsibility)
       }
-
-    case BuildApproximateGraph(nodeLocator, workers) =>
-      // this should not happen
-      ctx.log.info("Somehow got distribution info too early")
-      ctx.self ! BuildApproximateGraph(nodeLocator, workers)
-      buildDistributionTree()
   }
 
   def waitForDistributionInfo(kdTree: IndexTree,
                               responsibility: Seq[Int]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
-      case BuildApproximateGraph(nodeLocator, workers) =>
+      case BuildApproximateGraph(nodeLocator) =>
         ctx.log.info("Received Distribution Info. Start building approximate graph")
         ctx.self ! FindCandidates(0)
         val candidates: Array[Seq[(Int, Double)]] = Array.fill(responsibility.length){Seq.empty}
         val awaitingAnswer: Array[Int] = Array.fill(responsibility.length){0}
         val graph: Map[Int, Seq[(Int, Double)]] = Map.empty
-        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, workers, graph)
+        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
 
       case GetCandidates(query, index, sender) =>
         val localCandidates = findLocalCandidates(query, kdTree)
@@ -144,7 +135,6 @@ class KnngWorker(data: CacheData[Float],
                             candidates: Array[Seq[(Int, Double)]],
                             awaitingAnswer: Array[Int],
                             nodeLocator: NodeLocator[BuildGraphEvent],
-                            knngWorkers: Set[ActorRef[BuildGraphEvent]],
                             graph:Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
       case FindCandidates(responsibilityIndex) =>
@@ -155,7 +145,7 @@ class KnngWorker(data: CacheData[Float],
         val index = responsibility(responsibilityIndex)
         val query: Seq[Float] = data.get(index)
         // find candidates for current node by asking all workers for candidates to ensure a connected graph across all nodes
-        knngWorkers.foreach { worker =>
+        nodeLocator.allActors.foreach { worker =>
           if (worker != ctx.self) {
             worker ! GetCandidates(query, responsibilityIndex, ctx.self)
             awaitingAnswer(responsibilityIndex) += 1
@@ -164,18 +154,18 @@ class KnngWorker(data: CacheData[Float],
         val localCandidates = findLocalCandidates(query, kdTree)
         ctx.self ! Candidates(localCandidates, responsibilityIndex)
         awaitingAnswer(responsibilityIndex) += 1
-        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, knngWorkers, graph)
+        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
 
       case GetCandidates(query, index, sender) =>
         val localCandidates = findLocalCandidates(query, kdTree)
         sender ! Candidates(localCandidates, index)
-        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, knngWorkers, graph)
+        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
 
       case Candidates(newCandidates, responsibilityIndex) =>
         val graphIndex: Int = responsibility(responsibilityIndex)
         val oldCandidates = candidates(responsibilityIndex)
         val mergedCandidates = (oldCandidates ++ newCandidates).sortBy(_._2)
-        val skipSelf = if (mergedCandidates(0)._1 == graphIndex) 1 else 0
+        val skipSelf = if (mergedCandidates.head._1 == graphIndex) 1 else 0
         candidates(responsibilityIndex) = mergedCandidates.slice(skipSelf, settings.k + skipSelf)
         awaitingAnswer(responsibilityIndex) -= 1
         if (awaitingAnswer(responsibilityIndex) == 0) {
@@ -183,9 +173,9 @@ class KnngWorker(data: CacheData[Float],
           if (updatedGraph.size == responsibility.length) {
             clusterCoordinator ! FinishedApproximateGraph
           }
-          buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, knngWorkers, updatedGraph)
+          buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, updatedGraph)
         } else {
-          buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, knngWorkers, graph)
+          buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
         }
 
       case StartNNDescent =>
@@ -300,9 +290,9 @@ class KnngWorker(data: CacheData[Float],
         val cleanedGraph: Map[Int, Seq[Int]] = graph.map{case (index, neighbors) => index -> neighbors.map(_._1)}
         val searchOnGraphEventAdapter: ActorRef[SearchOnGraphActor.SearchOnGraphEvent] =
           ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
-        graphHolder ! Graph(cleanedGraph, searchOnGraphEventAdapter)
+        graphHolder ! GraphAndData(cleanedGraph, data, searchOnGraphEventAdapter)
         // TODO add some kind of check to ensure the arrival of the graph?
-        Behaviors.empty
+        Behaviors.stopped
     }
 
   def findLocalCandidates(query: Seq[Float], kdTree: KdTree[Seq[Int]]): Seq[(Int, Double)] = {
@@ -329,7 +319,7 @@ class KnngWorker(data: CacheData[Float],
                               nodeLocator: NodeLocator[BuildGraphEvent]): Map[Int, Seq[(Int, Double)]] = {
     val currentNeighbors = graph(g_node)
     val currentReverseNeighbors = reverseNeighbors(g_node)
-    val currentMaxDist = currentNeighbors(currentNeighbors.length - 1)._2
+    val currentMaxDist = currentNeighbors.last._2
     val isNew: Boolean = !(currentNeighbors.exists(neighbor => neighbor._1 == potentialNeighbor._1)
       || currentReverseNeighbors.contains(potentialNeighbor._1))
     if (currentMaxDist > potentialNeighbor._2 && potentialNeighbor._1 != g_node && isNew) {
@@ -340,7 +330,7 @@ class KnngWorker(data: CacheData[Float],
         clusterCoordinator ! CorrectFinishedNNDescent
       }
       joinNewNeighbor(currentNeighbors.slice(0, settings.k-1), currentReverseNeighbors, potentialNeighbor._1, nodeLocator)
-      val removedNeighbor = currentNeighbors(currentNeighbors.length - 1)._1
+      val removedNeighbor = currentNeighbors.last._1
       nodeLocator.findResponsibleActor(removedNeighbor) ! RemoveReverseNeighbor(removedNeighbor, g_node)
       val updatedNeighbors = (currentNeighbors :+ potentialNeighbor).sortBy(_._2).slice(0, settings.k)
       timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
