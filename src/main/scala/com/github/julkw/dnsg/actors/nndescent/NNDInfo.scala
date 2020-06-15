@@ -27,6 +27,14 @@ case class NNDInfo() {
     messagesToSend += message
   }
 
+  def isEmpty: Boolean = {
+    messagesToSend.isEmpty
+  }
+
+  def nonEmpty: Boolean = {
+    messagesToSend.nonEmpty
+  }
+
   def sendMessage(maxMessageSize: Int): collection.Seq[NNDescentEvent] = {
     var currentMessageSize = 0
     val newMessage = messagesToSend.dequeueWhile {message =>

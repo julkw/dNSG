@@ -66,8 +66,6 @@ class NSGWorker(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case SortedCheckedNodes(queryIndex, checkedNodes) =>
         // check neighbor candidates for conflicts
-        // TODO In cluster, I do not get this for all nodes. WHY? :(
-        // Maybe there are messages lost of something in the SearchOnGraph Actor?
         //ctx.log.info("Got sorted checked nodes for {}", queryIndex)
         var neighborIndices: Seq[Int] = Seq.empty
         var neighborLocations: Seq[Seq[Float]] = Seq.empty

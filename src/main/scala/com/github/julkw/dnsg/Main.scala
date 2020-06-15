@@ -31,7 +31,6 @@ object Main {
 
     // Create an Akka system
     val system = ActorSystem[Nothing](RootBehavior(filename), "dNSGSystem", config)
-    // TODO add Reaper
   }
 
   def parseArgs(args: Array[String]): (Option[Int], Option[String]) = {

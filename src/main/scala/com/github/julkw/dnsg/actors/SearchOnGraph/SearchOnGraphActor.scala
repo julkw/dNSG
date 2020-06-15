@@ -95,6 +95,10 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
     Behaviors.receiveMessagePartial{
       case GraphDistribution(nodeLocator) =>
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, -1)
+
+      case FindNearestNeighbors(value, k, asker) =>
+        ctx.self ! FindNearestNeighbors(value, k, asker)
+        waitForDistributionInfo(graph, data)
     }
 
   def searchOnGraph(graph: Map[Int, Seq[Int]],
@@ -126,8 +130,6 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           askForLocation(startingPoint, queryId, qi, nodeLocator)
           qi
         }
-        // TODO what was this doing here?
-        //nodeLocator.findResponsibleActor(startingPoint) ! GetNeighbors(startingPoint, queryId, ctx.self)
         searchOnGraph(graph, data, nodeLocator, neighborQueries + (queryId -> queryInfo), respondTo + (queryId -> asker), queryId)
 
       case GetNeighbors(index, queryId, sender) =>

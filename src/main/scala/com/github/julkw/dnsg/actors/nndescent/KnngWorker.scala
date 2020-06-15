@@ -46,10 +46,7 @@ object KnngWorker {
 
   final case class NNDescentInfo(info: collection.Seq[NNDescentEvent], sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
 
-  // end NNDescent
-  final case object NNDescentTimeout extends  BuildGraphEvent
-
-  final case object NNDescentTimerKey
+  final case class NoNewInfo(sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
 
   // give final graph to SearchOnGraph Actor
   final case class MoveGraph(graphHolder: ActorRef[SearchOnGraphEvent]) extends BuildGraphEvent
@@ -57,9 +54,6 @@ object KnngWorker {
   final case class WrappedSearchOnGraphEvent(event: SearchOnGraphActor.SearchOnGraphEvent) extends BuildGraphEvent
 
   final case class SOGDistributionInfo(treeNode: TreeNode[ActorRef[SearchOnGraphEvent]], sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
-
-  // TODO do over input
-  val timeoutAfter = 3.second
 
   def apply(data: LocalData[Float],
             maxResponsibility: Int,
@@ -193,20 +187,21 @@ class KnngWorker(data: CacheData[Float],
     nodeLocator.allActors.foreach(worker => worker ! GetNNDescentInfo(ctx.self))
     val toSend = nodeLocator.allActors.map(worker => worker -> new NNDInfo).toMap
     // setup timer used to determine when the graph is done
-    timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
     // start nnDescent
     val reverseNeighbors: Map[Int, Set[Int]] = graph.map{case (index, _) => index -> Set.empty}
-    nnDescent(nodeLocator, graph, reverseNeighbors, toSend)
+    nnDescent(nodeLocator, graph, reverseNeighbors, toSend, Set.empty, false)
   }
 
   def nnDescent(nodeLocator: NodeLocator[BuildGraphEvent],
                 graph: Map[Int, Seq[(Int, Double)]],
                 reverseNeighbors: Map[Int, Set[Int]],
-                toSend: Map[ActorRef[BuildGraphEvent], NNDInfo]): Behavior[BuildGraphEvent] =
+                toSend: Map[ActorRef[BuildGraphEvent], NNDInfo],
+                mightBeDone: Set[ActorRef[BuildGraphEvent]],
+                saidImDone: Boolean): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
       case StartNNDescent =>
         // already done, so do nothing
-        nnDescent(nodeLocator, graph, reverseNeighbors, toSend)
+        nnDescent(nodeLocator, graph, reverseNeighbors, toSend, mightBeDone, saidImDone)
 
       case SendReverseNeighbors(g_node) =>
         val neighbors = graph(g_node)
@@ -214,34 +209,35 @@ class KnngWorker(data: CacheData[Float],
           val responsibleNeighbor = nodeLocator.findResponsibleActor(neighborIndex)
           toSend(responsibleNeighbor).addMessage(AddReverseNeighbor(neighborIndex, g_node))
         }
-        nnDescent(nodeLocator, graph, reverseNeighbors, toSend)
+        nnDescent(nodeLocator, graph, reverseNeighbors, toSend, mightBeDone, saidImDone)
 
       case CompleteLocalJoin(g_node) =>
         //ctx.log.info("local join")
         // prevent timeouts in the initial phase of graph nnDescent
-        timers.cancel(NNDescentTimerKey)
         val neighbors = graph(g_node)
         joinNeighbors(neighbors, toSend, nodeLocator)
-        // if this is the last inital join, the timer is needed from now on
-        timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
-        nnDescent(nodeLocator, graph, reverseNeighbors, toSend)
+        nnDescent(nodeLocator, graph, reverseNeighbors, toSend, mightBeDone, saidImDone)
 
       case GetNNDescentInfo(sender) =>
-        // TODO check if anything to send there, if not remember to send when there is
         val messagesToSend = toSend(sender).sendMessage(settings.nnDescentMessageSize)
         if (messagesToSend.nonEmpty) {
           sender ! NNDescentInfo(messagesToSend, ctx.self)
+          nnDescent(nodeLocator, graph, reverseNeighbors, toSend, mightBeDone, saidImDone)
         } else {
+          sender ! NoNewInfo(ctx.self)
           toSend(sender).sendImmediately = true
+          val probablyDone = checkIfDone(mightBeDone, nodeLocator, toSend)
+          nnDescent(nodeLocator, graph, reverseNeighbors, toSend, mightBeDone, probablyDone)
         }
-        nnDescent(nodeLocator, graph, reverseNeighbors, toSend)
+
+      case NoNewInfo(sender) =>
+        val mightBeDoneWorkers = mightBeDone + sender
+        val probablyDone = checkIfDone(mightBeDoneWorkers, nodeLocator, toSend)
+        nnDescent(nodeLocator, graph, reverseNeighbors, toSend, mightBeDoneWorkers, probablyDone)
 
       case NNDescentInfo(info, sender) =>
-        if (timers.isTimerActive(NNDescentTimerKey)) {
-          timers.cancel(NNDescentTimerKey)
-        } else {
-          // if the timer is inactive, it has already run out and the actor has mistakenly told its supervisor that it is done
-          clusterCoordinator ! CorrectFinishedNNDescent
+        if (saidImDone) {
+          clusterCoordinator ! CorrectFinishedNNDescent(ctx.self)
         }
         // TODO find a nicer way to do this
         var updatedGraph = graph
@@ -285,12 +281,7 @@ class KnngWorker(data: CacheData[Float],
         }
         sender ! GetNNDescentInfo(ctx.self)
         sendChangesImmediately(toSend)
-        timers.startSingleTimer(NNDescentTimerKey, NNDescentTimeout, timeoutAfter)
-        nnDescent(nodeLocator, updatedGraph, updatedReverseNeighbors, toSend)
-
-      case NNDescentTimeout =>
-        clusterCoordinator ! FinishedNNDescent
-        nnDescent(nodeLocator, graph, reverseNeighbors, toSend)
+        nnDescent(nodeLocator, updatedGraph, updatedReverseNeighbors, toSend, mightBeDone - sender, false)
 
       case MoveGraph(graphHolder) =>
         ctx.log.info("Average distance in graph after nndescent: {}", averageGraphDist(graph, settings.k))
@@ -352,14 +343,20 @@ class KnngWorker(data: CacheData[Float],
 
   def sendChangesImmediately(toSend: Map[ActorRef[BuildGraphEvent], NNDInfo]): Unit = {
     toSend.foreach { case (worker, nndInfo) =>
-      if (nndInfo.sendImmediately) {
+      if (nndInfo.sendImmediately && nndInfo.nonEmpty) {
         val messageToSend = nndInfo.sendMessage(settings.nnDescentMessageSize)
-        if (messageToSend.nonEmpty) {
-          worker ! NNDescentInfo(messageToSend, ctx.self)
-          nndInfo.sendImmediately = false
-        }
+        worker ! NNDescentInfo(messageToSend, ctx.self)
+        nndInfo.sendImmediately = false
       }
     }
+  }
+
+  def checkIfDone(mightBeDoneWorkers: Set[ActorRef[BuildGraphEvent]], nodeLocator: NodeLocator[BuildGraphEvent], toSend: Map[ActorRef[BuildGraphEvent], NNDInfo]): Boolean = {
+    val probablyDone = nodeLocator.allActors.size == mightBeDoneWorkers.size && toSend.forall(toSendTo => toSendTo._2.isEmpty)
+    if (probablyDone) {
+      clusterCoordinator ! FinishedNNDescent(ctx.self)
+    }
+    probablyDone
   }
 }
 

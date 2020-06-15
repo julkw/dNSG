@@ -76,7 +76,6 @@ class NodeCoordinator(settings: Settings,
 
     case DataRef(dataRef) =>
       val data = dataRef
-      // TODO this fails sometimes
       assert(data.localDataSize > 0)
       ctx.log.info("Successfully loaded data")
       // create Actor to start distribution of data
