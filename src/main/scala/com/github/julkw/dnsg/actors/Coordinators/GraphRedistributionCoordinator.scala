@@ -60,6 +60,7 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
   import GraphRedistributionCoordinator._
 
   def setup(): Behavior[RedistributionCoordinationEvent] = {
+    ctx.log.info("Now connecting graph for redistribution")
     val connectorCoordinator = ctx.spawn(GraphConnectorCoordinator(navigatingNodeIndex, graphNodeLocator, coordinationEventAdapter), name="GraphConnectorCoordinator")
     connectGraphForRedistribution(connectorCoordinator)
   }
@@ -114,6 +115,7 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
         }
 
       case PrimaryAssignmentParents(worker, treeNodes) =>
+        ctx.log.info("{} treenodes and their children assigned to worker", treeNodes.length)
         waitOnInitialRedistributionAssignments(connectorCoordinator, redistributionAssignments, redistributerLocator, primaryAssignmentRoots + (worker -> treeNodes))
     }
 
@@ -135,6 +137,7 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
                             redistributerLocator: NodeLocator[RedistributionEvent],
                             redistributionAssignments: NodeLocator[SearchOnGraphEvent],
                             primaryAssignmentRoots: Map[ActorRef[SearchOnGraphEvent], Seq[Int]]): Behavior[RedistributionCoordinationEvent] = {
+    ctx.log.info("Find secondary assignments")
     var waitingOnAnswers = 0
     primaryAssignmentRoots.foreach { case (worker, treeNodes) =>
       treeNodes.foreach { assignmentRoot =>
@@ -180,6 +183,7 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
   def startRedistribution(connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
                           primaryAssignments: NodeLocator[SearchOnGraphEvent],
                           secondaryAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]]): Behavior[RedistributionCoordinationEvent] = {
+    ctx.log.info("All graph nodes now assigned to workers, start redistribution")
     graphNodeLocator.allActors.foreach(graphHolder => graphHolder ! RedistributeGraph(primaryAssignments, secondaryAssignments, ctx.self))
     dataHolder ! StartRedistributingData(primaryAssignments, secondaryAssignments)
     waitForRedistribution(connectorCoordinator, finishedWorkers = 0, primaryAssignments)
@@ -190,12 +194,10 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
                             nodeLocator: NodeLocator[SearchOnGraphEvent]): Behavior[RedistributionCoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case DoneWithRedistribution =>
-        ctx.log.info("{} graphHolders done with redistribution", finishedWorkers + 1)
         if (finishedWorkers + 1 == nodeLocator.allActors.size) {
-          ctx.log.info("Done with data redistribution, starting with NSG")
           // shutdown the connection establishing workers
           connectorCoordinator ! CleanUpConnectors
-          cleanup(nodeLocator, false)
+          cleanup(nodeLocator, coordinatorShutdown = false)
         } else {
           waitForRedistribution(connectorCoordinator, finishedWorkers + 1, nodeLocator)
         }
@@ -206,6 +208,7 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
       case WrappedCoordinationEvent(event) =>
         event match {
           case ConnectorsCleanedUp =>
+            ctx.log.info("Done with data redistribution")
             clusterCoordinator ! RedistributionFinished(newDistribution)
             Behaviors.stopped
         }

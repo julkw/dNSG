@@ -28,7 +28,6 @@ object NSGWorker {
             maxReverseNeighbors: Int,
             nodeLocator: NodeLocator[SearchOnGraphEvent],
             nsgMerger: ActorRef[MergeNSGEvent]): Behavior[BuildNSGEvent] = Behaviors.setup { ctx =>
-    //ctx.log.info("Started NSGWorker")
     Behaviors.setup(ctx =>
       new NSGWorker(clusterCoordinator, data, navigatingNode, k, maxReverseNeighbors, nodeLocator, nsgMerger, ctx).setup())
   }
@@ -66,7 +65,6 @@ class NSGWorker(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case SortedCheckedNodes(queryIndex, checkedNodes) =>
         // check neighbor candidates for conflicts
-        //ctx.log.info("Got sorted checked nodes for {}", queryIndex)
         var neighborIndices: Seq[Int] = Seq.empty
         var neighborLocations: Seq[Seq[Float]] = Seq.empty
         val query = data.get(queryIndex)

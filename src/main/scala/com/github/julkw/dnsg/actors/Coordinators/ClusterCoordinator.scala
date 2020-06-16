@@ -78,8 +78,6 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       distributeDataForKnng(NodeLocatorBuilder(dataSize), nodeCoordinators, dataHolder)
 
     case KnngDistributionInfo(responsibility, worker) =>
-      // TODO this is not very nice
-      ctx.log.info("Got distribution info too early, forwarding to self")
       ctx.self ! KnngDistributionInfo(responsibility, worker)
       setUp(nodeCoordinators)
   }
@@ -97,7 +95,6 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
               }
               buildApproximateKnng(nodeLocator.allActors, 0, nodeLocator.graphSize, nodeCoordinators, dataHolder)
             case None =>
-              ctx.log.info("Got distribution info from a worker")
               // not yet collected all distributionInfo
               distributeDataForKnng(nodeLocatorBuilder, nodeCoordinators, dataHolder)
           }
@@ -171,7 +168,6 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         val navigatingNode = neighbors.head
         ctx.log.info("The navigating node has the index: {}", navigatingNode)
         // TODO make dataRedistribution optional
-        ctx.log.info("Now connecting graph for redistribution")
         // TODO get replication model from settings
         ctx.spawn(GraphRedistributionCoordinator(neighbors.head, AllSharedReplication, nodeLocator, dataHolder, ctx.self), name="GraphRedistributionCoordinator")
         waitOnRedistribution(neighbors.head, nodeCoordinators, dataHolder)
@@ -182,6 +178,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                            dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case RedistributionFinished(nodeLocator) =>
+        ctx.log.info("Start with NSG")
         nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
         waitOnNSG(Set.empty, navigatingNode, nodeLocator, nodeCoordinators, dataHolder)
     }

@@ -59,7 +59,6 @@ object KnngWorker {
             maxResponsibility: Int,
             clusterCoordinator: ActorRef[CoordinationEvent],
             localCoordinator: ActorRef[NodeCoordinationEvent]): Behavior[BuildGraphEvent] = Behaviors.setup { ctx =>
-    //ctx.log.info("Started KnngWorker")
     localCoordinator ! LocalKnngWorker(ctx.self)
     val settings = Settings(ctx.system.settings.config)
     Behaviors.withTimers(timers =>
@@ -81,7 +80,6 @@ class KnngWorker(data: CacheData[Float],
 
   def buildDistributionTree(): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
     case ResponsibleFor(responsibility, treeDepth) =>
-      ctx.log.info("Holding {} nodes of max {}", responsibility.length, maxResponsibility)
       val treeBuilder: TreeBuilder = TreeBuilder(data.data, settings.k)
       if(responsibility.length > maxResponsibility) {
         // further split the data
@@ -96,7 +94,6 @@ class KnngWorker(data: CacheData[Float],
         // Build local tree while waiting on DistributionTree message
         val treeBuilder: TreeBuilder = TreeBuilder(data.data, settings.k)
         val kdTree: IndexTree = treeBuilder.construct(responsibility)
-        ctx.log.info("Finished building kdTree")
         waitForDistributionInfo(kdTree, responsibility)
       }
   }
@@ -105,7 +102,6 @@ class KnngWorker(data: CacheData[Float],
                               responsibility: Seq[Int]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
       case BuildApproximateGraph(nodeLocator) =>
-        ctx.log.info("Received Distribution Info. Start building approximate graph")
         ctx.self ! FindCandidates(0)
         val candidates: Array[Seq[(Int, Double)]] = Array.fill(responsibility.length){Seq.empty}
         val awaitingAnswer: Array[Int] = Array.fill(responsibility.length){0}
@@ -176,7 +172,6 @@ class KnngWorker(data: CacheData[Float],
 
   def startNNDescent(nodeLocator: NodeLocator[BuildGraphEvent],
                      graph: Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] = {
-    //ctx.log.info("Starting nnDescent")
     // for debugging
     ctx.log.info("Average distance in graph before nndescent: {}", averageGraphDist(graph, settings.k))
     graph.keys.foreach{ g_node =>
@@ -189,7 +184,7 @@ class KnngWorker(data: CacheData[Float],
     // setup timer used to determine when the graph is done
     // start nnDescent
     val reverseNeighbors: Map[Int, Set[Int]] = graph.map{case (index, _) => index -> Set.empty}
-    nnDescent(nodeLocator, graph, reverseNeighbors, toSend, Set.empty, false)
+    nnDescent(nodeLocator, graph, reverseNeighbors, toSend, Set.empty, saidImDone = false)
   }
 
   def nnDescent(nodeLocator: NodeLocator[BuildGraphEvent],
@@ -212,7 +207,6 @@ class KnngWorker(data: CacheData[Float],
         nnDescent(nodeLocator, graph, reverseNeighbors, toSend, mightBeDone, saidImDone)
 
       case CompleteLocalJoin(g_node) =>
-        //ctx.log.info("local join")
         // prevent timeouts in the initial phase of graph nnDescent
         val neighbors = graph(g_node)
         joinNeighbors(neighbors, toSend, nodeLocator)
@@ -267,7 +261,6 @@ class KnngWorker(data: CacheData[Float],
             updatedGraph = handlePotentialNeighbor(g_node, potentialNeighbor, updatedGraph, updatedReverseNeighbors, toSend, nodeLocator)
 
           case AddReverseNeighbor(g_nodeIndex, neighborIndex) =>
-            //ctx.log.info("add reverse neighbor")
             // if new and not already a neighbor, introduce to all current neighbors
             if (!updatedGraph(g_nodeIndex).exists(neighbor => neighbor._1 == neighborIndex)) {
               joinNewNeighbor(updatedGraph(g_nodeIndex), updatedReverseNeighbors(g_nodeIndex), neighborIndex, toSend, nodeLocator)
@@ -276,7 +269,6 @@ class KnngWorker(data: CacheData[Float],
             updatedReverseNeighbors += (g_nodeIndex -> (updatedReverseNeighbors(g_nodeIndex) + neighborIndex))
 
           case RemoveReverseNeighbor(g_nodeIndex, neighborIndex) =>
-            //ctx.log.info("remove reverse neighbor")
             updatedReverseNeighbors += (g_nodeIndex -> (updatedReverseNeighbors(g_nodeIndex) - neighborIndex))
         }
         sender ! GetNNDescentInfo(ctx.self)

@@ -100,7 +100,6 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
             merger ! AddNeighbor(neighborIndex, nodeIndex, ctx.self)
           case None =>
             // this should not happen
-            ctx.log.info("Could not find the correct merger for node.")
             extraMessagesExpected += 1
             ctx.self ! ReverseNeighbors(nodeIndex, Seq(neighborIndex))
         }
@@ -108,7 +107,6 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       val updatedMessagesExpected = messagesExpected + extraMessagesExpected
       val updatedNeighborAcks = awaitingNeighborAcks + awaitingAcks
       if (messagesReceived + 1 == updatedMessagesExpected && updatedNeighborAcks == 0) {
-        ctx.log.info("Local NSGWorkers are done")
         supervisor ! InitialNSGDone(ctx.self)
       }
       buildGraph(graph, messagesReceived + 1, updatedMessagesExpected, updatedNeighborAcks, mergers)
@@ -120,14 +118,12 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
 
     case NeighborReceived =>
       if (messagesReceived == messagesExpected && awaitingNeighborAcks == 1) {
-        ctx.log.info("Local NSGWorkers are done")
         supervisor ! InitialNSGDone(ctx.self)
       }
       buildGraph(graph, messagesReceived, messagesExpected, awaitingNeighborAcks - 1, mergers)
 
     case GetPartialNSG(nodes, sender) =>
       // should only get this message after all NSGMergers told the NodeCoordinator that they are done
-      ctx.log.info("Asked for graph before being told by the ClusterCoordinator that the NSG is done. Assuming it is and switching states")
       ctx.self ! GetPartialNSG(nodes, sender)
       distributeGraph(graph.toMap)
   }

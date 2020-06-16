@@ -109,7 +109,6 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                     lastIdUsed: Int): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial {
       case FindNearestNeighbors(query, k, asker) =>
-        ctx.log.info("Asked to find navigating node")
         // choose node to start search from local nodes
         val startingNodeIndex: Int = graph.keys.head
         val queryInfo = QueryInfo(query, k, Seq(QueryCandidate(startingNodeIndex, euclideanDist(data.get(startingNodeIndex), query), processed = false)), 0)
@@ -190,13 +189,11 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         searchOnGraph(graph, data, nodeLocator, neighborQueries -- removedQueries, respondTo -- removedQueries, lastIdUsed)
 
       case AddToGraph(startNode, endNode, sender) =>
-        ctx.log.info("Add edge to graph to ensure connectivity")
         sender ! ReceivedNewEdge
         val newNeighbors = graph(startNode) :+ endNode
         searchOnGraph(graph + (startNode -> newNeighbors), data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
 
       case GetGraph(sender) =>
-        //ctx.log.info("Asked for graph info")
         sender ! Graph(graph, ctx.self)
         searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
 
@@ -205,7 +202,6 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         searchOnGraphForNSG(graph, data, nodeLocator, Map.empty, Map.empty, QueryResponseLocations(data))
 
       case ConnectGraph(graphConnectorSupervisor) =>
-        ctx.log.info("Told to connect the graph")
         val responsibility = graph.keys.filter(node => nodeLocator.findResponsibleActor(node) == ctx.self).toSeq
         ctx.spawn(GraphConnector(data.data, graph, responsibility, graphConnectorSupervisor), name="graphConnector")
         searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed)
@@ -243,7 +239,6 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case PartialGraph(partialGraph, sender) =>
         val updatedGraph = newGraph ++ partialGraph
-        ctx.log.info("Received partial graph. Now have {} of {} nodes", updatedGraph.size, nodesExpected)
         if(partialGraph.size == graphMessageSize) {
           // else this was the last piece of graph from this actor
           sender ! SendPartialGraph(graphMessageSize, ctx.self)
@@ -275,7 +270,6 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                                 redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]): Behavior[SearchOnGraphEvent] = {
     val everythingSent = !toSend.valuesIterator.exists(_.nonEmpty)
     if (newGraph.size == nodesExpected && dataUpdated && everythingSent) {
-      ctx.log.info("Done with Redistribution")
       redistributionCoordinator ! DoneWithRedistribution
       searchOnGraph(newGraph, data, nodeLocator, Map.empty, Map.empty, -1)
     } else {
@@ -364,7 +358,6 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         searchOnGraphForNSG(graph, data, nodeLocator, pathQueries -- removedQueries, respondTo -- removedQueries, responseLocations)
 
       case GetNSGFrom(nsgMerger) =>
-        ctx.log.info("Asking NSG Merger for my part of the NSG")
         nsgMerger ! GetPartialNSG(graph.keys.toSet, ctx.self)
         waitForNSG(nodeLocator, data)
     }
@@ -372,9 +365,8 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
   def waitForNSG(nodeLocator: NodeLocator[SearchOnGraphEvent], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case PartialNSG(graph) =>
-        ctx.log.info("Received nsg, ready for queries")
         clusterCoordinator ! NSGonSOG
-        searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, -1)
+        searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1)
     }
 }
 

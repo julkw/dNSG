@@ -154,6 +154,5 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
     }
     respondTo ! SortedCheckedNodes(queryId, checkedNodes)
     queryInfo.candidates.foreach(candidate => responseLocations.removedFromCandidateList(candidate.index))
-    //ctx.log.info("responseLocations size: {}", responseLocations.size())
   }
 }

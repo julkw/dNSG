@@ -121,14 +121,14 @@ class NodeCoordinator(settings: Settings,
                        localGraphHolders: Set[ActorRef[SearchOnGraphEvent]],
                        nodeLocator: NodeLocator[SearchOnGraphEvent],
                        navigatingNode: Int): Behavior[NodeCoordinationEvent] = {
-    val responsibilityPerGraphHolder = nodeLocator.locationData.zipWithIndex.groupBy(assignment => assignment._1).transform((graphHolder, responsibility) => responsibility.map(_._2))
+    val responsibilityPerGraphHolder = nodeLocator.locationData.zipWithIndex.groupBy(assignment => assignment._1).transform((_, responsibility) => responsibility.map(_._2))
     val mergerResponsibility = localGraphHolders.flatMap(graphHolder => responsibilityPerGraphHolder(graphHolder))
     val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, mergerResponsibility.toSeq, settings.nodesExpected, nodeLocator), name = "NSGMerger")
     var index = 0
     localGraphHolders.foreach { graphHolder =>
       val nsgWorker = ctx.spawn(NSGWorker(clusterCoordinator, data, navigatingNode, settings.k, settings.maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)
       index += 1
-      // 1 to 1 mapping from seachOnGraphActors to NSGWorkers
+      // 1 to 1 mapping from searchOnGraphActors to NSGWorkers
       val responsibilities = responsibilityPerGraphHolder(graphHolder)
       nsgWorker ! Responsibility(responsibilities)
       nsgWorker

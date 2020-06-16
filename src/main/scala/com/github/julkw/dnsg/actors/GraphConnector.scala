@@ -3,7 +3,6 @@ package com.github.julkw.dnsg.actors
 import scala.concurrent.duration._
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.CoordinationEvent
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{AllConnected, ConnectionCoordinationEvent, ConnectorShutdown, FinishedUpdatingConnectivity, GraphConnectorDistributionInfo, UnconnectedNode}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.RedistributionCoordinationEvent
 import com.github.julkw.dnsg.util.Data.LocalData
@@ -31,7 +30,7 @@ object GraphConnector {
 
   final case class StartGraphRedistributers(redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]) extends ConnectGraphEvent
 
-  // ensure message deliver
+  // ensure message delivery
   protected case class ConnectivityInfoTimerKey(receiver: ActorRef[ConnectGraphEvent])
 
   protected case class ResendConnectivityInfo(infoToResend: ConnectivityInformation, sendTo: ActorRef[ConnectGraphEvent]) extends ConnectGraphEvent
@@ -78,14 +77,13 @@ class GraphConnector(data: LocalData[Float],
 
   def waitForDistInfo(): Behavior[ConnectGraphEvent] = Behaviors.receiveMessagePartial {
     case ConnectorDistributionInfo(nodeLocator) =>
-      ctx.log.info("Received connectivity distribution info. Can now start with connecting the graph")
       val allConnectors = nodeLocator.allActors
       allConnectors.foreach(connector => connector ! GetConnectivityInfo(ctx.self))
       val toSend = allConnectors.map(connector =>
         connector -> SendInformation(ConnectivityInformation(Seq.empty, Seq.empty, Seq.empty), sendImmediately = false)
       ).toMap
       val alreadyConnected = Array.fill(nodeLocator.graphSize){false}
-      buildTree(nodeLocator, -1, Map.empty, alreadyConnected, toSend)
+      buildTree(nodeLocator, root = -1, Map.empty, alreadyConnected, toSend)
 
     case GetConnectivityInfo(sender) =>
       ctx.self ! GetConnectivityInfo(sender)
@@ -103,14 +101,12 @@ class GraphConnector(data: LocalData[Float],
                 toSend: Map[ActorRef[ConnectGraphEvent], SendInformation]): Behavior[ConnectGraphEvent] =
     Behaviors.receiveMessagePartial {
       case BuildTreeFrom(root) =>
-        ctx.log.info("Updating connectivity starting from {}", root)
         // treat the newly connected node as out new root node
         val rootNode = updateNeighborConnectedness(TreeEdge(root, root), root, alreadyConnected, supervisor, nodeLocator, toSend)
         val updatedToSend = sendChangesImmediately(toSend)
         buildTree(nodeLocator, root, tree + (root -> rootNode), alreadyConnected, updatedToSend)
 
       case AddEdgeAndContinue(from, to) =>
-        ctx.log.info("Updating connectivity after adding a new edge: {} to {}", from, to)
         val actorToTell = nodeLocator.findResponsibleActor(to)
         tree(from).awaitingAnswer.add(to)
         alreadyConnected(to) = true
@@ -123,12 +119,10 @@ class GraphConnector(data: LocalData[Float],
         timers.cancel(ConnectivityInfoTimerKey(sender))
         val connectivityInfo = toSend(sender).connectivityInformation
         if (connectivityInfo.nothingToSend()) {
-          // ctx.log.info("Nothing to send right now, will do as soon as there is something")
           // send as soon as there is something to send
           toSend(sender).sendImmediately = true
           buildTree(nodeLocator, root, tree, alreadyConnected, toSend)
         } else {
-          // ctx.log.info("Sending connectivity info out")
           val toSendInfo = sendConnectivityInfo(sender, toSend(sender).connectivityInformation)
           buildTree(nodeLocator, root, tree, alreadyConnected, toSend + (sender -> toSendInfo))
         }
@@ -160,7 +154,6 @@ class GraphConnector(data: LocalData[Float],
         buildTree(nodeLocator, root, tree, alreadyConnected, toSend)
 
       case GraphConnected =>
-        ctx.log.info("Graph Connector shutting down")
         supervisor ! ConnectorShutdown
         Behaviors.stopped
 
@@ -216,10 +209,8 @@ class GraphConnector(data: LocalData[Float],
                   root: Int,
                   nodeLocator: NodeLocator[ConnectGraphEvent],
                   toSend: Map[ActorRef[ConnectGraphEvent], SendInformation]): Unit = {
-    // ctx.log.info("{} still waiting on {}", nodeIndex, node.awaitingAnswer)
     if (node.awaitingAnswer.isEmpty) {
       if (nodeIndex == root) {
-        ctx.log.info("Root got all answers: {}", root)
         supervisor ! FinishedUpdatingConnectivity
       } else {
         toSend(nodeLocator.findResponsibleActor(node.parent)).connectivityInformation.doneChildren :+= TreeEdge(nodeIndex, node.parent)
@@ -251,13 +242,12 @@ class GraphConnector(data: LocalData[Float],
     )
     sendTo ! ConnectivityInfo(conInfoToSend, ctx.self)
     timers.startSingleTimer(ConnectivityInfoTimerKey(sendTo), ResendConnectivityInfo(conInfoToSend, sendTo), timeout)
-    SendInformation(conInfoRest, false)
+    SendInformation(conInfoRest, sendImmediately = false)
   }
 
   def sendChangesImmediately(toSend: Map[ActorRef[ConnectGraphEvent], SendInformation]): Map[ActorRef[ConnectGraphEvent], SendInformation] = {
     toSend.transform { (connector, toSendInfo) =>
       if (toSendInfo.sendImmediately && toSendInfo.connectivityInformation.somethingToSend()) {
-        // ctx.log.info("Send new connectivity info to actor whose last request for it I ignored")
         sendConnectivityInfo(connector, toSendInfo.connectivityInformation)
       } else {
         toSendInfo
@@ -284,7 +274,6 @@ class GraphConnector(data: LocalData[Float],
     }
     if (nodeInfo.awaitingAnswer.isEmpty) {
       if (newEdge.child == root) {
-        ctx.log.info("Back to root: {}", root)
         sendResultTo ! FinishedUpdatingConnectivity
       } else {
         toSend(nodeLocator.findResponsibleActor(newEdge.parent)).connectivityInformation.doneChildren :+= newEdge
@@ -292,5 +281,4 @@ class GraphConnector(data: LocalData[Float],
     }
     nodeInfo
   }
-
 }

@@ -56,7 +56,6 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
 
   def waitForStartSignal(distributionTree: Map[Int, DistributionTreeInfo]): Behavior[RedistributionEvent] = Behaviors.receiveMessagePartial {
     case DistributeData(workers, nodeLocator) =>
-      ctx.log.info("Starting redistribution")
       tree.foreach { case (node, nodeInfo) =>
         if (nodeInfo.children.isEmpty) {
           nodeLocator.findResponsibleActor(nodeInfo.parent) ! ChildSubtreeSize(nodeInfo.parent, node, 1)
@@ -84,7 +83,6 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
         val currentNode = distributionTree(g_node)
         currentNode.subTreeSize += childSubtreeSize
         currentNode.waitingForResponses -= 1
-        // ctx.log.info("{} is still waiting for {} responses", g_node, currentNode.waitingForResponses)
         if (currentNode.waitingForResponses == 0) {
           val currentParent = tree(g_node).parent
           if (currentParent == g_node) {
@@ -149,7 +147,6 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
           ctx.self ! SendPrimaryAssignments
           distributeUsingTree(distributionTree,  workers, nodeLocator)
         } else {
-          ctx.log.info("Send assignments to RedistributionCoordinator")
           redistributionCoordinator ! PrimaryNodeAssignments(distributionTree.transform((_, distInfo) => distInfo.assignedWorker.get))
           findSecondaryAssignments(distributionTree, Map.empty, nodeLocator)
         }
@@ -182,7 +179,6 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
   def startDistribution(distributionTree: Map[Int, DistributionTreeInfo],
                         workers: Set[ActorRef[SearchOnGraphEvent]],
                         nodeLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionEvent] = {
-    ctx.log.info("Done with tree, now assigning g_nodes to workers")
     distributionTree.valuesIterator.foreach(nodeInfo => nodeInfo.stillToDistribute = nodeInfo.subTreeSize)
     distributeUsingTree(distributionTree, workers, nodeLocator)
   }
@@ -191,7 +187,6 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
                           worker: ActorRef[SearchOnGraphEvent],
                           nodeLocator: NodeLocator[RedistributionEvent]): Unit = {
     val inList = waitingList.map(_.g_node)
-    ctx.log.info("WL: {}", inList)
     redistributionCoordinator ! PrimaryAssignmentParents(worker, waitingList.map(_.g_node))
     waitingList.foreach { entry =>
       val nodeIndex = entry.g_node
@@ -205,16 +200,13 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
                                      workersLeft: Set[ActorRef[SearchOnGraphEvent]],
                                      nodeLocator: NodeLocator[RedistributionEvent]): Unit = {
     if (workersLeft.isEmpty) {
-      ctx.log.info("All workers assigned")
       nodeLocator.allActors.foreach(redistributer => redistributer ! SendPrimaryAssignments)
     } else if (workersLeft.size == 1) {
-      ctx.log.info("Down to last worker")
       nodeLocator.findResponsibleActor(nextNodeInSearch) ! FindNodesInRange(nextNodeInSearch, nodesToDistribute, nodesToDistribute, removeDescendants, Seq.empty, workersLeft, nodesToDistribute)
     } else {
       // TODO test different ranges?
       val minNodesPerWorker = nodesToDistribute / workersLeft.size - nodesToDistribute / (100 * (workersLeft.size - 1))
       val maxNodesPerWorker = nodesToDistribute / workersLeft.size + nodesToDistribute / (100 * (workersLeft.size - 1))
-      ctx.log.info("{} graph_nodes for {} workers left. Next range {} to {}", nodesToDistribute, workersLeft.size, minNodesPerWorker, maxNodesPerWorker)
       nodeLocator.findResponsibleActor(nextNodeInSearch) ! FindNodesInRange(nextNodeInSearch, minNodesPerWorker, maxNodesPerWorker, removeDescendants, Seq.empty, workersLeft, nodesToDistribute)
     }
   }
