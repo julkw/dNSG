@@ -67,12 +67,12 @@ object DataHolder {
 
     val listingResponseAdapter = ctx.messageAdapter[Receptionist.Listing](ListingResponse)
 
-    val dataMessageSize = Settings(ctx.system.settings.config).dataMessageSize
-    new DataHolder(nodeCoordinator, dataMessageSize, ctx, listingResponseAdapter).setup()
+    val maxMessageSize = Settings(ctx.system.settings.config).maxMessageSize
+    new DataHolder(nodeCoordinator, maxMessageSize, ctx, listingResponseAdapter).setup()
   }
 }
 
-class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSize: Int, ctx: ActorContext[DataHolder.LoadDataEvent], listingAdapter: ActorRef[Receptionist.Listing]) {
+class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSize: Int, ctx: ActorContext[DataHolder.LoadDataEvent], listingAdapter: ActorRef[Receptionist.Listing]) {
   import DataHolder._
 
   def setup(): Behavior[LoadDataEvent] = {
@@ -145,11 +145,14 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSi
         dataHolder ! PrepareForData(pInfo._2, pInfo._1, ctx.self)
       }
     }
-    shareData(data, partitionInfo, dataHolders)
+    // max number of datapoints to send per message
+    val dataMessageSize = maxMessageSize / data(0).length
+    shareData(data, partitionInfo, dataMessageSize, dataHolders)
   }
 
   def shareData(data: Seq[Seq[Float]],
                 partitionInfo: Map[ActorRef[LoadDataEvent], (Int, Int)],
+                dataMessageSize: Int,
                 dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial {
       case GetNext(alreadyReceived, dataHolder) =>
@@ -166,14 +169,14 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSi
             ctx.log.info("Done distributing data")
             val localOffset = remainingPartitionInfo(ctx.self)._1
             val localDataSize = remainingPartitionInfo(ctx.self)._2
-            val localData = LocalSequentialData(data.slice(localOffset, localDataSize), localOffset)
+            val localData = LocalSequentialData(data.slice(localOffset, localOffset + localDataSize), localOffset)
             nodeCoordinator ! DataRef(localData)
             holdData(localData, dataHolders)
           } else {
-            shareData(data, remainingPartitionInfo, dataHolders)
+            shareData(data, remainingPartitionInfo, dataMessageSize, dataHolders)
           }
         } else {
-          shareData(data, partitionInfo, dataHolders)
+          shareData(data, partitionInfo, dataMessageSize, dataHolders)
         }
     }
 
@@ -247,7 +250,8 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSi
         }.toMap
         sendToDHs.keys.foreach(dataHolder => dataHolder ! PrepareForRedistributedData(ctx.self))
         ctx.log.info("dataHolder received nodeAssignments")
-        redistributeData(data, Map.empty, expectedDataSize, sendToDHs, dataHolders)
+        val dataMessageSize = maxMessageSize / data.dimension
+        redistributeData(data, Map.empty, expectedDataSize, sendToDHs, dataMessageSize, dataHolders)
 
       case PrepareForRedistributedData(sender) =>
         ctx.self ! PrepareForRedistributedData(sender)
@@ -274,12 +278,13 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSi
                        newData: Map[Int, Seq[Float]],
                        expectedNewData: Int,
                        toSend: Map[ActorRef[LoadDataEvent], Seq[Int]],
+                       dataMessageSize: Int,
                        dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial {
       case PrepareForRedistributedData(sender) =>
         ctx.log.info("Asking for redistributed data")
         sender ! GetRedistributedData(ctx.self)
-        redistributeData(oldData, newData, expectedNewData, toSend, dataHolders)
+        redistributeData(oldData, newData, expectedNewData, toSend, dataMessageSize, dataHolders)
 
       case GetRedistributedData(sender) =>
         if (toSend.contains(sender)) {
@@ -287,19 +292,19 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSi
           if (indicesToSend.nonEmpty) {
             val dataToSend = indicesToSend.slice(0, dataMessageSize).map(index => index -> oldData.get(index)).toMap
             sender ! PartialRedistributedData(dataToSend, ctx.self)
-            redistributeData(oldData, newData, expectedNewData, toSend + (sender -> indicesToSend.slice(dataMessageSize, indicesToSend.length)), dataHolders)
+            redistributeData(oldData, newData, expectedNewData, toSend + (sender -> indicesToSend.slice(dataMessageSize, indicesToSend.length)), dataMessageSize, dataHolders)
           } else if (toSend.size == 1 && newData.size == expectedNewData) {
             ctx.log.info("Received and send all the data")
             val localData = LocalUnorderedData(newData)
             nodeCoordinator ! DataRef(localData)
             holdData(localData, dataHolders)
           } else {
-            redistributeData(oldData, newData, expectedNewData, toSend - sender, dataHolders)
+            redistributeData(oldData, newData, expectedNewData, toSend - sender, dataMessageSize, dataHolders)
           }
         } else {
           ctx.log.info("Got asked to send data by a dataHolder that I have no assigned data for")
           sender ! PartialRedistributedData(Map.empty, ctx.self)
-          redistributeData(oldData, newData, expectedNewData, toSend, dataHolders)
+          redistributeData(oldData, newData, expectedNewData, toSend, dataMessageSize, dataHolders)
         }
 
       case PartialRedistributedData(data, sender) =>
@@ -311,7 +316,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSi
           nodeCoordinator ! DataRef(localData)
           holdData(localData, dataHolders)
         } else {
-          redistributeData(oldData, updatedData, expectedNewData, toSend, dataHolders)
+          redistributeData(oldData, updatedData, expectedNewData, toSend, dataMessageSize, dataHolders)
         }
     }
 
@@ -366,7 +371,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], dataMessageSi
       val offset = index * dataPerNode
       index += 1
       val partitionDataSize = math.min(dataPerNode, dataSize - offset)
-      dataHolder -> (offset, partitionDataSize)
+      (dataHolder -> (offset, partitionDataSize))
     }.toMap
     partitionInfo
   }

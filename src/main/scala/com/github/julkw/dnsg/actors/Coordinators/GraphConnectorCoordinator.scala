@@ -59,7 +59,6 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
     Behaviors.receiveMessagePartial {
       case GraphConnectorDistributionInfo(responsibility, graphConnector) =>
         ctx.log.info("Got DistributionInfo from a graphConnector for {} nodes", responsibility)
-        // TODO for some reason this doesn't add up to a full nodeLocator after building of the NSG
         val updatedConnectors = graphConnectors + graphConnector
         val gcLocator = graphConnectorLocator.addLocation(responsibility, graphConnector)
         gcLocator match {

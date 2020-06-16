@@ -69,7 +69,6 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         }
 
       case ReverseNeighbors(nodeIndex, reverseNeighbors) =>
-        // TODO is not the best solution
         ctx.self ! ReverseNeighbors(nodeIndex, reverseNeighbors)
         waitForRegistrations(graph, mergers)
 
@@ -134,11 +133,11 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
   }
 
   def distributeGraph(graph: Map[Int, Seq[Int]]): Behavior[MergeNSGEvent] = Behaviors.receiveMessagePartial {
-    // TODO send in chunks here as well? (Use the same messages as for distribution?)
     case GetPartialNSG(nodes, sender) =>
       val partialGraph = graph.filter{case(node, _) =>
         nodes.contains(node)
       }
+      // can be send as a whole because it is only send to other actors on the same node
       sender ! PartialNSG(partialGraph)
       distributeGraph(graph)
 

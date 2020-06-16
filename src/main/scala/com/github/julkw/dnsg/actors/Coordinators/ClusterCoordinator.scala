@@ -26,9 +26,9 @@ object ClusterCoordinator {
 
   final case object FinishedApproximateGraph extends CoordinationEvent
 
-  final case object FinishedNNDescent extends CoordinationEvent
+  final case class FinishedNNDescent(worker: ActorRef[BuildGraphEvent]) extends CoordinationEvent
 
-  final case object CorrectFinishedNNDescent extends CoordinationEvent
+  final case class CorrectFinishedNNDescent(worker: ActorRef[BuildGraphEvent]) extends CoordinationEvent
 
   final case class RedistributionFinished(nodeLocator: NodeLocator[SearchOnGraphEvent]) extends CoordinationEvent
 
@@ -114,21 +114,21 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         if (updatedWorkersDone == knngWorkers.size) {
           ctx.log.info("Approximate graph has been build. Start NNDescent")
           knngWorkers.foreach(worker => worker ! StartNNDescent)
-          waitForNnDescent(knngWorkers, 0, graphSize, nodeCoordinators, dataHolder)
+          waitForNnDescent(knngWorkers, Set.empty, graphSize, nodeCoordinators, dataHolder)
         } else {
           buildApproximateKnng(knngWorkers, updatedWorkersDone, graphSize, nodeCoordinators, dataHolder)
         }
     }
 
   def waitForNnDescent(knngWorkers: Set[ActorRef[BuildGraphEvent]],
-                       workersDone: Int,
+                       doneWorkers: Set[ActorRef[BuildGraphEvent]],
                        graphSize: Int,
                        nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                        dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
-      case FinishedNNDescent =>
-        val updatedWorkersDone = workersDone + 1
-        if (updatedWorkersDone == knngWorkers.size) {
+      case FinishedNNDescent(worker) =>
+        val updatedWorkersDone = doneWorkers + worker
+        if (updatedWorkersDone.size == knngWorkers.size) {
           ctx.log.info("NNDescent seems to be done")
           nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraph)
           waitOnSearchOnGraphDistributionInfo(NodeLocatorBuilder(graphSize), nodeCoordinators, dataHolder)
@@ -136,8 +136,8 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
           waitForNnDescent(knngWorkers, updatedWorkersDone, graphSize, nodeCoordinators, dataHolder)
         }
 
-      case CorrectFinishedNNDescent =>
-        waitForNnDescent(knngWorkers, workersDone - 1, graphSize, nodeCoordinators, dataHolder)
+      case CorrectFinishedNNDescent(worker) =>
+        waitForNnDescent(knngWorkers, doneWorkers - worker, graphSize, nodeCoordinators, dataHolder)
     }
 
   def waitOnSearchOnGraphDistributionInfo(nodeLocatorBuilder: NodeLocatorBuilder[SearchOnGraphEvent],
@@ -149,7 +149,6 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
           case Some (nodeLocator) =>
             ctx.log.info("All graphs now with SearchOnGraph actors")
             dataHolder ! GetAverageValue(ctx.self)
-            // TODO wait till they have received dist info?
             nodeLocator.allActors.foreach(sogActor => sogActor ! GraphDistribution(nodeLocator))
             findNavigatingNode(nodeLocator, nodeCoordinators, dataHolder)
           case None =>
