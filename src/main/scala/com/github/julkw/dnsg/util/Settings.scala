@@ -20,6 +20,10 @@ case class Settings(config: Config) {
 
   val nodesExpected: Int = config.getInt(s"$namespace.nodes-expected")
 
+  val dataRedistribution: String = config.getString(s"$namespace.data-redistribution")
+
+  val dataReplication: String = config.getString(s"$namespace.data-replication")
+
   val cacheSize: Int = config.getInt(s"$namespace.cache-size")
 
   // this is defined over the number of ints/floats that can be send in one message. It does not take into account any Boxing overhead though

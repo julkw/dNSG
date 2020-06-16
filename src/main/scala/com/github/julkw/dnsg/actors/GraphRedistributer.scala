@@ -5,7 +5,7 @@ import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{AssignWithParentsDone, PrimaryAssignmentParents, PrimaryNodeAssignments, RedistributerDistributionInfo, RedistributionCoordinationEvent, SecondaryNodeAssignments}
 import com.github.julkw.dnsg.actors.GraphConnector.CTreeNode
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetLocation, Location, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.{Distance, NodeLocator, dNSGSerializable}
+import com.github.julkw.dnsg.util.{Distance, NodeLocator, Settings, dNSGSerializable}
 
 object GraphRedistributer {
 
@@ -39,12 +39,14 @@ object GraphRedistributer {
             graphNodeLocator: NodeLocator[SearchOnGraphEvent],
             redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]): Behavior[RedistributionEvent] =
     Behaviors.setup { ctx =>
+      val optimalRedistribution = Settings(ctx.system.settings.config).dataRedistribution == "optimalRedistribution"
       val searchOnGraphEventAdapter: ActorRef[SearchOnGraphEvent] = ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event) }
-      new GraphRedistributer(tree, graphNodeLocator, searchOnGraphEventAdapter, redistributionCoordinator, ctx).setup()
+      new GraphRedistributer(tree, optimalRedistribution, graphNodeLocator, searchOnGraphEventAdapter, redistributionCoordinator, ctx).setup()
     }
 }
 
 class GraphRedistributer(tree: Map[Int, CTreeNode],
+                         optimalRedistribution: Boolean,
                          graphNodeLocator: NodeLocator[SearchOnGraphEvent],
                          searchOnGraphEventAdapter: ActorRef[SearchOnGraphEvent],
                          redistributionCoordinator: ActorRef[RedistributionCoordinationEvent],
@@ -130,7 +132,7 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
           assignNodesToWorker(updatedWaitingList, worker, nodeLocator)
           startSearchForNextWorkersNodes(parent, treeNode.subTreeSize, nodesLeft - withMe, workersLeft - worker, nodeLocator)
           distributeUsingTree(distributionTree, nodeLocator)
-        } else if (waitingList.nonEmpty) {
+        } else if (optimalRedistribution && waitingList.nonEmpty) {
           // ask for locations of the potential next nodes to continue search so we can choose the closest one to the ones already in the waitingList
           val nodesToChooseFrom = tree(g_node).children
           val nodesWeNeedTheLocationFor = nodesToChooseFrom + waitingList.last.g_node
@@ -205,13 +207,14 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
           findSecondaryAssignments(distributionTree, secondaryAssignments, nodeLocator)
         } else {
           nodeLocator.findResponsibleActor(parent) ! AssignWithParents(parent, worker)
-          if (distributionTree(g_node).assignedWorker != worker) {
+          if (distributionTree(g_node).assignedWorker.get != worker) {
             findSecondaryAssignments(distributionTree, secondaryAssignments + (g_node -> (currentAssignees + worker)), nodeLocator)
           } else {
             // if it is already the primary worker it does not need to be added to the secondary Assignees as well
             findSecondaryAssignments(distributionTree, secondaryAssignments, nodeLocator)
           }
         }
+
       case SendSecondaryAssignments =>
         redistributionCoordinator ! SecondaryNodeAssignments(secondaryAssignments)
         Behaviors.stopped

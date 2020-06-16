@@ -2,7 +2,7 @@ package com.github.julkw.dnsg.actors.Coordinators
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{AllSharedReplication, NoReplication}
+import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{AllSharedReplication, NoReplication, OnlyParentsReplication}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
 import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, RedistributeGraph, SearchOnGraphEvent}
@@ -167,10 +167,22 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         // Right now the only query being asked for is the NavigationNode, so that has been found
         val navigatingNode = neighbors.head
         ctx.log.info("The navigating node has the index: {}", navigatingNode)
-        // TODO make dataRedistribution optional
-        // TODO get replication model from settings
-        ctx.spawn(GraphRedistributionCoordinator(neighbors.head, AllSharedReplication, nodeLocator, dataHolder, ctx.self), name="GraphRedistributionCoordinator")
-        waitOnRedistribution(neighbors.head, nodeCoordinators, dataHolder)
+        if (settings.dataRedistribution != "noRedistribution") {
+          val replicationModel =  settings.dataReplication match {
+            case "onlyParentsReplication" =>
+              OnlyParentsReplication
+            case "allSharedReplication" =>
+              AllSharedReplication
+            case "noReplication" =>
+              NoReplication
+            case _ =>
+              NoReplication
+          }
+          ctx.spawn(GraphRedistributionCoordinator(neighbors.head, replicationModel, nodeLocator, dataHolder, ctx.self), name="GraphRedistributionCoordinator")
+          waitOnRedistribution(neighbors.head, nodeCoordinators, dataHolder)
+        } else {
+          startNSG(navigatingNode, nodeLocator, nodeCoordinators, dataHolder)
+        }
     }
 
   def waitOnRedistribution(navigatingNode: Int,
@@ -178,10 +190,17 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                            dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case RedistributionFinished(nodeLocator) =>
-        ctx.log.info("Start with NSG")
-        nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
-        waitOnNSG(Set.empty, navigatingNode, nodeLocator, nodeCoordinators, dataHolder)
+        startNSG(navigatingNode, nodeLocator, nodeCoordinators, dataHolder)
     }
+
+  def startNSG(navigatingNode: Int,
+               nodeLocator: NodeLocator[SearchOnGraphEvent],
+               nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
+               dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] = {
+    ctx.log.info("Start with NSG")
+    nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator))
+    waitOnNSG(Set.empty, navigatingNode, nodeLocator, nodeCoordinators, dataHolder)
+  }
 
   def waitOnNSG(finishedNsgMergers: Set[ActorRef[MergeNSGEvent]],
                 navigatingNodeIndex: Int,

@@ -166,15 +166,16 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
                                   redistributionAssignments: NodeLocator[SearchOnGraphEvent]): Behavior[RedistributionCoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case SecondaryNodeAssignments(nodeAssignments) =>
+        val updatedAssignments = secondaryAssignments ++ nodeAssignments
         if (waitingOn == 1) {
           if (replicationModel == AllSharedReplication) {
-            val updatedSecondaryAssignments = (secondaryAssignments ++ nodeAssignments).transform((node, assignees) => redistributionAssignments.allActors - redistributionAssignments.findResponsibleActor(node))
+            val updatedSecondaryAssignments = updatedAssignments.transform((node, assignees) => redistributionAssignments.allActors - redistributionAssignments.findResponsibleActor(node))
             startRedistribution(connectorCoordinator, redistributionAssignments, updatedSecondaryAssignments)
           } else {
-            startRedistribution(connectorCoordinator, redistributionAssignments, secondaryAssignments ++ nodeAssignments)
+            startRedistribution(connectorCoordinator, redistributionAssignments, updatedAssignments)
           }
         } else {
-          waitForSecondaryAssignments(connectorCoordinator, waitingOn - 1, secondaryAssignments ++ nodeAssignments, redistributionAssignments)
+          waitForSecondaryAssignments(connectorCoordinator, waitingOn - 1, updatedAssignments, redistributionAssignments)
         }
     }
 

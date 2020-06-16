@@ -66,7 +66,6 @@ object SearchOnGraphActor {
   // safe knng to file
   final case class GetGraph(sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
-
   def apply(clusterCoordinator: ActorRef[CoordinationEvent]): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
     Behaviors.withTimers { timers =>
       val settings = Settings(ctx.system.settings.config)
@@ -94,7 +93,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
   def waitForDistributionInfo(graph: Map[Int, Seq[Int]], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case GraphDistribution(nodeLocator) =>
-        searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, -1)
+        searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1)
 
       case FindNearestNeighbors(value, k, asker) =>
         ctx.self ! FindNearestNeighbors(value, k, asker)
@@ -235,7 +234,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
     Behaviors.receiveMessagePartial {
       case UpdatedLocalData(newData) =>
         val updatedData = CacheData(settings.cacheSize, newData)
-        checkIfRedistributionDone(toSend, oldGraph, nodeLocator, newGraph, nodesExpected, graphMessageSize, updatedData, true, redistributionCoordinator)
+        checkIfRedistributionDone(toSend, oldGraph, nodeLocator, newGraph, nodesExpected, graphMessageSize, updatedData, dataUpdated = true, redistributionCoordinator)
 
       case PartialGraph(partialGraph, sender) =>
         val updatedGraph = newGraph ++ partialGraph
