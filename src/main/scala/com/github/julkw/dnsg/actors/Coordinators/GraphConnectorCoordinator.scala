@@ -110,10 +110,10 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
         if (waitOnNodeAck == 0) {
           supervisor ! ConnectionAchieved
         }
-        connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, true)
+        connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, allConnected = true)
 
       case StartGraphRedistribution(redistributionCoordinator) =>
-        graphConnectors.foreach(graphConnector => graphConnector ! StartGraphRedistributers(redistributionCoordinator))
+        graphConnectors.foreach(graphConnector => graphConnector ! StartGraphRedistributers(redistributionCoordinator, graphNodeLocator))
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, latestUnconnectedNodeIndex, allConnected)
 
       case CleanUpConnectors =>

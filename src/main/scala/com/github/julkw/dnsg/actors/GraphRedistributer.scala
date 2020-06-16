@@ -4,22 +4,22 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{AssignWithParentsDone, PrimaryAssignmentParents, PrimaryNodeAssignments, RedistributerDistributionInfo, RedistributionCoordinationEvent, SecondaryNodeAssignments}
 import com.github.julkw.dnsg.actors.GraphConnector.CTreeNode
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.SearchOnGraphEvent
-import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}
-
-import scala.collection.mutable
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetLocation, Location, SearchOnGraphEvent}
+import com.github.julkw.dnsg.util.{Distance, NodeLocator, dNSGSerializable}
 
 object GraphRedistributer {
 
   sealed trait RedistributionEvent extends dNSGSerializable
 
-  final case class DistributeData(workers: Set[ActorRef[SearchOnGraphEvent]], nodeLocator: NodeLocator[RedistributionEvent]) extends RedistributionEvent
+  final case class DistributeData(nodeLocator: NodeLocator[RedistributionEvent]) extends RedistributionEvent
 
   // calculating subtree-sizes
   final case class ChildSubtreeSize(g_node: Int, childIndex: Int, childSubtreeSize: Int) extends RedistributionEvent
 
   // Search for nodes to assign
   final case class FindNodesInRange(g_node: Int, minNodes: Int, maxNodes: Int, removeFromDescendants: Int, waitingList: Seq[WaitingListEntry], workersLeft: Set[ActorRef[SearchOnGraphEvent]], nodesLeft: Int) extends RedistributionEvent
+
+  final case class WrappedSearchOnGraphEvent(event: SearchOnGraphEvent) extends RedistributionEvent
 
   // assigning nodes to workers
   final case class AssignWithChildren(g_node: Int, worker: ActorRef[SearchOnGraphEvent]) extends RedistributionEvent
@@ -35,33 +35,36 @@ object GraphRedistributer {
 
   protected case class WaitingListEntry(g_node: Int, subTreeSize: Int)
 
-  def apply(tree: Map[Int, CTreeNode], redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]): Behavior[RedistributionEvent] = Behaviors.setup(ctx =>
-    Behaviors.withTimers(timers =>
-      new GraphRedistributer(tree, redistributionCoordinator, timers, ctx).setup()
-    )
-  )
+  def apply(tree: Map[Int, CTreeNode],
+            graphNodeLocator: NodeLocator[SearchOnGraphEvent],
+            redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]): Behavior[RedistributionEvent] =
+    Behaviors.setup { ctx =>
+      val searchOnGraphEventAdapter: ActorRef[SearchOnGraphEvent] = ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event) }
+      new GraphRedistributer(tree, graphNodeLocator, searchOnGraphEventAdapter, redistributionCoordinator, ctx).setup()
+    }
 }
 
 class GraphRedistributer(tree: Map[Int, CTreeNode],
+                         graphNodeLocator: NodeLocator[SearchOnGraphEvent],
+                         searchOnGraphEventAdapter: ActorRef[SearchOnGraphEvent],
                          redistributionCoordinator: ActorRef[RedistributionCoordinationEvent],
-                         timers: TimerScheduler[GraphRedistributer.RedistributionEvent],
-                         ctx: ActorContext[GraphRedistributer.RedistributionEvent]) {
+                         ctx: ActorContext[GraphRedistributer.RedistributionEvent]) extends Distance {
   import GraphRedistributer._
 
   def setup(): Behavior[RedistributionEvent] = {
     redistributionCoordinator ! RedistributerDistributionInfo(tree.keys.toSeq, ctx.self)
-    val distributionTree: Map[Int, DistributionTreeInfo] = tree.transform((index, treeNode) => DistributionTreeInfo(1, 0, treeNode.children.size, None))
+    val distributionTree: Map[Int, DistributionTreeInfo] = tree.transform((_, treeNode) => DistributionTreeInfo(1, 0, treeNode.children.size, None))
     waitForStartSignal(distributionTree)
   }
 
   def waitForStartSignal(distributionTree: Map[Int, DistributionTreeInfo]): Behavior[RedistributionEvent] = Behaviors.receiveMessagePartial {
-    case DistributeData(workers, nodeLocator) =>
+    case DistributeData(nodeLocator) =>
       tree.foreach { case (node, nodeInfo) =>
         if (nodeInfo.children.isEmpty) {
           nodeLocator.findResponsibleActor(nodeInfo.parent) ! ChildSubtreeSize(nodeInfo.parent, node, 1)
         }
       }
-      calculateNodeSizes(distributionTree, workers, nodeLocator)
+      calculateNodeSizes(distributionTree, graphNodeLocator.allActors, nodeLocator)
 
     case ChildSubtreeSize(g_node, childIndex, childSubtreeSize) =>
       val currentNode = distributionTree(g_node)
@@ -108,7 +111,6 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
     }
 
   def distributeUsingTree(distributionTree: Map[Int, DistributionTreeInfo],
-                          workers: Set[ActorRef[SearchOnGraphEvent]],
                           nodeLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionEvent] =
     Behaviors.receiveMessagePartial {
       case FindNodesInRange(g_node, minNodes, maxNodes, removeFromDescendants, waitingList, workersLeft, nodesLeft) =>
@@ -120,36 +122,75 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
         if (withMe < minNodes) {
           val myEntry = WaitingListEntry(g_node, treeNode.stillToDistribute)
           nodeLocator.findResponsibleActor(parent) ! FindNodesInRange(parent, minNodes, maxNodes, treeNode.subTreeSize, waitingList :+ myEntry, workersLeft, nodesLeft)
+          distributeUsingTree(distributionTree, nodeLocator)
         } else if (withMe <= maxNodes) {
           val myEntry = WaitingListEntry(g_node, treeNode.stillToDistribute)
           val worker = workersLeft.head
           val updatedWaitingList = waitingList :+ myEntry
           assignNodesToWorker(updatedWaitingList, worker, nodeLocator)
           startSearchForNextWorkersNodes(parent, treeNode.subTreeSize, nodesLeft - withMe, workersLeft - worker, nodeLocator)
+          distributeUsingTree(distributionTree, nodeLocator)
+        } else if (waitingList.nonEmpty) {
+          // ask for locations of the potential next nodes to continue search so we can choose the closest one to the ones already in the waitingList
+          val nodesToChooseFrom = tree(g_node).children
+          val nodesWeNeedTheLocationFor = nodesToChooseFrom + waitingList.last.g_node
+          nodesWeNeedTheLocationFor.foreach(graphIndex => graphNodeLocator.findResponsibleActor(graphIndex) ! GetLocation(graphIndex, searchOnGraphEventAdapter))
+          chooseNodeToContinueSearch(Map.empty, nodesWeNeedTheLocationFor.size, g_node, minNodes, maxNodes, waitingList, workersLeft, nodesLeft, distributionTree, nodeLocator)
         } else {
-          // TODO instead of choosing the first child in the list, choose the one closest to the last entry in the waitingList?
-          // this would need exact locations, though
+          // continue search with random child
           val child = tree(g_node).children.head
-          // remove the child because the next time the search reaches me it will have been assigned something or be in the waiting list
           tree(g_node).children -= child
           nodeLocator.findResponsibleActor(child) ! FindNodesInRange(child, minNodes, maxNodes, 0, waitingList, workersLeft, nodesLeft)
+          distributeUsingTree(distributionTree, nodeLocator)
         }
-        distributeUsingTree(distributionTree, workers, nodeLocator)
 
       case AssignWithChildren(g_node, worker) =>
         distributionTree(g_node).assignedWorker = Some(worker)
         tree(g_node).children.foreach(child => nodeLocator.findResponsibleActor(child) ! AssignWithChildren(child, worker))
-        distributeUsingTree(distributionTree, workers, nodeLocator)
+        distributeUsingTree(distributionTree, nodeLocator)
 
       case SendPrimaryAssignments =>
         // ensure all AssignWithChildren messages have been processed (all nodes have been assigned to a worker)
         if (distributionTree.valuesIterator.exists(treeNode => treeNode.assignedWorker.isEmpty)) {
           ctx.self ! SendPrimaryAssignments
-          distributeUsingTree(distributionTree,  workers, nodeLocator)
+          distributeUsingTree(distributionTree, nodeLocator)
         } else {
           redistributionCoordinator ! PrimaryNodeAssignments(distributionTree.transform((_, distInfo) => distInfo.assignedWorker.get))
           findSecondaryAssignments(distributionTree, Map.empty, nodeLocator)
         }
+    }
+
+  def chooseNodeToContinueSearch(nodesToChooseFrom: Map[Int, Seq[Float]],
+                                 nodesExpected: Int,
+                                 parentNode: Int,
+                                 minNodes: Int,
+                                 maxNodes: Int,
+                                 waitingList: Seq[WaitingListEntry],
+                                 workersLeft: Set[ActorRef[SearchOnGraphEvent]],
+                                 nodesLeft: Int,
+                                 distributionTree: Map[Int, DistributionTreeInfo],
+                                 nodeLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionEvent] =
+    Behaviors.receiveMessagePartial {
+      case WrappedSearchOnGraphEvent(event) =>
+        event match {
+          case Location(index, location) =>
+            val updatedNodesToChooseFrom = nodesToChooseFrom + (index -> location)
+            if (updatedNodesToChooseFrom.size == nodesExpected) {
+              val lastNode = waitingList.last.g_node
+              val lastChosenNodeLocation = updatedNodesToChooseFrom(lastNode)
+              val nextNode = (updatedNodesToChooseFrom - lastNode).toSeq.minBy(node => euclideanDist(node._2, lastChosenNodeLocation))._1
+              tree(parentNode).children -= nextNode
+              nodeLocator.findResponsibleActor(nextNode) ! FindNodesInRange(nextNode, minNodes, maxNodes, 0, waitingList, workersLeft, nodesLeft)
+              distributeUsingTree(distributionTree, nodeLocator)
+            } else {
+              chooseNodeToContinueSearch(updatedNodesToChooseFrom, nodesExpected, parentNode, minNodes, maxNodes, waitingList, workersLeft, nodesLeft, distributionTree, nodeLocator)
+            }
+        }
+
+      case AssignWithChildren(g_node, worker) =>
+        distributionTree(g_node).assignedWorker = Some(worker)
+        tree(g_node).children.foreach(child => nodeLocator.findResponsibleActor(child) ! AssignWithChildren(child, worker))
+        chooseNodeToContinueSearch(nodesToChooseFrom, nodesExpected, parentNode, minNodes, maxNodes, waitingList, workersLeft, nodesLeft, distributionTree, nodeLocator)
     }
 
   def findSecondaryAssignments(distributionTree: Map[Int, DistributionTreeInfo],
@@ -180,13 +221,12 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
                         workers: Set[ActorRef[SearchOnGraphEvent]],
                         nodeLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionEvent] = {
     distributionTree.valuesIterator.foreach(nodeInfo => nodeInfo.stillToDistribute = nodeInfo.subTreeSize)
-    distributeUsingTree(distributionTree, workers, nodeLocator)
+    distributeUsingTree(distributionTree, nodeLocator)
   }
 
   def assignNodesToWorker(waitingList: Seq[WaitingListEntry],
                           worker: ActorRef[SearchOnGraphEvent],
                           nodeLocator: NodeLocator[RedistributionEvent]): Unit = {
-    val inList = waitingList.map(_.g_node)
     redistributionCoordinator ! PrimaryAssignmentParents(worker, waitingList.map(_.g_node))
     waitingList.foreach { entry =>
       val nodeIndex = entry.g_node

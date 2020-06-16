@@ -88,7 +88,6 @@ class KnngWorker(data: CacheData[Float],
         right ! ResponsibleFor(splitNode.right.data, treeDepth + 1, rightWorkers)
         buildDistributionTree()
       } else {
-        ctx.log.info("Responsible for {}", responsibility.length)
         // this is a leaf node for data distribution
         clusterCoordinator ! KnngDistributionInfo(responsibility, ctx.self)
         // Build local tree while waiting on DistributionTree message

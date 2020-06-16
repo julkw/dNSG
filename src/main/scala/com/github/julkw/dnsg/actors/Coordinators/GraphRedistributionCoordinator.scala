@@ -2,10 +2,8 @@ package com.github.julkw.dnsg.actors.Coordinators
 
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import com.github.julkw.dnsg.actors.Coordinators
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionAchieved, ConnectorsCleanedUp, CoordinationEvent, RedistributionFinished}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{CleanUpConnectors, ConnectionCoordinationEvent, StartGraphRedistribution}
-import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{NodeCoordinationEvent, StartBuildingNSG}
 import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, StartRedistributingData}
 import com.github.julkw.dnsg.actors.GraphRedistributer.{AssignWithParents, DistributeData, RedistributionEvent, SendSecondaryAssignments}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{RedistributeGraph, SearchOnGraphEvent}
@@ -84,7 +82,7 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
         redistributionLocations.addLocation(responsibilities, redistributer) match {
           case Some(redistributionLocator) =>
             ctx.log.info("All redistributers started")
-            redistributionLocator.allActors.foreach(graphRedistributer => graphRedistributer ! DistributeData(graphNodeLocator.allActors, redistributionLocator))
+            redistributionLocator.allActors.foreach(graphRedistributer => graphRedistributer ! DistributeData(redistributionLocator))
             waitOnInitialRedistributionAssignments(connectorCoordinator, NodeLocatorBuilder(graphNodeLocator.graphSize), redistributionLocator, Map.empty)
           case None =>
             waitOnRedistributionDistributionInfo(connectorCoordinator, redistributionLocations)
