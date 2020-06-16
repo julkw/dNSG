@@ -364,7 +364,9 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
   def waitForNSG(nodeLocator: NodeLocator[SearchOnGraphEvent], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case PartialNSG(graph) =>
-        clusterCoordinator ! NSGonSOG
+        val myResponsibility = nodeLocator.locationData.zipWithIndex.filter(locData => locData._1 == ctx.self).map(_._2)
+        val responsibilityMidPoint = (0 until data.data.dimension).map(dim => myResponsibility.map(index => data.get(index)).map(_(dim)).sum / myResponsibility.length)
+        clusterCoordinator ! NSGonSOG(responsibilityMidPoint, ctx.self)
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1)
     }
 }

@@ -36,3 +36,9 @@ case class NodeLocator[T](locationData: Array[ActorRef[T]], allActors: Set[Actor
    locationData(nodeIndex)
   }
 }
+
+case class QueryNodeLocator[T](actorMidPoints: Seq[(ActorRef[T], Seq[Float])]) extends Distance {
+  def findResponsibleActor(query: Seq[Float]): ActorRef[T] = {
+    actorMidPoints.minBy(actorInfo => euclideanDist(actorInfo._2, query))._1
+  }
+}

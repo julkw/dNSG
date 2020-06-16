@@ -134,10 +134,9 @@ class GraphRedistributer(tree: Map[Int, CTreeNode],
           distributeUsingTree(distributionTree, nodeLocator)
         } else if (optimalRedistribution && waitingList.nonEmpty) {
           // ask for locations of the potential next nodes to continue search so we can choose the closest one to the ones already in the waitingList
-          val nodesToChooseFrom = tree(g_node).children
-          val nodesWeNeedTheLocationFor = nodesToChooseFrom + waitingList.last.g_node
-          nodesWeNeedTheLocationFor.foreach(graphIndex => graphNodeLocator.findResponsibleActor(graphIndex) ! GetLocation(graphIndex, searchOnGraphEventAdapter))
-          chooseNodeToContinueSearch(Map.empty, nodesWeNeedTheLocationFor.size, g_node, minNodes, maxNodes, waitingList, workersLeft, nodesLeft, distributionTree, nodeLocator)
+          val locationsNeeded = tree(g_node).children + waitingList.last.g_node
+          locationsNeeded.foreach(graphIndex => graphNodeLocator.findResponsibleActor(graphIndex) ! GetLocation(graphIndex, searchOnGraphEventAdapter))
+          chooseNodeToContinueSearch(Map.empty, locationsNeeded.size, g_node, minNodes, maxNodes, waitingList, workersLeft, nodesLeft, distributionTree, nodeLocator)
         } else {
           // continue search with random child
           val child = tree(g_node).children.head

@@ -45,7 +45,7 @@ object ClusterCoordinator {
 
   final case class InitialNSGDone(nsgMergers: ActorRef[MergeNSGEvent]) extends CoordinationEvent
 
-  final case object NSGonSOG extends CoordinationEvent
+  final case class NSGonSOG(responsibilityMidPoint: Seq[Float], sender: ActorRef[SearchOnGraphEvent]) extends CoordinationEvent
 
   // testing the graph
   final case class TestQueries(queries: Seq[(Seq[Float], Seq[Int])]) extends CoordinationEvent
@@ -213,30 +213,32 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         if (updatedMergers.size == settings.nodesExpected) {
           ctx.log.info("Initial NSG seems to be done")
           nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraph)
-          moveNSGToSog(nodeLocator.allActors.size, navigatingNodeIndex, nodeLocator, nodeCoordinators, dataHolder)
+          moveNSGToSog(navigatingNodeIndex, Seq.empty, nodeLocator, nodeCoordinators, dataHolder)
         } else {
           waitOnNSG(updatedMergers, navigatingNodeIndex, nodeLocator, nodeCoordinators, dataHolder)
         }
     }
 
-  def moveNSGToSog(waitingOnGraphHolders: Int,
-                   navigatingNodeIndex: Int,
+  def moveNSGToSog(navigatingNodeIndex: Int,
+                   actorMidPoints: Seq[(ActorRef[SearchOnGraphEvent], Seq[Float])],
                    nodeLocator: NodeLocator[SearchOnGraphEvent],
                    nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                    dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
-      case NSGonSOG =>
-        if (waitingOnGraphHolders == 1) {
+      case NSGonSOG(responsibilityMidPoint, sender) =>
+        val updatedActorMidPoints = actorMidPoints :+ (sender, responsibilityMidPoint)
+        if (updatedActorMidPoints.length == nodeLocator.allActors.size) {
           ctx.log.info("NSG moved to SearchOnGraphActors. Now connecting graph")
           ctx.spawn(GraphConnectorCoordinator(navigatingNodeIndex, nodeLocator, ctx.self), name="GraphConnectorCoordinator")
-          waitForConnectedGraphs(navigatingNodeIndex, nodeLocator, nodeCoordinators, dataHolder)
+          val queryNodeLocator = QueryNodeLocator(updatedActorMidPoints)
+          waitForConnectedGraphs(navigatingNodeIndex, queryNodeLocator, nodeCoordinators, dataHolder)
         } else {
-          moveNSGToSog(waitingOnGraphHolders - 1, navigatingNodeIndex, nodeLocator, nodeCoordinators, dataHolder)
+          moveNSGToSog(navigatingNodeIndex, updatedActorMidPoints, nodeLocator, nodeCoordinators, dataHolder)
         }
     }
 
     def waitForConnectedGraphs(navigatingNodeIndex: Int,
-                               nodeLocator: NodeLocator[SearchOnGraphEvent],
+                               nodeLocator: QueryNodeLocator[SearchOnGraphEvent],
                                nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                                dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial {
@@ -248,14 +250,13 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       }
 
     def testNSG(navigatingNodeIndex: Int,
-                nodeLocator: NodeLocator[SearchOnGraphEvent],
+                nodeLocator: QueryNodeLocator[SearchOnGraphEvent],
                 nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                 queries: Map[Seq[Float], Seq[Int]],
                 sumOfNeighborsFound: Int): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial{
         case TestQueries(testQueries) =>
-          // TODO instead of using the NNActor, find a way to choose them using the query
-          testQueries.foreach(query => nodeLocator.findResponsibleActor(navigatingNodeIndex) !
+          testQueries.foreach(query => nodeLocator.findResponsibleActor(query._1) !
               FindNearestNeighborsStartingFrom(query._1, navigatingNodeIndex, settings.k, ctx.self))
           testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, testQueries.toMap, sumOfNeighborsFound)
 
