@@ -79,9 +79,8 @@ class NodeCoordinator(settings: Settings,
       assert(data.localDataSize > 0)
       ctx.log.info("Successfully loaded data")
       // create Actor to start distribution of data
-      val maxResponsibilityPerNode: Int = data.localDataSize / settings.workers + data.localDataSize / 10
-      val kw = ctx.spawn(KnngWorker(data, maxResponsibilityPerNode, clusterCoordinator, ctx.self), name = "KnngWorker")
-      kw ! ResponsibleFor(data.localIndices, 0)
+      val kw = ctx.spawn(KnngWorker(data, clusterCoordinator, ctx.self), name = "KnngWorker")
+      kw ! ResponsibleFor(data.localIndices, 0, settings.workers)
       waitForKnng(Set.empty, data)
   }
 

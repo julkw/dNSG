@@ -1,7 +1,5 @@
 package com.github.julkw.dnsg.actors.nndescent
 
-import akka.actor.typed.receptionist.Receptionist
-
 import scala.concurrent.duration._
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
@@ -22,7 +20,7 @@ object KnngWorker {
   sealed trait BuildGraphEvent extends dNSGSerializable
 
   // setup
-  final case class ResponsibleFor(responsibility: Seq[Int], treeDepth: Int) extends BuildGraphEvent
+  final case class ResponsibleFor(responsibility: Seq[Int], treeDepth: Int, workers: Int) extends BuildGraphEvent
 
   final case class BuildApproximateGraph(nodeLocator: NodeLocator[BuildGraphEvent]) extends BuildGraphEvent
 
@@ -56,21 +54,19 @@ object KnngWorker {
   final case class SOGDistributionInfo(treeNode: TreeNode[ActorRef[SearchOnGraphEvent]], sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
 
   def apply(data: LocalData[Float],
-            maxResponsibility: Int,
             clusterCoordinator: ActorRef[CoordinationEvent],
             localCoordinator: ActorRef[NodeCoordinationEvent]): Behavior[BuildGraphEvent] = Behaviors.setup { ctx =>
     localCoordinator ! LocalKnngWorker(ctx.self)
     val settings = Settings(ctx.system.settings.config)
     Behaviors.withTimers(timers =>
       new KnngWorker(CacheData(settings.cacheSize, data),
-        new WaitingOnLocation, maxResponsibility, settings, clusterCoordinator, localCoordinator, timers, ctx).buildDistributionTree()
+        new WaitingOnLocation, settings, clusterCoordinator, localCoordinator, timers, ctx).buildDistributionTree()
     )
   }
 }
 
 class KnngWorker(data: CacheData[Float],
                  waitingOnLocation: WaitingOnLocation,
-                 maxResponsibility: Int,
                  settings: Settings,
                  clusterCoordinator: ActorRef[CoordinationEvent],
                  localCoordinator: ActorRef[NodeCoordinationEvent],
@@ -79,16 +75,20 @@ class KnngWorker(data: CacheData[Float],
   import KnngWorker._
 
   def buildDistributionTree(): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
-    case ResponsibleFor(responsibility, treeDepth) =>
+    case ResponsibleFor(responsibility, treeDepth, workers) =>
       val treeBuilder: TreeBuilder = TreeBuilder(data.data, settings.k)
-      if(responsibility.length > maxResponsibility) {
+      if(workers > 1) {
+        val leftWorkers: Int = workers / 2
+        val rightWorkers: Int = workers - leftWorkers
+        val splitPoint: Float = leftWorkers.toFloat / workers.toFloat
         // further split the data
-        val splitNode: SplitNode[Seq[Int]] = treeBuilder.oneLevelSplit(responsibility)
-        val right = ctx.spawn(KnngWorker(data.data, maxResponsibility, clusterCoordinator, localCoordinator), "KnngWorker" + treeDepth.toString)
-        ctx.self ! ResponsibleFor(splitNode.left.data, treeDepth + 1)
-        right ! ResponsibleFor(splitNode.right.data, treeDepth + 1)
+        val splitNode: SplitNode[Seq[Int]] = treeBuilder.oneLevelSplit(responsibility, splitPoint)
+        val right = ctx.spawn(KnngWorker(data.data, clusterCoordinator, localCoordinator), "KnngWorker" + treeDepth.toString)
+        ctx.self ! ResponsibleFor(splitNode.left.data, treeDepth + 1, leftWorkers)
+        right ! ResponsibleFor(splitNode.right.data, treeDepth + 1, rightWorkers)
         buildDistributionTree()
       } else {
+        ctx.log.info("Responsible for {}", responsibility.length)
         // this is a leaf node for data distribution
         clusterCoordinator ! KnngDistributionInfo(responsibility, ctx.self)
         // Build local tree while waiting on DistributionTree message
