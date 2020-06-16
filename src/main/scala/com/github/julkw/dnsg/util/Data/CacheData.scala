@@ -1,7 +1,7 @@
 package com.github.julkw.dnsg.util.Data
 
 case class CacheData[T](cacheSize: Int, data: LocalData[T]) {
-  val cache = NodeCacheLRU[T](cacheSize)
+  val cache: NodeCacheLRU[T] = NodeCacheLRU[T](cacheSize)
 
   def get(globalIndex: Int): Seq[T] = {
     // this assumes, that whoever called this method checked isLocal first

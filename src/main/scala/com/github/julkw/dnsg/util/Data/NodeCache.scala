@@ -77,7 +77,7 @@ case class NodeCacheRandom[T](size: Int) extends NodeCache[T] {
     nodes(index)
   }
 
-  def currentSize: Int = {
+  def currentSize(): Int = {
     nodes.size
   }
 

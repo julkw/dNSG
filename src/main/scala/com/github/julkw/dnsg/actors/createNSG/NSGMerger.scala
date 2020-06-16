@@ -62,7 +62,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
     Behaviors.receiveMessagePartial {
       case ListingResponse(nsgMergerServiceKey.Listing(listings)) =>
         if (listings.size >= nodesExpected) {
-          buildGraph(graph, messagesReceived=0, graph.size, awaitingNeighborAcks=0, listings)
+          buildGraph(graph, graph.size, awaitingNeighborAcks=0, listings)
         } else {
           waitForRegistrations(graph, listings)
         }
@@ -77,15 +77,13 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         waitForRegistrations(graph, mergers)
     }
 
-  // TODO change messagesReceived and Expected to waitingOnReverseNeighbors or something similar
   def buildGraph(graph: mutable.Map[Int, Seq[Int]],
-                 messagesReceived: Int,
-                 messagesExpected: Int,
+                 waitingOnMessages: Int,
                  awaitingNeighborAcks: Int,
                  mergers: Set[ActorRef[MergeNSGEvent]]): Behavior[MergeNSGEvent] = Behaviors.receiveMessagePartial {
     case ListingResponse(nsgMergerServiceKey.Listing(listings)) =>
       // this shouldn't happen here
-      buildGraph(graph, messagesReceived, messagesExpected, awaitingNeighborAcks, listings)
+      buildGraph(graph, waitingOnMessages, awaitingNeighborAcks, listings)
 
     case ReverseNeighbors(nodeIndex, reverseNeighbors) =>
       var awaitingAcks = 0
@@ -103,23 +101,23 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
             ctx.self ! ReverseNeighbors(nodeIndex, Seq(neighborIndex))
         }
       }
-      val updatedMessagesExpected = messagesExpected + extraMessagesExpected
+      val updatedMessagesExpected = waitingOnMessages - 1 + extraMessagesExpected
       val updatedNeighborAcks = awaitingNeighborAcks + awaitingAcks
-      if (messagesReceived + 1 == updatedMessagesExpected && updatedNeighborAcks == 0) {
+      if (updatedMessagesExpected == 0 && updatedNeighborAcks == 0) {
         supervisor ! InitialNSGDone(ctx.self)
       }
-      buildGraph(graph, messagesReceived + 1, updatedMessagesExpected, updatedNeighborAcks, mergers)
+      buildGraph(graph, updatedMessagesExpected, updatedNeighborAcks, mergers)
 
     case AddNeighbor(nodeIndex, neighborIndex, sendAckTo) =>
       graph(nodeIndex) = graph(nodeIndex) :+ neighborIndex
       sendAckTo ! NeighborReceived
-      buildGraph(graph, messagesReceived, messagesExpected, awaitingNeighborAcks, mergers)
+      buildGraph(graph, waitingOnMessages, awaitingNeighborAcks, mergers)
 
     case NeighborReceived =>
-      if (messagesReceived == messagesExpected && awaitingNeighborAcks == 1) {
+      if (waitingOnMessages == 0 && awaitingNeighborAcks == 1) {
         supervisor ! InitialNSGDone(ctx.self)
       }
-      buildGraph(graph, messagesReceived, messagesExpected, awaitingNeighborAcks - 1, mergers)
+      buildGraph(graph, waitingOnMessages, awaitingNeighborAcks - 1, mergers)
 
     case GetPartialNSG(nodes, sender) =>
       // should only get this message after all NSGMergers told the NodeCoordinator that they are done

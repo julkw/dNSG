@@ -50,5 +50,7 @@ case class Settings(config: Config) {
     ctx.log.info("lines: {}", lines)
     ctx.log.info("maxMessageSize: {}", maxMessageSize)
     ctx.log.info("cacheSize: {}", cacheSize)
+    ctx.log.info("data redistribution option: {}", dataRedistribution)
+    ctx.log.info("data replication strategy: {}", dataReplication)
   }
 }

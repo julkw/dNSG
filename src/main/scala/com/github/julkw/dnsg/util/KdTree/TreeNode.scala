@@ -7,7 +7,6 @@ trait TreeNode[dataType] {
   def data: dataType
 }
 case class LeafNode[T](data: T) extends TreeNode[T] {
-  // TODO this seems ugly, but I do not know enough about Scala to figure out a prettier way yet
   def queryLeaf(query: Seq[Float]): LeafNode[T] = {
     this
   }

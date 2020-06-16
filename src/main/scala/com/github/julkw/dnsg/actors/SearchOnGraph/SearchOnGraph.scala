@@ -16,13 +16,11 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
                              ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends Distance {
   // data type for more readable code
   protected case class QueryCandidate(index: Int, distance: Double, var processed: Boolean)
-  // TODO rename to something that includes all information contained
   // also refactor to remove vars?
   protected case class QueryInfo(query: Seq[Float], neighborsWanted: Int, var candidates: Seq[QueryCandidate], var waitingOn: Int)
 
   protected case class LocationTimerKey(locationIndex: Int)
 
-  // TODO the next two functions are not great because of code duplication and working on data structures in place. Maybe Refactor
   def updateCandidates(queryInfo: QueryInfo,
                        queryId: Int,
                        processedIndex: Int,
