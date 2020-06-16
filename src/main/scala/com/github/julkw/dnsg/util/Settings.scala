@@ -22,14 +22,8 @@ case class Settings(config: Config) {
 
   val cacheSize: Int = config.getInt(s"$namespace.cache-size")
 
-  // TODO replace with one message size for all message kinds that is defined over max number of ints/floats to be send in one message
-  val dataMessageSize: Int = config.getInt(s"$namespace.data-message-size")
-
-  val nnDescentMessageSize: Int = config.getInt(s"$namespace.nnDescent-message-size")
-
-  val graphMessageSize: Int = config.getInt(s"$namespace.graph-message-size")
-
-  val connectMessageSize: Int = config.getInt(s"$namespace.connect-message-size")
+  // this is defined over the number of ints/floats that can be send in one message. It does not take into account any Boxing overhead though
+  val maxMessageSize: Int = config.getInt(s"$namespace.max-message-size")
 
   // for testing
   val queryFilePath: String = config.getString(s"$namespace.query-testing.query-file")
@@ -47,7 +41,10 @@ case class Settings(config: Config) {
     ctx.log.info("k: {}", k)
     ctx.log.info("sampleRate: {}", sampleRate)
     ctx.log.info("workers: {}", workers)
+    ctx.log.info("nodes: {}", nodesExpected)
     ctx.log.info("maxReverseNeighbors: {}", maxReverseNeighbors)
     ctx.log.info("lines: {}", lines)
+    ctx.log.info("maxMessageSize: {}", maxMessageSize)
+    ctx.log.info("cacheSize: {}", cacheSize)
   }
 }

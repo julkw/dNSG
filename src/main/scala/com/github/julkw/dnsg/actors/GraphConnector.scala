@@ -52,11 +52,12 @@ object GraphConnector {
 
   def apply(data: LocalData[Float],
             graph: Map[Int, Seq[Int]],
-            responsiblity: Seq[Int],
+            responsibility: Seq[Int],
             supervisor: ActorRef[ConnectionCoordinationEvent]): Behavior[ConnectGraphEvent] = Behaviors.setup { ctx =>
-    val messageSize = Settings(ctx.system.settings.config).connectMessageSize
+    // three seqs with each element containing two Ints -> limit each seq's size by maxMessageSize/6
+    val messageSize = Settings(ctx.system.settings.config).maxMessageSize / 6
     Behaviors.withTimers(timers =>
-      new GraphConnector(data, graph, responsiblity, messageSize, timers, supervisor, ctx).setup()
+      new GraphConnector(data, graph, responsibility, messageSize, timers, supervisor, ctx).setup()
     )
   }
 }

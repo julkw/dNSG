@@ -219,7 +219,7 @@ class KnngWorker(data: CacheData[Float],
         nnDescent(nodeLocator, graph, reverseNeighbors, toSend, mightBeDone, saidImDone)
 
       case GetNNDescentInfo(sender) =>
-        val messagesToSend = toSend(sender).sendMessage(settings.nnDescentMessageSize)
+        val messagesToSend = toSend(sender).sendMessage(settings.maxMessageSize)
         if (messagesToSend.nonEmpty) {
           sender ! NNDescentInfo(messagesToSend, ctx.self)
           nnDescent(nodeLocator, graph, reverseNeighbors, toSend, mightBeDone, saidImDone)
@@ -344,7 +344,7 @@ class KnngWorker(data: CacheData[Float],
   def sendChangesImmediately(toSend: Map[ActorRef[BuildGraphEvent], NNDInfo]): Unit = {
     toSend.foreach { case (worker, nndInfo) =>
       if (nndInfo.sendImmediately && nndInfo.nonEmpty) {
-        val messageToSend = nndInfo.sendMessage(settings.nnDescentMessageSize)
+        val messageToSend = nndInfo.sendMessage(settings.maxMessageSize)
         worker ! NNDescentInfo(messageToSend, ctx.self)
         nndInfo.sendImmediately = false
       }
