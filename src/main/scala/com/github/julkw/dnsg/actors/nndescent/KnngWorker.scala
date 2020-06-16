@@ -219,13 +219,13 @@ class KnngWorker(data: CacheData[Float],
         } else {
           sender ! NoNewInfo(ctx.self)
           toSend(sender).sendImmediately = true
-          val probablyDone = checkIfDone(mightBeDone, nodeLocator, toSend)
+          val probablyDone = checkIfDone(mightBeDone, nodeLocator, toSend, saidImDone)
           nnDescent(nodeLocator, graph, reverseNeighbors, toSend, mightBeDone, probablyDone)
         }
 
       case NoNewInfo(sender) =>
         val mightBeDoneWorkers = mightBeDone + sender
-        val probablyDone = checkIfDone(mightBeDoneWorkers, nodeLocator, toSend)
+        val probablyDone = checkIfDone(mightBeDoneWorkers, nodeLocator, toSend, saidImDone)
         nnDescent(nodeLocator, graph, reverseNeighbors, toSend, mightBeDoneWorkers, probablyDone)
 
       case NNDescentInfo(info, sender) =>
@@ -272,7 +272,7 @@ class KnngWorker(data: CacheData[Float],
         }
         sender ! GetNNDescentInfo(ctx.self)
         sendChangesImmediately(toSend)
-        nnDescent(nodeLocator, updatedGraph, updatedReverseNeighbors, toSend, mightBeDone - sender, false)
+        nnDescent(nodeLocator, updatedGraph, updatedReverseNeighbors, toSend, mightBeDone - sender, saidImDone = false)
 
       case MoveGraph(graphHolder) =>
         ctx.log.info("Average distance in graph after nndescent: {}", averageGraphDist(graph, settings.k))
@@ -342,12 +342,19 @@ class KnngWorker(data: CacheData[Float],
     }
   }
 
-  def checkIfDone(mightBeDoneWorkers: Set[ActorRef[BuildGraphEvent]], nodeLocator: NodeLocator[BuildGraphEvent], toSend: Map[ActorRef[BuildGraphEvent], NNDInfo]): Boolean = {
-    val probablyDone = nodeLocator.allActors.size == mightBeDoneWorkers.size && toSend.forall(toSendTo => toSendTo._2.isEmpty)
-    if (probablyDone) {
-      clusterCoordinator ! FinishedNNDescent(ctx.self)
+  def checkIfDone(mightBeDoneWorkers: Set[ActorRef[BuildGraphEvent]],
+                  nodeLocator: NodeLocator[BuildGraphEvent],
+                  toSend: Map[ActorRef[BuildGraphEvent], NNDInfo],
+                  alreadySaidImDone: Boolean): Boolean = {
+    if (alreadySaidImDone) {
+      true
+    } else {
+      val probablyDone = nodeLocator.allActors.size == mightBeDoneWorkers.size && toSend.forall(toSendTo => toSendTo._2.isEmpty)
+      if (probablyDone) {
+        clusterCoordinator ! FinishedNNDescent(ctx.self)
+      }
+      probablyDone
     }
-    probablyDone
   }
 }
 
