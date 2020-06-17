@@ -30,6 +30,8 @@ object ClusterCoordinator {
 
   final case class CorrectFinishedNNDescent(worker: ActorRef[BuildGraphEvent]) extends CoordinationEvent
 
+  final case class ConfirmFinishedNNDescent(worker: ActorRef[BuildGraphEvent]) extends CoordinationEvent
+
   final case class RedistributionFinished(nodeLocator: NodeLocator[SearchOnGraphEvent]) extends CoordinationEvent
 
   // connecting the graph
@@ -93,49 +95,66 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
               nodeLocator.allActors.foreach{ worker =>
                 worker ! BuildApproximateGraph(nodeLocator)
               }
-              buildApproximateKnng(nodeLocator.allActors, 0, nodeLocator.graphSize, nodeCoordinators, dataHolder)
+              buildApproximateKnng(nodeLocator, workersDone = 0, nodeCoordinators, dataHolder)
             case None =>
               // not yet collected all distributionInfo
               distributeDataForKnng(nodeLocatorBuilder, nodeCoordinators, dataHolder)
           }
     }
 
-  def buildApproximateKnng(knngWorkers: Set[ActorRef[BuildGraphEvent]],
+  def buildApproximateKnng(nodeLocator: NodeLocator[BuildGraphEvent],
                            workersDone: Int,
-                           graphSize: Int,
                            nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                            dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case FinishedApproximateGraph =>
+        val knngWorkers = nodeLocator.allActors
         val updatedWorkersDone = workersDone + 1
         if (updatedWorkersDone == knngWorkers.size) {
           ctx.log.info("Approximate graph has been build. Start NNDescent")
           knngWorkers.foreach(worker => worker ! StartNNDescent)
-          waitForNnDescent(knngWorkers, Set.empty, graphSize, nodeCoordinators, dataHolder)
+          waitForNnDescent(nodeLocator, Set.empty, nodeCoordinators, dataHolder)
         } else {
-          buildApproximateKnng(knngWorkers, updatedWorkersDone, graphSize, nodeCoordinators, dataHolder)
+          buildApproximateKnng(nodeLocator, updatedWorkersDone, nodeCoordinators, dataHolder)
         }
     }
 
-  def waitForNnDescent(knngWorkers: Set[ActorRef[BuildGraphEvent]],
+  def waitForNnDescent(nodeLocator: NodeLocator[BuildGraphEvent],
                        doneWorkers: Set[ActorRef[BuildGraphEvent]],
-                       graphSize: Int,
                        nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                        dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case FinishedNNDescent(worker) =>
         val updatedWorkersDone = doneWorkers + worker
-        if (updatedWorkersDone.size == knngWorkers.size) {
-          ctx.log.info("NNDescent seems to be done")
-          nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraph)
-          waitOnSearchOnGraphDistributionInfo(NodeLocatorBuilder(graphSize), nodeCoordinators, dataHolder)
+        if (updatedWorkersDone.size == nodeLocator.allActors.size) {
+          nodeLocator.allActors.foreach(knngWorker => knngWorker ! GetNNDescentFinishedConfirmation)
+          confirmNNDescent(nodeLocator, Set.empty, nodeCoordinators, dataHolder)
         } else {
-          waitForNnDescent(knngWorkers, updatedWorkersDone, graphSize, nodeCoordinators, dataHolder)
+          waitForNnDescent(nodeLocator, updatedWorkersDone, nodeCoordinators, dataHolder)
         }
 
       case CorrectFinishedNNDescent(worker) =>
-        waitForNnDescent(knngWorkers, doneWorkers - worker, graphSize, nodeCoordinators, dataHolder)
+        waitForNnDescent(nodeLocator, doneWorkers - worker, nodeCoordinators, dataHolder)
     }
+
+  def confirmNNDescent(nodeLocator: NodeLocator[BuildGraphEvent],
+                       confirmedWorkers: Set[ActorRef[BuildGraphEvent]],
+                       nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
+                       dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] = Behaviors.receiveMessagePartial {
+    case ConfirmFinishedNNDescent(worker) =>
+      val updatedConfirmedWorkers = confirmedWorkers + worker
+      if (updatedConfirmedWorkers.size == nodeLocator.allActors.size) {
+        ctx.log.info("Done with NNDescent")
+        nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraph)
+        waitOnSearchOnGraphDistributionInfo(NodeLocatorBuilder(nodeLocator.graphSize), nodeCoordinators, dataHolder)
+      } else {
+        confirmNNDescent(nodeLocator, updatedConfirmedWorkers, nodeCoordinators, dataHolder)
+      }
+
+    case CorrectFinishedNNDescent(worker) =>
+      // apparently not all are done, go back to waiting again
+      waitForNnDescent(nodeLocator, nodeLocator.allActors - worker, nodeCoordinators, dataHolder)
+  }
 
   def waitOnSearchOnGraphDistributionInfo(nodeLocatorBuilder: NodeLocatorBuilder[SearchOnGraphEvent],
                                           nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],

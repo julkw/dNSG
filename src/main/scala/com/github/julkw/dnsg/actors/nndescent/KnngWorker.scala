@@ -3,7 +3,7 @@ package com.github.julkw.dnsg.actors.nndescent
 import scala.concurrent.duration._
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, CorrectFinishedNNDescent, FinishedApproximateGraph, FinishedNNDescent, KnngDistributionInfo}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConfirmFinishedNNDescent, CoordinationEvent, CorrectFinishedNNDescent, FinishedApproximateGraph, FinishedNNDescent, KnngDistributionInfo}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{LocalKnngWorker, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GraphAndData, SearchOnGraphEvent}
@@ -45,6 +45,8 @@ object KnngWorker {
   final case class NNDescentInfo(info: collection.Seq[NNDescentEvent], sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
 
   final case class NoNewInfo(sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
+
+  final case object GetNNDescentFinishedConfirmation extends BuildGraphEvent
 
   // give final graph to SearchOnGraph Actor
   final case class MoveGraph(graphHolder: ActorRef[SearchOnGraphEvent]) extends BuildGraphEvent
@@ -232,7 +234,6 @@ class KnngWorker(data: CacheData[Float],
         if (saidImDone) {
           clusterCoordinator ! CorrectFinishedNNDescent(ctx.self)
         }
-        // TODO find a nicer way to do this
         var updatedGraph = graph
         var updatedReverseNeighbors = reverseNeighbors
         info.foreach {
@@ -274,16 +275,22 @@ class KnngWorker(data: CacheData[Float],
         sendChangesImmediately(toSend)
         nnDescent(nodeLocator, updatedGraph, updatedReverseNeighbors, toSend, mightBeDone - sender, saidImDone = false)
 
+      case GetNNDescentFinishedConfirmation =>
+        if (saidImDone) {
+          clusterCoordinator ! ConfirmFinishedNNDescent(ctx.self)
+          ctx.log.info("Average distance in graph after nndescent: {}", averageGraphDist(graph, settings.k))
+        } // else my correction did not make it there in time but is still on the way so I do not need to send it again
+        nnDescent(nodeLocator, graph, reverseNeighbors, toSend, mightBeDone, saidImDone)
+
       case MoveGraph(graphHolder) =>
-        ctx.log.info("Average distance in graph after nndescent: {}", averageGraphDist(graph, settings.k))
-        // all nodes are done with NNDescent, nothing will change with the graph anymore, so it is moved to SearchOnGraph actors
+        // move graph to SearchOnGraphActor
         val cleanedGraph: Map[Int, Seq[Int]] = graph.map{case (index, neighbors) => index -> neighbors.map(_._1)}
         val searchOnGraphEventAdapter: ActorRef[SearchOnGraphActor.SearchOnGraphEvent] =
           ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
         graphHolder ! GraphAndData(cleanedGraph, data, searchOnGraphEventAdapter)
-        // TODO add some kind of check to ensure the arrival of the graph?
         Behaviors.stopped
     }
+
 
   def findLocalCandidates(query: Seq[Float], kdTree: KdTree[Seq[Int]]): Seq[(Int, Double)] = {
     // Find candidates on own tree using Efanna method
