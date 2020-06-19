@@ -4,7 +4,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{AllSharedReplication, NoReplication, OnlyParentsReplication}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
-import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries}
+import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, GetGraphFromFile, LoadDataEvent, ReadTestQueries, SaveGraphToFile}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, RedistributeGraph, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
@@ -40,14 +40,16 @@ object ClusterCoordinator {
   final case object ConnectorsCleanedUp extends CoordinationEvent
 
   // building the NSG
-
   final case class AverageValue(average: Seq[Float]) extends CoordinationEvent
-  // TODO move to SOGActor
+
   final case class KNearestNeighbors(query: Seq[Float], neighbors: Seq[Int]) extends CoordinationEvent
 
   final case class InitialNSGDone(nsgMergers: ActorRef[MergeNSGEvent]) extends CoordinationEvent
 
   final case class NSGonSOG(responsibilityMidPoint: Seq[Float], sender: ActorRef[SearchOnGraphEvent]) extends CoordinationEvent
+
+  // writing the graph to file
+  final case object GraphWrittenToFile extends CoordinationEvent
 
   // testing the graph
   final case class TestQueries(queries: Seq[(Seq[Float], Seq[Int])]) extends CoordinationEvent
@@ -135,6 +137,10 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
 
       case CorrectFinishedNNDescent(worker) =>
         waitForNnDescent(nodeLocator, doneWorkers - worker, nodeCoordinators, dataHolder)
+
+      case ConfirmFinishedNNDescent(worker) =>
+        // I'll ask again once all workers are done so this message can be ignored
+        waitForNnDescent(nodeLocator, doneWorkers, nodeCoordinators, dataHolder)
     }
 
   def confirmNNDescent(nodeLocator: NodeLocator[BuildGraphEvent],
@@ -146,17 +152,19 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       if (updatedConfirmedWorkers.size == nodeLocator.allActors.size) {
         ctx.log.info("Done with NNDescent")
         nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraph)
-        waitOnSearchOnGraphDistributionInfo(NodeLocatorBuilder(nodeLocator.graphSize), nodeCoordinators, dataHolder)
+        waitOnSearchOnGraphDistributionInfo(nodeLocator.allActors, NodeLocatorBuilder(nodeLocator.graphSize), nodeCoordinators, dataHolder)
       } else {
         confirmNNDescent(nodeLocator, updatedConfirmedWorkers, nodeCoordinators, dataHolder)
       }
 
     case CorrectFinishedNNDescent(worker) =>
+      ctx.log.info("Actor not done during confirmation")
       // apparently not all are done, go back to waiting again
       waitForNnDescent(nodeLocator, nodeLocator.allActors - worker, nodeCoordinators, dataHolder)
   }
 
-  def waitOnSearchOnGraphDistributionInfo(nodeLocatorBuilder: NodeLocatorBuilder[SearchOnGraphEvent],
+  def waitOnSearchOnGraphDistributionInfo(oldWorkers: Set[ActorRef[BuildGraphEvent]],
+                                          nodeLocatorBuilder: NodeLocatorBuilder[SearchOnGraphEvent],
                                           nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                                           dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
@@ -164,12 +172,29 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         nodeLocatorBuilder.addLocation(indices, actorRef) match {
           case Some (nodeLocator) =>
             ctx.log.info("All graphs now with SearchOnGraph actors")
-            dataHolder ! GetAverageValue(ctx.self)
+            oldWorkers.foreach(worker => worker ! AllKnngWorkersDone)
             nodeLocator.allActors.foreach(sogActor => sogActor ! GraphDistribution(nodeLocator))
-            findNavigatingNode(nodeLocator, nodeCoordinators, dataHolder)
+            val aknngFilename = settings.aknngFilePath
+            if (aknngFilename.nonEmpty) {
+              dataHolder ! SaveGraphToFile(aknngFilename, nodeLocator.allActors, nodeLocator.graphSize, None, ctx.self)
+              waitForAKNNGToBeWrittenToFile(nodeLocator, nodeCoordinators, dataHolder)
+            } else {
+              dataHolder ! GetAverageValue(ctx.self)
+              findNavigatingNode(nodeLocator, nodeCoordinators, dataHolder)
+            }
           case None =>
-            waitOnSearchOnGraphDistributionInfo(nodeLocatorBuilder, nodeCoordinators, dataHolder)
+            waitOnSearchOnGraphDistributionInfo(oldWorkers, nodeLocatorBuilder, nodeCoordinators, dataHolder)
         }
+    }
+
+  def waitForAKNNGToBeWrittenToFile(nodeLocator: NodeLocator[SearchOnGraphEvent],
+                                    nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
+                                    dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
+    Behaviors.receiveMessagePartial {
+      case GraphWrittenToFile =>
+        ctx.log.info("AKNNG written to file for potential later testing")
+        dataHolder ! GetAverageValue(ctx.self)
+        findNavigatingNode(nodeLocator, nodeCoordinators, dataHolder)
     }
 
   def findNavigatingNode(nodeLocator: NodeLocator[SearchOnGraphEvent],
@@ -249,7 +274,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         if (updatedActorMidPoints.length == nodeLocator.allActors.size) {
           ctx.log.info("NSG moved to SearchOnGraphActors. Now connecting graph")
           ctx.spawn(GraphConnectorCoordinator(navigatingNodeIndex, nodeLocator, ctx.self), name="GraphConnectorCoordinator")
-          val queryNodeLocator = QueryNodeLocator(updatedActorMidPoints)
+          val queryNodeLocator = QueryNodeLocator(updatedActorMidPoints, nodeLocator.graphSize)
           waitForConnectedGraphs(navigatingNodeIndex, queryNodeLocator, nodeCoordinators, dataHolder)
         } else {
           moveNSGToSog(navigatingNodeIndex, updatedActorMidPoints, nodeLocator, nodeCoordinators, dataHolder)
@@ -262,11 +287,37 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                                dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial {
         case ConnectionAchieved =>
-          ctx.log.info("All Search on Graph actors updated to connected graph, can start search now")
-          val settings = Settings(ctx.system.settings.config)
-          dataHolder ! ReadTestQueries(settings.queryFilePath, ctx.self)
-          testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, Map.empty, 0)
+          ctx.log.info("All Search on Graph actors updated to connected graph")
+          val nsgFilename = settings.nsgFilePath
+          if (nsgFilename.nonEmpty) {
+            dataHolder ! SaveGraphToFile(nsgFilename, nodeLocator.allActors, nodeLocator.graphSize, Some(navigatingNodeIndex), ctx.self)
+            waitForNSGToBeWrittenToFile(navigatingNodeIndex, nodeLocator, nodeCoordinators, dataHolder)
+          } else {
+            startTesting(navigatingNodeIndex, nodeLocator, nodeCoordinators, dataHolder)
+          }
       }
+
+    def waitForNSGToBeWrittenToFile(navigatingNodeIndex: Int,
+                                    nodeLocator: QueryNodeLocator[SearchOnGraphEvent],
+                                    nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
+                                    dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] =
+      Behaviors.receiveMessagePartial {
+        case GraphWrittenToFile =>
+          ctx.log.info("NSG written to file for potential later testing")
+          startTesting(navigatingNodeIndex, nodeLocator, nodeCoordinators, dataHolder)
+      }
+
+    def startTesting(navigatingNodeIndex: Int,
+                     nodeLocator: QueryNodeLocator[SearchOnGraphEvent],
+                     nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
+                     dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] = {
+      if (settings.queryFilePath.nonEmpty) {
+        dataHolder ! ReadTestQueries(settings.queryFilePath, ctx.self)
+        testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, Map.empty, sumOfNeighborsFound = 0)
+      } else {
+        shutdown(nodeCoordinators)
+      }
+    }
 
     def testNSG(navigatingNodeIndex: Int,
                 nodeLocator: QueryNodeLocator[SearchOnGraphEvent],
@@ -275,6 +326,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                 sumOfNeighborsFound: Int): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial{
         case TestQueries(testQueries) =>
+          ctx.log.info("Testing {} queries. Perfect answer would be {} correct nearest neighbors found.", testQueries.size, testQueries.size * settings.k)
           testQueries.foreach(query => nodeLocator.findResponsibleActor(query._1) !
               FindNearestNeighborsStartingFrom(query._1, navigatingNodeIndex, settings.k, ctx.self))
           testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, testQueries.toMap, sumOfNeighborsFound)
@@ -284,12 +336,16 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
           val newSum = sumOfNeighborsFound + correctNeighborIndices.intersect(neighbors).length
           if (queries.size == 1) {
             ctx.log.info("Overall correct neighbors found: {}", newSum)
-            nodeCoordinators.foreach { nodeCoordinator =>
-              nodeCoordinator ! AllDone
-            }
-            Behaviors.stopped
+            shutdown(nodeCoordinators)
           } else {
             testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, queries - query, newSum)
           }
       }
+
+  def shutdown(nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]]): Behavior[CoordinationEvent] = {
+    nodeCoordinators.foreach { nodeCoordinator =>
+      nodeCoordinator ! AllDone
+    }
+    Behaviors.stopped
+  }
 }

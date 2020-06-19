@@ -10,6 +10,10 @@ case class Settings(config: Config) {
 
   val inputFilePath: String = config.getString(s"$namespace.input-file")
 
+  val aknngFilePath: String = config.getString(s"$namespace.aknng-file")
+
+  val nsgFilePath: String = config.getString(s"$namespace.nsg-file")
+
   val k: Int = config.getInt(s"$namespace.k")
 
   val sampleRate: Double = config.getDouble(s"$namespace.sample-rate")

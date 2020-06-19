@@ -1,6 +1,5 @@
 package com.github.julkw.dnsg.actors.nndescent
 
-import scala.concurrent.duration._
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConfirmFinishedNNDescent, CoordinationEvent, CorrectFinishedNNDescent, FinishedApproximateGraph, FinishedNNDescent, KnngDistributionInfo}
@@ -48,12 +47,10 @@ object KnngWorker {
 
   final case object GetNNDescentFinishedConfirmation extends BuildGraphEvent
 
-  // give final graph to SearchOnGraph Actor
+  // after NNDescent
   final case class MoveGraph(graphHolder: ActorRef[SearchOnGraphEvent]) extends BuildGraphEvent
 
-  final case class WrappedSearchOnGraphEvent(event: SearchOnGraphActor.SearchOnGraphEvent) extends BuildGraphEvent
-
-  final case class SOGDistributionInfo(treeNode: TreeNode[ActorRef[SearchOnGraphEvent]], sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
+  final case object AllKnngWorkersDone extends BuildGraphEvent
 
   def apply(data: LocalData[Float],
             clusterCoordinator: ActorRef[CoordinationEvent],
@@ -278,19 +275,21 @@ class KnngWorker(data: CacheData[Float],
       case GetNNDescentFinishedConfirmation =>
         if (saidImDone) {
           clusterCoordinator ! ConfirmFinishedNNDescent(ctx.self)
-          ctx.log.info("Average distance in graph after nndescent: {}", averageGraphDist(graph, settings.k))
         } // else my correction did not make it there in time but is still on the way so I do not need to send it again
         nnDescent(nodeLocator, graph, reverseNeighbors, toSend, mightBeDone, saidImDone)
 
       case MoveGraph(graphHolder) =>
         // move graph to SearchOnGraphActor
+        ctx.log.info("Average distance in graph after nndescent: {}", averageGraphDist(graph, settings.k))
         val cleanedGraph: Map[Int, Seq[Int]] = graph.map{case (index, neighbors) => index -> neighbors.map(_._1)}
-        val searchOnGraphEventAdapter: ActorRef[SearchOnGraphActor.SearchOnGraphEvent] =
-          ctx.messageAdapter { event => WrappedSearchOnGraphEvent(event)}
-        graphHolder ! GraphAndData(cleanedGraph, data, searchOnGraphEventAdapter)
-        Behaviors.stopped
+        graphHolder ! GraphAndData(cleanedGraph, data)
+        waitForShutdown()
     }
 
+  def waitForShutdown(): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
+    case AllKnngWorkersDone =>
+      Behaviors.stopped
+  }
 
   def findLocalCandidates(query: Seq[Float], kdTree: KdTree[Seq[Int]]): Seq[(Int, Double)] = {
     // Find candidates on own tree using Efanna method
