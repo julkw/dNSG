@@ -1,7 +1,6 @@
 package com.github.julkw.dnsg
 import akka.actor.typed.scaladsl.Behaviors
 import akka.actor.typed.{ActorSystem, Behavior}
-import akka.cluster.typed.{Cluster, Join}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator
 import com.typesafe.config.ConfigFactory
 
@@ -30,7 +29,7 @@ object Main {
     }
 
     // Create an Akka system
-    val system = ActorSystem[Nothing](RootBehavior(filename), "dNSGSystem", config)
+    val system = ActorSystem[Nothing](RootBehavior(filename), "dNSG-system", config)
   }
 
   def parseArgs(args: Array[String]): (Option[Int], Option[String]) = {

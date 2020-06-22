@@ -8,8 +8,6 @@ case class Settings(config: Config) {
 
   private val namespace = "com.github.julkw.dnsg"
 
-  //val inputFilePath: String = config.getString(s"$namespace.input-file")
-
   val aknngFilePath: String = config.getString(s"$namespace.aknng-file")
 
   val nsgFilePath: String = config.getString(s"$namespace.nsg-file")
@@ -41,7 +39,6 @@ case class Settings(config: Config) {
   val lines: Int = config.getInt(s"$namespace.query-testing.lines")
 
   def printSettings(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]): Unit = {
-    //ctx.log.info("inputFile: {}", inputFilePath)
     ctx.log.info("k: {}", k)
     ctx.log.info("sampleRate: {}", sampleRate)
     ctx.log.info("workers: {}", workers)
