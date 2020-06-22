@@ -8,7 +8,7 @@ case class Settings(config: Config) {
 
   private val namespace = "com.github.julkw.dnsg"
 
-  val inputFilePath: String = config.getString(s"$namespace.input-file")
+  //val inputFilePath: String = config.getString(s"$namespace.input-file")
 
   val aknngFilePath: String = config.getString(s"$namespace.aknng-file")
 
@@ -36,16 +36,12 @@ case class Settings(config: Config) {
   // for testing
   val queryFilePath: String = config.getString(s"$namespace.query-testing.query-file")
 
-  val linesOffset: Int = config.getInt(s"$namespace.query-testing.lines-offset")
+  val queryResultFilePath: String = config.getString(s"$namespace.query-testing.query-result-file")
 
   val lines: Int = config.getInt(s"$namespace.query-testing.lines")
 
-  val dimensionOffset: Int = config.getInt(s"$namespace.query-testing.dimension-offset")
-
-  val dimensions: Int = config.getInt(s"$namespace.query-testing.dimensions")
-
   def printSettings(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]): Unit = {
-    ctx.log.info("inputFile: {}", inputFilePath)
+    //ctx.log.info("inputFile: {}", inputFilePath)
     ctx.log.info("k: {}", k)
     ctx.log.info("sampleRate: {}", sampleRate)
     ctx.log.info("workers: {}", workers)

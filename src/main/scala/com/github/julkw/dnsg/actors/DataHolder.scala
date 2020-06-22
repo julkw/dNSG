@@ -1,20 +1,14 @@
 package com.github.julkw.dnsg.actors
 
-import java.io.{BufferedInputStream, BufferedOutputStream, BufferedWriter, File, FileInputStream, FileOutputStream, FileWriter, PrintWriter}
-import java.nio
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-
 import akka.actor.typed.ActorRef
 import akka.actor.typed.Behavior
 import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{AverageValue, CoordinationEvent, DataSize, GraphWrittenToFile, TestQueries}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{DataRef, NodeCoordinationEvent}
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{SearchOnGraphEvent, SendGraphForFile}
 import com.github.julkw.dnsg.util.Data.{LocalData, LocalSequentialData, LocalUnorderedData}
-import com.github.julkw.dnsg.util.{NodeLocator, Settings, dNSGSerializable}
+import com.github.julkw.dnsg.util.{FileInteractor, NodeLocator, Settings, dNSGSerializable}
 
 import scala.language.postfixOps
 
@@ -23,9 +17,8 @@ object DataHolder {
   sealed trait LoadDataEvent extends dNSGSerializable
 
   // load data
-  final case class LoadSiftDataFromFile(expectedNodes: Int, filename: String, replyTo: ActorRef[NodeCoordinationEvent], clusterCoordinator: ActorRef[CoordinationEvent]) extends LoadDataEvent
-
-  final case class LoadPartialDataFromFile(expectedNodes: Int, filename: String, lineOffset: Int, linesUsed: Int, dimensionsOffset: Int, dimensionsUsed: Int, replyTo: ActorRef[NodeCoordinationEvent], clusterCoordinator: ActorRef[CoordinationEvent]) extends LoadDataEvent
+  // expects data in the .fvec format
+  final case class LoadDataFromFile(expectedNodes: Int, filename: String, lines: Int, clusterCoordinator: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
   // share data
   final case class PrepareForData(dataSize: Int, offset: Int, replyTo: ActorRef[LoadDataEvent]) extends LoadDataEvent
@@ -51,7 +44,7 @@ object DataHolder {
 
   final case class LocalAverage(value: Seq[Float], elementsUsed: Int) extends LoadDataEvent
 
-  final case class ReadTestQueries(filename: String, replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
+  final case class ReadTestQueries(queryFile: String, resultFile: String, replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
   final case class SaveGraphToFile(filename: String, graphHolders: Set[ActorRef[SearchOnGraphEvent]], graphSize: Int, navigatingNode: Option[Int], replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
@@ -71,7 +64,7 @@ object DataHolder {
   }
 }
 
-class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSize: Int, ctx: ActorContext[DataHolder.LoadDataEvent], listingAdapter: ActorRef[Receptionist.Listing]) {
+class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSize: Int, ctx: ActorContext[DataHolder.LoadDataEvent], listingAdapter: ActorRef[Receptionist.Listing]) extends FileInteractor {
   import DataHolder._
 
   def setup(): Behavior[LoadDataEvent] = {
@@ -85,26 +78,9 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
       case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
         loadData(listings)
 
-      case LoadSiftDataFromFile(expectedNodes, filename, replyTo, clusterCoordinator) =>
-        // TODO potentially send while reading for really big dataSets
-        val data = readData(filename)
-        clusterCoordinator ! DataSize(data.length, ctx.self)
-        if (expectedNodes == 1) {
-          // I am the only node in the cluster
-          val localData = LocalSequentialData(data, 0)
-          nodeCoordinator ! DataRef(localData)
-          holdData(localData, dataHolders)
-        } else if (dataHolders.size < expectedNodes) {
-          waitForDataHolders(data, expectedNodes, dataHolders)
-        } else {
-          startDistributingData(data, dataHolders)
-        }
-
-      // only return part of the data for testing (number of lines and dimensions need to be known beforehand for this)
-      case LoadPartialDataFromFile(expectedNodes, filename, lineOffset, linesUsed, dimensionsOffset, dimensionsUsed, replyTo, clusterCoordinator) =>
-        val data = readData(filename).slice(lineOffset, lineOffset + linesUsed).map(vector =>
-          vector.slice(dimensionsOffset, dimensionsOffset + dimensionsUsed))
-        clusterCoordinator ! DataSize(data.length, ctx.self)
+      case LoadDataFromFile(expectedNodes, filename, lines, clusterCoordinator) =>
+        val data = readDataFloat(filename, lines)
+        clusterCoordinator ! DataSize(data.length, filename, ctx.self)
         if (expectedNodes == 1) {
           // I am the only node in the cluster
           val localData = LocalSequentialData(data, 0)
@@ -118,7 +94,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
 
       case PrepareForData(dataSize, offset, replyTo) =>
         replyTo ! GetNext(0, ctx.self)
-        receiveData(Seq.empty, dataSize, offset, 0, dataHolders)
+        receiveData(Seq.empty, dataSize, offset, pointsReceived = 0, dataHolders)
     }
 
   def waitForDataHolders(data: Seq[Seq[Float]], expectedNodes: Int, dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
@@ -246,25 +222,14 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
         ctx.self ! PrepareForRedistributedData(sender)
         holdData(data, dataHolders)
 
-      case ReadTestQueries(filename, replyTo) =>
-        val queries = readQueries(filename)
+      case ReadTestQueries(queryFile, resultFile, replyTo) =>
+        val queries = readQueries(queryFile, resultFile)
         replyTo ! TestQueries(queries)
         loadData(dataHolders)
 
       case SaveGraphToFile(filename, graphHolders, graphSize, navigatingNode, replyTo) =>
         graphHolders.foreach(gh => gh ! SendGraphForFile(ctx.self))
-        val graphFile = new File(filename)
-        if (!graphFile.createNewFile()) {
-          ctx.log.info("Graph file already existed, overwriting it.")
-          val writer = new PrintWriter(filename)
-          writer.print("")
-          writer.close()
-        }
-        // start graph with navigating node. If it isn't an NSG put -1
-        val navNode = if (navigatingNode.nonEmpty) {navigatingNode.get} else {-1}
-        val writer = new FileOutputStream(filename)
-        writer.write(intToLittleEndianArray(navNode))
-        writer.close()
+        prepareGraphFile(filename, navigatingNode)
         saveToFile(filename, graphSize, data, dataHolders, replyTo)
 
       case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
@@ -274,7 +239,6 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
         readGraphFromFile(filename)
         // TODO distribute Graph (and potentially data?) for further testing
         holdData(data, dataHolders)
-
     }
 
   def redistributeData(oldData: LocalData[Float],
@@ -346,7 +310,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
                  data: LocalData[Float],
                  dataHolders: Set[ActorRef[LoadDataEvent]],
                  replyTo: ActorRef[CoordinationEvent]): Behavior[LoadDataEvent] =
-    Behaviors.receiveMessage {
+    Behaviors.receiveMessagePartial {
       case GraphForFile(graph, sender, moreToSend) =>
         ctx.log.info("Received {} nodes of graph to write into file", graph.length)
         writeGraphToFile(filename, graph)
@@ -362,16 +326,6 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
         }
     }
 
-  def writeGraphToFile(filename: String, graph: Seq[(Int, Seq[Int])]): Unit = {
-    val bw = new BufferedOutputStream(new FileOutputStream(filename, true))
-    graph.foreach { case (index, neighbors) =>
-      bw.write(intToLittleEndianArray(index))
-      bw.write(intToLittleEndianArray(neighbors.length))
-      neighbors.foreach(neighbor => bw.write(intToLittleEndianArray(neighbor)))
-    }
-    bw.close()
-  }
-
   def calculatePartitionInfo(dataSize: Int, dataHolders: Set[ActorRef[LoadDataEvent]]): Map[ActorRef[LoadDataEvent], (Int, Int)] = {
     val dataPerNode = math.ceil(dataSize / dataHolders.size).toInt
     var index = 0
@@ -383,81 +337,4 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
     }.toMap
     partitionInfo
   }
-
-  // utility functions
-  def readData(filename: String): Seq[Seq[Float]] = {
-    // read dimensions for proper grouping
-    val bis = new BufferedInputStream(new FileInputStream(filename))
-    bis.mark(0)
-    val dimArray: Array[Byte] = Array.fill(4){0}
-    bis.read(dimArray)
-    val dimensions = byteArrayToLittleEndianInt(dimArray)
-    bis.reset()
-
-    val data = LazyList.continually(bis.read).takeWhile(-1 !=).map(_.toByte).grouped(4).grouped(dimensions + 1).map{
-      byteValues =>
-        byteValues.slice(1, byteValues.length).map(value => byteArrayToLittleEndianFloat(value.toArray))
-    }.toSeq
-    data
-  }
-
-  def readGraphFromFile(filename: String): (Map[Int, Seq[Int]], Option[Int]) = {
-    val bis = new BufferedInputStream(new FileInputStream(filename))
-    val data = LazyList.continually(bis.read).takeWhile(-1 !=).map(_.toByte).grouped(4).map { bytes =>
-        byteArrayToLittleEndianInt(bytes.toArray)
-    }.toSeq
-    val navNode = data.head
-    var graph: Map[Int, Seq[Int]] = Map.empty
-    var currentNode = -1
-    var neighborsStart = 0
-    var neighborsEnd = 0
-    var currentIndex = 0
-    data.foreach { number =>
-      if (currentIndex == neighborsStart - 1) {
-        neighborsEnd = neighborsStart + number - 1
-        graph += (currentNode -> data.slice(neighborsStart, neighborsEnd).toSeq)
-      } else if (currentIndex > neighborsEnd) {
-        currentNode = number
-        neighborsStart = currentIndex + 2
-      }
-      currentIndex += 1
-    }
-    val actualNavNode = if (navNode < 0) {None} else {Some(navNode)}
-    (graph, actualNavNode)
-  }
-
-  // read Queries and indices of nearest neighbors
-  def readQueries(filename: String): Seq[(Seq[Float], Seq[Int])] = {
-    val bis = new BufferedInputStream(new FileInputStream(filename))
-    val byteValues = LazyList.continually(bis.read).takeWhile(-1 !=).map(_.toByte).grouped(4).toSeq
-    val dimensions = byteArrayToLittleEndianInt(byteValues.head.toArray)
-    val k = byteArrayToLittleEndianInt(byteValues(dimensions + 1).toArray)
-    val querySize = dimensions + 1 + k + 1
-    val queries = byteValues.grouped(querySize).map{ byteQuery =>
-      val query = byteQuery.slice(1, dimensions + 1).map(byteValue => byteArrayToLittleEndianFloat(byteValue.toArray))
-      val neighbors = byteQuery.slice(dimensions + 2, byteQuery.length).map(byteValue => byteArrayToLittleEndianInt(byteValue.toArray))
-      (query, neighbors)
-    }
-    queries.toSeq
-  }
-
-  def intToLittleEndianArray(i: Int): Array[Byte] = {
-    val buffer: ByteBuffer = ByteBuffer.allocate(4)
-    buffer.order(ByteOrder.LITTLE_ENDIAN)
-    buffer.putInt(i)
-    buffer.array()
-  }
-
-  def byteArrayToLittleEndianInt(bArray: Array[Byte]) : Int = {
-    val bb: nio.ByteBuffer = ByteBuffer.wrap(bArray)
-    bb.order(ByteOrder.LITTLE_ENDIAN)
-    bb.getInt()
-  }
-
-  def byteArrayToLittleEndianFloat(bArray: Array[Byte]) : Float = {
-    val bb: nio.ByteBuffer = ByteBuffer.wrap(bArray)
-    bb.order(ByteOrder.LITTLE_ENDIAN)
-    bb.getFloat()
-  }
-
 }

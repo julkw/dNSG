@@ -17,7 +17,7 @@ object ClusterCoordinator {
   // setup
   final case class NodeCoordinatorIntroduction(nodeCoordinator: ActorRef[NodeCoordinationEvent]) extends CoordinationEvent
 
-  final case class DataSize(dataSize: Int, dataHolder: ActorRef[LoadDataEvent]) extends CoordinationEvent
+  final case class DataSize(dataSize: Int, filename: String, dataHolder: ActorRef[LoadDataEvent]) extends CoordinationEvent
 
   // building the approximate nearest neighbor graph
   final case class KnngDistributionInfo(responsibility: Seq[Int], sender: ActorRef[BuildGraphEvent]) extends CoordinationEvent
@@ -78,7 +78,8 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       }
       setUp(updatedNodeCoordinators)
 
-    case DataSize(dataSize, dataHolder) =>
+    case DataSize(dataSize, filename, dataHolder) =>
+      ctx.log.info("Read {} vectors from {}", dataSize, filename)
       distributeDataForKnng(NodeLocatorBuilder(dataSize), nodeCoordinators, dataHolder)
 
     case KnngDistributionInfo(responsibility, worker) =>
@@ -311,14 +312,15 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                      nodeLocator: QueryNodeLocator[SearchOnGraphEvent],
                      nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                      dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] = {
-      if (settings.queryFilePath.nonEmpty) {
-        dataHolder ! ReadTestQueries(settings.queryFilePath, ctx.self)
+      if (settings.queryFilePath.nonEmpty && settings.queryResultFilePath.nonEmpty) {
+        dataHolder ! ReadTestQueries(settings.queryFilePath, settings.queryResultFilePath, ctx.self)
         testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, Map.empty, sumOfNeighborsFound = 0)
       } else {
         shutdown(nodeCoordinators)
       }
     }
 
+  // TODO move to a TestCoordinator
     def testNSG(navigatingNodeIndex: Int,
                 nodeLocator: QueryNodeLocator[SearchOnGraphEvent],
                 nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
