@@ -75,7 +75,6 @@ class KnngWorker(data: CacheData[Float],
 
   def buildDistributionTree(): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
     case ResponsibleFor(responsibility, treeDepth, workers) =>
-      ctx.log.info("responsible for {} nodes to distribute to {} worker(s)", responsibility.length, workers)
       val treeBuilder: TreeBuilder = TreeBuilder(data.data, settings.k)
       if(workers > 1) {
         val leftWorkers: Int = workers / 2
@@ -88,7 +87,7 @@ class KnngWorker(data: CacheData[Float],
         right ! ResponsibleFor(splitNode.right.data, treeDepth + 1, rightWorkers)
         buildDistributionTree()
       } else {
-        ctx.log.info("Build local kdTree")
+        ctx.log.info("Build local kdTree with {} graph_nodes", responsibility.length)
         // this is a leaf node for data distribution
         clusterCoordinator ! KnngDistributionInfo(responsibility, ctx.self)
         // Build local tree while waiting on DistributionTree message
