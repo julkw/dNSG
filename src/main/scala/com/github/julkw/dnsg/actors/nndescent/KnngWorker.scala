@@ -76,7 +76,7 @@ class KnngWorker(data: CacheData[Float],
   def buildDistributionTree(): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
     case ResponsibleFor(responsibility, treeDepth, workers) =>
       val treeBuilder: TreeBuilder = TreeBuilder(data.data, settings.k)
-      if(workers > 1) {
+      if(workers > 1 && responsibility.length > 1) {
         val leftWorkers: Int = workers / 2
         val rightWorkers: Int = workers - leftWorkers
         val splitPoint: Float = leftWorkers.toFloat / workers.toFloat
