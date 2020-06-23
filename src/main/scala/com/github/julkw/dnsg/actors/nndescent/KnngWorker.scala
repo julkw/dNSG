@@ -75,6 +75,7 @@ class KnngWorker(data: CacheData[Float],
 
   def buildDistributionTree(): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
     case ResponsibleFor(responsibility, treeDepth, workers) =>
+      ctx.log.info("responsible for {} nodes to distribute to {} worker(s)", workers)
       val treeBuilder: TreeBuilder = TreeBuilder(data.data, settings.k)
       if(workers > 1) {
         val leftWorkers: Int = workers / 2
