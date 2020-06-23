@@ -2,7 +2,6 @@ package com.github.julkw.dnsg.actors
 
 import akka.actor.typed.ActorRef
 import akka.actor.typed.Behavior
-import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{AverageValue, CoordinationEvent, DataSize, GraphWrittenToFile, TestQueries}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{DataRef, NodeCoordinationEvent}
@@ -18,10 +17,10 @@ object DataHolder {
 
   // load data
   // expects data in the .fvec format
-  final case class LoadDataFromFile(expectedNodes: Int, filename: String, lines: Int, clusterCoordinator: ActorRef[CoordinationEvent]) extends LoadDataEvent
+  final case class LoadDataFromFile(filename: String, lines: Int, dataHolders: Set[ActorRef[LoadDataEvent]], clusterCoordinator: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
   // share data
-  final case class PrepareForData(dataSize: Int, offset: Int, replyTo: ActorRef[LoadDataEvent]) extends LoadDataEvent
+  final case class PrepareForData(dataSize: Int, offset: Int, replyTo: ActorRef[LoadDataEvent], dataHolders: Set[ActorRef[LoadDataEvent]]) extends LoadDataEvent
 
   final case class PartialData(partialData: Seq[Seq[Float]], dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
@@ -52,66 +51,41 @@ object DataHolder {
 
   final case class GraphForFile(graph: Seq[(Int, Seq[Int])], sender: ActorRef[SearchOnGraphEvent], moreToSend: Boolean) extends LoadDataEvent
 
-  val dataHolderServiceKey: ServiceKey[DataHolder.LoadDataEvent] = ServiceKey[LoadDataEvent]("dataService")
-
-  private case class ListingResponse(listing: Receptionist.Listing) extends LoadDataEvent
 
   def apply(nodeCoordinator: ActorRef[NodeCoordinationEvent]): Behavior[LoadDataEvent] = Behaviors.setup { ctx =>
-    val listingResponseAdapter = ctx.messageAdapter[Receptionist.Listing](ListingResponse)
 
     val maxMessageSize = Settings(ctx.system.settings.config).maxMessageSize
-    new DataHolder(nodeCoordinator, maxMessageSize, ctx, listingResponseAdapter).setup()
+    new DataHolder(nodeCoordinator, maxMessageSize, ctx).loadData()
   }
 }
 
-class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSize: Int, ctx: ActorContext[DataHolder.LoadDataEvent], listingAdapter: ActorRef[Receptionist.Listing]) extends FileInteractor {
+class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSize: Int, ctx: ActorContext[DataHolder.LoadDataEvent]) extends FileInteractor {
   import DataHolder._
 
-  def setup(): Behavior[LoadDataEvent] = {
-    ctx.system.receptionist ! Receptionist.Register(dataHolderServiceKey, ctx.self)
-    ctx.system.receptionist ! Receptionist.Subscribe(dataHolderServiceKey, listingAdapter)
-    loadData(Set.empty)
-  }
-
-  def loadData(dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
+  def loadData(): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial {
-      case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
-        loadData(listings)
-
-      case LoadDataFromFile(expectedNodes, filename, lines, clusterCoordinator) =>
+      case LoadDataFromFile(filename, lines, dataHolders, clusterCoordinator) =>
         val data = readDataFloat(filename, lines)
         clusterCoordinator ! DataSize(data.length, filename, ctx.self)
-        if (expectedNodes == 1) {
+        if (dataHolders.size == 1) {
           // I am the only node in the cluster
           val localData = LocalSequentialData(data, 0)
           nodeCoordinator ! DataRef(localData)
           holdData(localData, dataHolders)
-        } else if (dataHolders.size < expectedNodes) {
-          waitForDataHolders(data, expectedNodes, dataHolders)
         } else {
           startDistributingData(data, dataHolders)
         }
 
-      case PrepareForData(dataSize, offset, replyTo) =>
+      case PrepareForData(dataSize, offset, replyTo, dataHolders) =>
         replyTo ! GetNext(0, ctx.self)
         receiveData(Seq.empty, dataSize, offset, pointsReceived = 0, dataHolders)
-    }
-
-  def waitForDataHolders(data: Seq[Seq[Float]], expectedNodes: Int, dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
-    Behaviors.receiveMessagePartial {
-      case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
-        if (expectedNodes < listings.size) {
-          waitForDataHolders(data, expectedNodes, listings)
-        } else {
-          startDistributingData(data, listings)
-        }
     }
 
   def startDistributingData(data: Seq[Seq[Float]], dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] = {
     val partitionInfo = calculatePartitionInfo(data.length, dataHolders)
     partitionInfo.foreach { case (dataHolder, pInfo) =>
       if (dataHolder != ctx.self) {
-        dataHolder ! PrepareForData(pInfo._2, pInfo._1, ctx.self)
+        dataHolder ! PrepareForData(pInfo._2, pInfo._1, ctx.self, dataHolders)
       }
     }
     // max number of datapoints to send per message
@@ -167,9 +141,6 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
           dataHolder ! GetNext(updatedPointsReceived, ctx.self)
           receiveData(updatedData, expectedDataSize, localOffset, updatedPointsReceived, dataHolders)
         }
-
-      case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
-        receiveData(data, expectedDataSize, localOffset, pointsReceived, listings)
     }
 
   def holdData(data: LocalData[Float], dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
@@ -225,15 +196,12 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
       case ReadTestQueries(queryFile, resultFile, replyTo) =>
         val queries = readQueries(queryFile, resultFile)
         replyTo ! TestQueries(queries)
-        loadData(dataHolders)
+        holdData(data, dataHolders)
 
       case SaveGraphToFile(filename, graphHolders, graphSize, navigatingNode, replyTo) =>
         graphHolders.foreach(gh => gh ! SendGraphForFile(ctx.self))
         prepareGraphFile(filename, navigatingNode)
         saveToFile(filename, graphSize, data, dataHolders, replyTo)
-
-      case ListingResponse(dataHolderServiceKey.Listing(listings)) =>
-        holdData(data, listings)
 
       case GetGraphFromFile(filename) =>
         readGraphFromFile(filename)

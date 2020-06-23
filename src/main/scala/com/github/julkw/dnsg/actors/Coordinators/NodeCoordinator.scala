@@ -20,7 +20,7 @@ object NodeCoordinator {
 
   sealed trait NodeCoordinationEvent extends dNSGSerializable
 
-  final case object StartDistributingData extends NodeCoordinationEvent
+  final case class StartDistributingData(dataHolders: Set[ActorRef[LoadDataEvent]]) extends NodeCoordinationEvent
 
   final case class DataRef(dataRef: LocalData[Float]) extends NodeCoordinationEvent
 
@@ -40,21 +40,16 @@ object NodeCoordinator {
     val singletonManager = ClusterSingleton(ctx.system)
     val clusterCoordinator: ActorRef[ClusterCoordinator.CoordinationEvent] = singletonManager.init(
       SingletonActor(Behaviors.supervise(ClusterCoordinator()).onFailure[Exception](SupervisorStrategy.restart), "ClusterCoordinator"))
-    clusterCoordinator ! NodeCoordinatorIntroduction(ctx.self)
 
     val dh = ctx.spawn(DataHolder(ctx.self), name = "DataHolder")
+    clusterCoordinator ! NodeCoordinatorIntroduction(ctx.self, dh)
     fileName match {
       case Some(fName) =>
-        Behaviors.setup(
-          ctx => new NodeCoordinator(settings, dh, clusterCoordinator, ctx).setUp(fName)
-        )
+        new NodeCoordinator(settings, dh, clusterCoordinator, ctx).setUp(fName)
       case None =>
-        Behaviors.setup(
-          ctx => new NodeCoordinator(settings, dh, clusterCoordinator, ctx).waitForData()
-        )
+        new NodeCoordinator(settings, dh, clusterCoordinator, ctx).waitForData()
     }
   }
-
 }
 
 class NodeCoordinator(settings: Settings,
@@ -64,13 +59,13 @@ class NodeCoordinator(settings: Settings,
   import NodeCoordinator._
 
   def setUp(filename: String): Behavior[NodeCoordinationEvent] = Behaviors.receiveMessagePartial {
-    case StartDistributingData =>
-      dataHolder ! LoadDataFromFile(settings.nodesExpected, filename, settings.lines, clusterCoordinator)
+    case StartDistributingData(dataHolders) =>
+      dataHolder ! LoadDataFromFile(filename, settings.lines, dataHolders, clusterCoordinator)
       waitForData()
   }
 
   def waitForData(): Behavior[NodeCoordinationEvent] = Behaviors.receiveMessagePartial {
-    case StartDistributingData =>
+    case StartDistributingData(dataHolders) =>
       // this node doesn't have the file and so can do nothing but wait
       waitForData()
 
