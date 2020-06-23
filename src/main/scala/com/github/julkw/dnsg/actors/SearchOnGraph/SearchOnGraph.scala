@@ -111,7 +111,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
       val askForLocation = waitingOnLocation.insert(remoteIndex, queryId)
       if (askForLocation) {
         // start timer to resend request if one of the messages was dropped
-        timers.startSingleTimer(LocationTimerKey(remoteIndex), ReaskForLocation(remoteIndex), 5.seconds)
+        timers.startSingleTimer(LocationTimerKey(remoteIndex), ReaskForLocation(remoteIndex), 1.seconds)
         nodeLocator.findResponsibleActor(remoteIndex) ! GetLocation(remoteIndex, ctx.self)
       }
     }

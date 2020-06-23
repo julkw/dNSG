@@ -1,5 +1,6 @@
 package com.github.julkw.dnsg.actors.SearchOnGraph
 
+import scala.concurrent.duration._
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, KNearestNeighbors, NSGonSOG, SearchOnGraphDistributionInfo}
@@ -361,6 +362,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case ReaskForLocation(index) =>
         ctx.log.info("Still haven't received the location of {}. Sending another request.", index)
+        timers.startSingleTimer(LocationTimerKey(index), ReaskForLocation(index), 1.seconds)
         nodeLocator.findResponsibleActor(index) ! GetLocation(index, ctx.self)
         searchOnGraphForNSG(graph, data, nodeLocator, pathQueries, respondTo, responseLocations)
 
