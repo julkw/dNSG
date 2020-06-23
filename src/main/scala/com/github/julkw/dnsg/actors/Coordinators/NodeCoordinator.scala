@@ -77,7 +77,7 @@ class NodeCoordinator(settings: Settings,
     case DataRef(dataRef) =>
       val data = dataRef
       assert(data.localDataSize > 0)
-      ctx.log.info("Successfully loaded data")
+      ctx.log.info("Successfully loaded data of size: {}", data.localDataSize)
       // create Actor to start distribution of data
       val kw = ctx.spawn(KnngWorker(data, clusterCoordinator, ctx.self), name = "KnngWorker")
       kw ! ResponsibleFor(data.localIndices, 0, settings.workers)
