@@ -85,6 +85,9 @@ class KnngWorker(data: CacheData[Float],
         ctx.self ! ResponsibleFor(splitNode.left.data, treeDepth + 1, leftWorkers)
         right ! ResponsibleFor(splitNode.right.data, treeDepth + 1, rightWorkers)
         buildDistributionTree()
+      } else if (responsibility.isEmpty) {
+        // TODO this is an ugly quickfix. Why does this happen?
+        Behaviors.stopped
       } else {
         ctx.log.info("Build local kdTree with {} graph_nodes", responsibility.length)
         // this is a leaf node for data distribution
