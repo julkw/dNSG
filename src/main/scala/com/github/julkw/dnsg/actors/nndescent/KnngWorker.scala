@@ -23,11 +23,9 @@ object KnngWorker {
   final case class BuildApproximateGraph(nodeLocator: NodeLocator[BuildGraphEvent]) extends BuildGraphEvent
 
   // build approximate graph
-  final case class FindCandidates(index: Int) extends BuildGraphEvent
+  final case class GetCandidates(nodes: Seq[(Int, Seq[Float])], batchNumber: Int, sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
 
-  final case class GetCandidates(query: Seq[Float], index: Int, replyTo: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
-
-  final case class Candidates(candidates: Seq[(Int, Double)], index: Int) extends BuildGraphEvent
+  final case class Candidates(candidates: Seq[(Int, Seq[(Int, Double)])], batchNumber: Int, sender: ActorRef[BuildGraphEvent]) extends BuildGraphEvent
 
   // improve approximate graph
   // start NNDescent
@@ -102,65 +100,66 @@ class KnngWorker(data: CacheData[Float],
                               responsibility: Seq[Int]): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
       case BuildApproximateGraph(nodeLocator) =>
-        ctx.self ! FindCandidates(0)
-        val candidates: Array[Seq[(Int, Double)]] = Array.fill(responsibility.length){Seq.empty}
-        val awaitingAnswer: Array[Int] = Array.fill(responsibility.length){0}
-        val graph: Map[Int, Seq[(Int, Double)]] = Map.empty
-        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
+        // define for how many nodes the candidates can be asked for at once (so that the answering message also stays within messageSize)
+        val maxMessageSize = settings.maxMessageSize / math.max(data.data.dimension + 1, settings.k * 2 + 1)
+        val candidateBatches = responsibility.grouped(maxMessageSize).toSeq
+        val firstBatch = candidateBatches.head.map(index => (index, data.get(index)))
+        // TODO in this version of buildApproximateGraph the quality of the graph depends solely on the number of workers in the clusterd
+        nodeLocator.allActors.foreach(worker => worker ! GetCandidates(firstBatch, 0, ctx.self))
 
-      case GetCandidates(query, index, sender) =>
-        val localCandidates = findLocalCandidates(query, kdTree)
-        sender ! Candidates(localCandidates, index)
+        val candidates: Map[Int, Seq[(Int, Double)]] = responsibility.map(index => index -> Seq.empty).toMap
+        val awaitingAnswer: Array[Int] = Array.fill(candidateBatches.length){nodeLocator.allActors.size}
+        val graph: Map[Int, Seq[(Int, Double)]] = Map.empty
+        buildApproximateGraph(kdTree, candidateBatches, candidates, awaitingAnswer, nodeLocator, graph, maxMessageSize)
+
+      case GetCandidates(nodes, alreadyAskedFor, sender) =>
+        val candidates = nodes.map { case (responsibilityIndex, location) =>
+          (responsibilityIndex, findLocalCandidatesFast(location, kdTree))
+        }
+        sender ! Candidates(candidates, alreadyAskedFor, ctx.self)
         waitForDistributionInfo(kdTree, responsibility)
     }
 
   def buildApproximateGraph(kdTree: IndexTree,
-                            responsibility: Seq[Int],
-                            candidates: Array[Seq[(Int, Double)]],
+                            candidateBatches: Seq[Seq[Int]],
+                            currentCandidates: Map[Int, Seq[(Int, Double)]],
                             awaitingAnswer: Array[Int],
                             nodeLocator: NodeLocator[BuildGraphEvent],
-                            graph:Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] =
+                            graph:Map[Int, Seq[(Int, Double)]],
+                            maxMessageSize: Int): Behavior[BuildGraphEvent] =
     Behaviors.receiveMessagePartial {
-      case FindCandidates(responsibilityIndex) =>
-        // Also look for the closest neighbors of the other g_nodes
-        if (responsibilityIndex < responsibility.length - 1) {
-          ctx.self ! FindCandidates(responsibilityIndex + 1)
+      case GetCandidates(nodes, batchNumber, sender) =>
+        val candidates = nodes.map { case (responsibilityIndex, location) =>
+          (responsibilityIndex, findLocalCandidatesFast(location, kdTree))
         }
-        val index = responsibility(responsibilityIndex)
-        val query: Seq[Float] = data.get(index)
-        // find candidates for current node by asking all workers for candidates to ensure a connected graph across all nodes
-        nodeLocator.allActors.foreach { worker =>
-          if (worker != ctx.self) {
-            worker ! GetCandidates(query, responsibilityIndex, ctx.self)
-            awaitingAnswer(responsibilityIndex) += 1
-          }
-        }
-        val localCandidates = findLocalCandidates(query, kdTree)
-        ctx.self ! Candidates(localCandidates, responsibilityIndex)
-        awaitingAnswer(responsibilityIndex) += 1
-        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
+        sender ! Candidates(candidates, batchNumber, ctx.self)
+        buildApproximateGraph(kdTree, candidateBatches, currentCandidates, awaitingAnswer, nodeLocator, graph, maxMessageSize)
 
-      case GetCandidates(query, index, sender) =>
-        val localCandidates = findLocalCandidatesFast(query, kdTree)
-        sender ! Candidates(localCandidates, index)
-        buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
-
-      case Candidates(newCandidates, responsibilityIndex) =>
-        val graphIndex: Int = responsibility(responsibilityIndex)
-        val oldCandidates = candidates(responsibilityIndex)
-        val mergedCandidates = (oldCandidates ++ newCandidates).sortBy(_._2)
-        val skipSelf = if (mergedCandidates.head._1 == graphIndex) 1 else 0
-        candidates(responsibilityIndex) = mergedCandidates.slice(skipSelf, settings.k + skipSelf)
-        awaitingAnswer(responsibilityIndex) -= 1
-        if (awaitingAnswer(responsibilityIndex) == 0) {
-          val updatedGraph = graph + (graphIndex -> candidates(responsibilityIndex))
-          if (updatedGraph.size == responsibility.length) {
-            clusterCoordinator ! FinishedApproximateGraph
-          }
-          buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, updatedGraph)
-        } else {
-          buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
+      case Candidates(candidates, batchNumber, sender) =>
+        // update candidates
+        val newCandidates = candidates.map { case (graphIndex, newCandidates) =>
+          val oldCandidates = currentCandidates(graphIndex)
+          val mergedCandidates = (oldCandidates ++ newCandidates).sortBy(_._2)
+          val skipSelf = if (mergedCandidates.head._1 == graphIndex) 1 else 0
+          (graphIndex, mergedCandidates.slice(skipSelf, settings.k + skipSelf))
         }
+        val updatedCandidates = currentCandidates ++ newCandidates
+        // update graph
+        awaitingAnswer(batchNumber) -= 1
+        val updatedGraph =
+          if (awaitingAnswer(batchNumber) == 0) {
+            graph ++ candidateBatches(batchNumber).map(index => (index, updatedCandidates(index)))
+          } else { graph }
+
+        // ask for candidates for more nodes
+        val nextBatchNumber = batchNumber + 1
+        if (nextBatchNumber < candidateBatches.length) {
+          val nodes = candidateBatches(nextBatchNumber).map(index => (index, data.get(index)))
+          sender ! GetCandidates(nodes, nextBatchNumber, ctx.self)
+        } else if (awaitingAnswer.forall(_ == 0)) {
+          clusterCoordinator ! FinishedApproximateGraph
+        }
+        buildApproximateGraph(kdTree, candidateBatches, updatedCandidates, awaitingAnswer, nodeLocator, updatedGraph, maxMessageSize)
 
       case StartNNDescent =>
         startNNDescent(nodeLocator, graph)
