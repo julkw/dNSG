@@ -36,16 +36,19 @@ case class TreeBuilder (data: LocalData[Float], k: Int) {
   }
 
   def oneLevelSplit(indices: Seq[Int], splitPoint: Float): SplitNode[Seq[Int]] = {
+    assert(splitPoint > 0)
     val r = scala.util.Random
     val maxDimension = data.dimension
     val splittingDimension = r.nextInt(maxDimension)
-    // TODO replace with more efficient median implementation
 
-    val sortedValues = indices.map(index => data.get(index)(splittingDimension)).sorted
-    val median = sortedValues((indices.length * splitPoint).toInt)
+    val sortedValues = indices.map(index => (index, data.get(index)(splittingDimension))).sortBy(_._2)
+    val medianIndex = (indices.length * splitPoint).toInt + 1 //round up
+    val median = sortedValues(medianIndex)._2
 
-    val leftIndices = indices.filter(index => data.get(index)(splittingDimension) < median)
-    val rightIndices = indices.filter(index => data.get(index)(splittingDimension) >= median)
+    // to ensure a balanced tree, nodes that are directly on the border are placed into a random child
+    // this is possible here because we only ever look for groups of nodes and not specific nodes using the tree
+    val leftIndices = sortedValues.slice(0, medianIndex).map(_._1)
+    val rightIndices = sortedValues.slice(medianIndex, sortedValues.length).map(_._1)
 
     val leftNode: LeafNode[Seq[Int]] = LeafNode[Seq[Int]](leftIndices)
     val rightNode: LeafNode[Seq[Int]] = LeafNode[Seq[Int]](rightIndices)

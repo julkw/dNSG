@@ -19,6 +19,8 @@ case class LeafNode[T](data: T) extends TreeNode[T] {
 }
 
 case class SplitNode[T](var left: TreeNode[T], var right: TreeNode[T], dimension: Int, border: Float) extends TreeNode[T] {
+  // to ensure a balanced tree, nodes that are directly on the border are placed into a random child
+  // this is possible here because we only ever look for groups of nodes and not specific nodes using the tree
   def data: T = {
     // TODO add warning, as this shouldn't be called
     left.data
