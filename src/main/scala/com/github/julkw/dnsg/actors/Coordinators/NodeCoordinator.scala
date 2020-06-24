@@ -33,7 +33,7 @@ object NodeCoordinator {
 
   final case object AllDone extends NodeCoordinationEvent
 
-  def apply(fileName: Option[String]): Behavior[NodeCoordinationEvent] = Behaviors.setup { ctx =>
+  def apply(): Behavior[NodeCoordinationEvent] = Behaviors.setup { ctx =>
     val settings = Settings(ctx.system.settings.config)
 
     // get access to cluster coordinator
@@ -43,11 +43,11 @@ object NodeCoordinator {
 
     val dh = ctx.spawn(DataHolder(ctx.self), name = "DataHolder")
     clusterCoordinator ! NodeCoordinatorIntroduction(ctx.self, dh)
-    fileName match {
-      case Some(fName) =>
-        new NodeCoordinator(settings, dh, clusterCoordinator, ctx).setUp(fName)
-      case None =>
-        new NodeCoordinator(settings, dh, clusterCoordinator, ctx).waitForData()
+    if (settings.filename.nonEmpty) {
+      ctx.log.info("Load data from {}", settings.filename)
+      new NodeCoordinator(settings, dh, clusterCoordinator, ctx).setUp(settings.filename)
+    } else {
+      new NodeCoordinator(settings, dh, clusterCoordinator, ctx).waitForData()
     }
   }
 }

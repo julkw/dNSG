@@ -8,6 +8,8 @@ case class Settings(config: Config) {
 
   private val namespace = "com.github.julkw.dnsg"
 
+  val filename: String = config.getString(s"$namespace.input-file")
+
   val aknngFilePath: String = config.getString(s"$namespace.aknng-file")
 
   val nsgFilePath: String = config.getString(s"$namespace.nsg-file")
