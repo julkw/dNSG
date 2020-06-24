@@ -141,7 +141,7 @@ class KnngWorker(data: CacheData[Float],
         buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
 
       case GetCandidates(query, index, sender) =>
-        val localCandidates = findLocalCandidates(query, kdTree)
+        val localCandidates = findLocalCandidatesFast(query, kdTree)
         sender ! Candidates(localCandidates, index)
         buildApproximateGraph(kdTree, responsibility, candidates, awaitingAnswer, nodeLocator, graph)
 
@@ -308,6 +308,13 @@ class KnngWorker(data: CacheData[Float],
       (index, euclideanDist(data.get(index), query))
     ).sortBy(_._2).slice(0, settings.k)
     localCandidates
+  }
+
+  def findLocalCandidatesFast(query: Seq[Float], kdTree: KdTree[Seq[Int]]): Seq[(Int, Double)] = {
+    // this is less precise but faster
+    kdTree.root.queryLeaf(query).data.map(index =>
+      (index, euclideanDist(data.get(index), query))
+    )
   }
 
   def handlePotentialNeighbor(g_node: Int,
