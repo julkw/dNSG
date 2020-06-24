@@ -159,7 +159,7 @@ class GraphConnector(data: LocalData[Float],
         Behaviors.stopped
 
       case StartGraphRedistributers(redistributionCoordinator, graphNodeLocator) =>
-        ctx.spawn(GraphRedistributer(tree, graphNodeLocator, redistributionCoordinator), name="GraphRedistributer")
+        ctx.spawn(GraphRedistributer(data, tree, graphNodeLocator, redistributionCoordinator), name="GraphRedistributer")
         buildTree(nodeLocator, root, tree, alreadyConnected, toSend)
     }
 

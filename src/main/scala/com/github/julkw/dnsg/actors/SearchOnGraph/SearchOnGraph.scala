@@ -1,32 +1,39 @@
 package com.github.julkw.dnsg.actors.SearchOnGraph
 
-import scala.concurrent.duration._
 import akka.actor.typed.ActorRef
-import akka.actor.typed.scaladsl.{ActorContext, TimerScheduler}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent}
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetLocation, GetNeighbors, ReaskForLocation, SearchOnGraphEvent}
+import akka.actor.typed.scaladsl.ActorContext
+import com.github.julkw.dnsg.actors.SearchOnGraph.SOGInfo.{GetLocation, GetNeighbors}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{SearchOnGraphEvent, SearchOnGraphInfo}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, SortedCheckedNodes}
 import com.github.julkw.dnsg.util.Data.CacheData
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, WaitingOnLocation}
 
 
-abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
-                             waitingOnLocation: WaitingOnLocation,
-                             timers: TimerScheduler[SearchOnGraphEvent],
+abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation,
+                             maxMessageSize: Int,
                              ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends Distance {
   // data type for more readable code
   protected case class QueryCandidate(index: Int, distance: Double, var processed: Boolean)
   // also refactor to remove vars?
   protected case class QueryInfo(query: Seq[Float], neighborsWanted: Int, var candidates: Seq[QueryCandidate], var waitingOn: Int)
 
-  protected case class LocationTimerKey(locationIndex: Int)
+  def sendMessagesImmediately(toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Unit = {
+    toSend.foreach { case (graphHolder, sogInfo) =>
+      if (sogInfo.sendImmediately && sogInfo.nonEmpty) {
+        val messageToSend = sogInfo.sendMessage(maxMessageSize)
+        graphHolder ! SearchOnGraphInfo(messageToSend, ctx.self)
+        sogInfo.sendImmediately = false
+      }
+    }
+  }
 
   def updateCandidates(queryInfo: QueryInfo,
                        queryId: Int,
                        processedIndex: Int,
                        potentialNewCandidates: Seq[Int],
                        nodeLocator: NodeLocator[SearchOnGraphEvent],
-                       data: CacheData[Float]): Unit = {
+                       data: CacheData[Float],
+                       toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Unit = {
     val oldCandidates = queryInfo.candidates
     val processedCandidate = oldCandidates.find(query => query.index == processedIndex)
     // check if I still care about these neighbors or if the node they belong to has already been kicked out of the candidate list
@@ -42,7 +49,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
             QueryCandidate(candidateIndex, euclideanDist(queryInfo.query, location), processed = false)
           }
         // candidates for which we don't have the location have to ask for it first
-        remoteCandidates.foreach(remoteNeighbor => askForLocation(remoteNeighbor, queryId, queryInfo, nodeLocator))
+        remoteCandidates.foreach(remoteNeighbor => askForLocation(remoteNeighbor, queryId, queryInfo, nodeLocator, toSend))
 
         val updatedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance).slice(0, queryInfo.neighborsWanted)
         candidate.processed = true
@@ -58,7 +65,8 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
                            processedIndex: Int,
                            potentialNewCandidates: Seq[Int],
                            responseLocations: QueryResponseLocations[Float],
-                           nodeLocator: NodeLocator[SearchOnGraphEvent]): Unit = {
+                           nodeLocator: NodeLocator[SearchOnGraphEvent],
+                           toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Unit = {
     val oldCandidates = queryInfo.candidates
     val processedCandidate = oldCandidates.find(query => query.index == processedIndex)
     // check if I still care about these neighbors or if the node they belong to has already been kicked out of the candidate list
@@ -77,7 +85,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
             QueryCandidate(candidateIndex, euclideanDist(queryInfo.query, location), processed = false)
           }
         // candidates for which we don't have the location have to ask for it first
-        remoteCandidates.foreach(remoteCandidate => askForLocation(remoteCandidate, queryId, queryInfo, nodeLocator))
+        remoteCandidates.foreach(remoteCandidate => askForLocation(remoteCandidate, queryId, queryInfo, nodeLocator, toSend))
 
         val mergedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance)
         // update responseLocations
@@ -96,23 +104,29 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
     }
   }
 
-  def getNeighbors(node: Int, queryId: Int, graph: Map[Int, Seq[Int]], nodeLocator: NodeLocator[SearchOnGraphEvent]): Unit = {
+  def aksForNeighbors(node: Int,
+                      queryId: Int,
+                      graph: Map[Int, Seq[Int]],
+                      nodeLocator: NodeLocator[SearchOnGraphEvent],
+                      toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Unit = {
     // in case of data replication the actor should check if it has the required information itself before asking the primary assignee
     if (graph.contains(node)) {
-      ctx.self ! GetNeighbors(node, queryId, ctx.self)
+      toSend(ctx.self).addMessage(GetNeighbors(node, queryId))
     } else {
-      nodeLocator.findResponsibleActor(node) ! GetNeighbors(node, queryId, ctx.self)
+      toSend(nodeLocator.findResponsibleActor(node)).addMessage(GetNeighbors(node, queryId))
     }
   }
 
-  def askForLocation(remoteIndex: Int, queryId: Int, queryInfo: QueryInfo, nodeLocator: NodeLocator[SearchOnGraphEvent]): Unit = {
+  def askForLocation(remoteIndex: Int,
+                     queryId: Int,
+                     queryInfo: QueryInfo,
+                     nodeLocator: NodeLocator[SearchOnGraphEvent],
+                     toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Unit = {
     if (!waitingOnLocation.alreadyIn(remoteIndex, queryId)) {
       queryInfo.waitingOn += 1
       val askForLocation = waitingOnLocation.insert(remoteIndex, queryId)
       if (askForLocation) {
-        // start timer to resend request if one of the messages was dropped
-        timers.startSingleTimer(LocationTimerKey(remoteIndex), ReaskForLocation(remoteIndex), 1.seconds)
-        nodeLocator.findResponsibleActor(remoteIndex) ! GetLocation(remoteIndex, ctx.self)
+        toSend(nodeLocator.findResponsibleActor(remoteIndex)).addMessage(GetLocation(remoteIndex))
       }
     }
   }
@@ -122,7 +136,8 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
                    candidateId: Int,
                    candidateLocation: Seq[Float],
                    graph: Map[Int, Seq[Int]],
-                   nodeLocator: NodeLocator[SearchOnGraphEvent]): Boolean = {
+                   nodeLocator: NodeLocator[SearchOnGraphEvent],
+                   toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Boolean = {
     // return if this means the query is finished
     val currentCandidates = queryInfo.candidates
     val allProcessed = !currentCandidates.exists(_.processed == false)
@@ -139,7 +154,7 @@ abstract class SearchOnGraph(supervisor: ActorRef[CoordinationEvent],
       queryInfo.candidates = updatedCandidates
       // If all other candidates have already been processed, the new now needs to be processed
       if (allProcessed) {
-        getNeighbors(candidateId, queryId, graph, nodeLocator)
+        aksForNeighbors(candidateId, queryId, graph, nodeLocator, toSend)
       }
     }
     // return if the query is finished

@@ -4,7 +4,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{AllSharedReplication, NoReplication, OnlyParentsReplication}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
-import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, GetGraphFromFile, LoadDataEvent, ReadTestQueries, SaveGraphToFile}
+import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, GetGraphFromFile, LoadDataEvent, LoadDataFromFile, ReadTestQueries, SaveGraphToFile}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, RedistributeGraph, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
@@ -15,7 +15,7 @@ object ClusterCoordinator {
   sealed trait CoordinationEvent extends dNSGSerializable
 
   // setup
-  final case class NodeCoordinatorIntroduction(nodeCoordinator: ActorRef[NodeCoordinationEvent]) extends CoordinationEvent
+  final case class NodeCoordinatorIntroduction(nodeCoordinator: ActorRef[NodeCoordinationEvent], nodeDataHolder: ActorRef[LoadDataEvent]) extends CoordinationEvent
 
   final case class DataSize(dataSize: Int, filename: String, dataHolder: ActorRef[LoadDataEvent]) extends CoordinationEvent
 
@@ -60,7 +60,7 @@ object ClusterCoordinator {
     settings.printSettings(ctx)
 
     Behaviors.setup(
-      ctx => new ClusterCoordinator(ctx, settings).setUp(Set.empty)
+      ctx => new ClusterCoordinator(ctx, settings).setUp(Set.empty, Set.empty)
     )
   }
 }
@@ -69,14 +69,15 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                          settings: Settings) extends Distance {
   import ClusterCoordinator._
 
-  def setUp(nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]]): Behavior[CoordinationEvent] = Behaviors.receiveMessagePartial {
-    case NodeCoordinatorIntroduction(nodeCoordinator) =>
+  def setUp(nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]], dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[CoordinationEvent] = Behaviors.receiveMessagePartial {
+    case NodeCoordinatorIntroduction(nodeCoordinator, nodeDataHolder) =>
       val updatedNodeCoordinators = nodeCoordinators + nodeCoordinator
+      val updatedDataHolders = dataHolders + nodeDataHolder
       if (settings.nodesExpected == updatedNodeCoordinators.size) {
-        updatedNodeCoordinators.foreach(nc => nc ! StartDistributingData)
+        updatedNodeCoordinators.foreach(nc => nc ! StartDistributingData(updatedDataHolders))
         ctx.log.info("All expected nodes found, start distributing data.")
       }
-      setUp(updatedNodeCoordinators)
+      setUp(updatedNodeCoordinators, updatedDataHolders)
 
     case DataSize(dataSize, filename, dataHolder) =>
       ctx.log.info("Read {} vectors from {}", dataSize, filename)
@@ -84,7 +85,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
 
     case KnngDistributionInfo(responsibility, worker) =>
       ctx.self ! KnngDistributionInfo(responsibility, worker)
-      setUp(nodeCoordinators)
+      setUp(nodeCoordinators, dataHolders)
   }
 
   def distributeDataForKnng(nodeLocatorBuilder: NodeLocatorBuilder[BuildGraphEvent],
