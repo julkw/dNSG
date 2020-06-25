@@ -2,8 +2,9 @@ package com.github.julkw.dnsg.actors
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{AssignWithParentsDone, PrimaryAssignmentParents, PrimaryNodeAssignments, RedistributerDistributionInfo, RedistributionCoordinationEvent, SecondaryNodeAssignments}
-import com.github.julkw.dnsg.actors.GraphConnector.CTreeNode
+import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{AssignWithParentsDone, PrimaryAssignmentParents, RedistributionCoordinationEvent}
+import com.github.julkw.dnsg.actors.GraphConnector.{CTreeNode, ConnectGraphEvent}
+import com.github.julkw.dnsg.actors.NodeLocatorHolder.{GraphRedistributerGotGraphFrom, LocalPrimaryNodeAssignments, LocalSecondaryNodeAssignments, NodeLocationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.SearchOnGraphEvent
 import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, Settings, dNSGSerializable}
@@ -41,10 +42,12 @@ object GraphRedistributer {
   def apply(data: LocalData[Float],
             tree: Map[Int, CTreeNode],
             graphNodeLocator: NodeLocator[SearchOnGraphEvent],
-            redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]): Behavior[RedistributionEvent] =
+            redistributionCoordinator: ActorRef[RedistributionCoordinationEvent],
+            nodeLocatorHolder: ActorRef[NodeLocationEvent],
+            parent: ActorRef[ConnectGraphEvent]): Behavior[RedistributionEvent] =
     Behaviors.setup { ctx =>
       val optimalRedistribution = Settings(ctx.system.settings.config).dataRedistribution == "optimalRedistribution"
-      new GraphRedistributer(data, tree, optimalRedistribution, graphNodeLocator, redistributionCoordinator, ctx).setup()
+      new GraphRedistributer(data, tree, optimalRedistribution, graphNodeLocator, redistributionCoordinator, nodeLocatorHolder, parent, ctx).setup()
     }
 }
 
@@ -53,11 +56,13 @@ class GraphRedistributer(data: LocalData[Float],
                          optimalRedistribution: Boolean,
                          graphNodeLocator: NodeLocator[SearchOnGraphEvent],
                          redistributionCoordinator: ActorRef[RedistributionCoordinationEvent],
+                         nodeLocatorHolder: ActorRef[NodeLocationEvent],
+                         parent: ActorRef[ConnectGraphEvent],
                          ctx: ActorContext[GraphRedistributer.RedistributionEvent]) extends Distance {
   import GraphRedistributer._
 
   def setup(): Behavior[RedistributionEvent] = {
-    redistributionCoordinator ! RedistributerDistributionInfo(tree.keys.toSeq, ctx.self)
+    nodeLocatorHolder ! GraphRedistributerGotGraphFrom(parent, ctx.self)
     val distributionTree: Map[Int, DistributionTreeInfo] = tree.transform((_, treeNode) => DistributionTreeInfo(1, 0, treeNode.children.size, None))
     waitForStartSignal(distributionTree)
   }
@@ -167,7 +172,7 @@ class GraphRedistributer(data: LocalData[Float],
           ctx.self ! SendPrimaryAssignments
           distributeUsingTree(distributionTree, nodeLocator)
         } else {
-          redistributionCoordinator ! PrimaryNodeAssignments(distributionTree.transform((_, distInfo) => distInfo.assignedWorker.get))
+          nodeLocatorHolder ! LocalPrimaryNodeAssignments(distributionTree.transform((_, distInfo) => distInfo.assignedWorker.get))
           findSecondaryAssignments(distributionTree, Map.empty, nodeLocator)
         }
     }
@@ -227,7 +232,7 @@ class GraphRedistributer(data: LocalData[Float],
         }
 
       case SendSecondaryAssignments =>
-        redistributionCoordinator ! SecondaryNodeAssignments(secondaryAssignments)
+        nodeLocatorHolder ! LocalSecondaryNodeAssignments(secondaryAssignments)
         Behaviors.stopped
     }
 

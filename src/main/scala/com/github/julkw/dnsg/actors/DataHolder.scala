@@ -26,8 +26,6 @@ object DataHolder {
 
   final case class GetNext(alreadyReceived: Int, dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
-  final case class StartRedistributingData(primaryAssignments: NodeLocator[SearchOnGraphEvent], secondaryAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
-
   final case class RedistributeData(primaryAssignments: NodeLocator[SearchOnGraphEvent], secondaryAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
 
   final case class PrepareForRedistributedData(sender: ActorRef[LoadDataEvent]) extends LoadDataEvent
@@ -166,10 +164,6 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
           data.rawData.map(value => value(index)).sum / data.localDataSize
         }
         replyTo ! LocalAverage(averageValue, data.localDataSize)
-        holdData(data, dataHolders)
-
-      case StartRedistributingData(primaryAssignments, secondaryAssignments) =>
-        dataHolders.foreach(dataHolder => dataHolder ! RedistributeData(primaryAssignments, secondaryAssignments))
         holdData(data, dataHolders)
 
       case RedistributeData(primaryAssignments, secondaryAssignments) =>

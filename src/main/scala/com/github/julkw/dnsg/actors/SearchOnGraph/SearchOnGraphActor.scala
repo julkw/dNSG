@@ -2,14 +2,16 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, KNearestNeighbors, NSGonSOG, SearchOnGraphDistributionInfo}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, KNearestNeighbors, NSGonSOG}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{ConnectionCoordinationEvent, ReceivedNewEdge}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{DoneWithRedistribution, RedistributionCoordinationEvent}
 import com.github.julkw.dnsg.actors.DataHolder.{GraphForFile, LoadDataEvent}
 import com.github.julkw.dnsg.actors.GraphConnector
+import com.github.julkw.dnsg.actors.NodeLocatorHolder.{NodeLocationEvent, SearchOnGraphGotGraphFrom}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SOGInfo.{GetLocation, GetNeighbors, Location, Neighbors, SOGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialNSG, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.BuildNSGEvent
+import com.github.julkw.dnsg.actors.nndescent.KnngWorker.BuildGraphEvent
 import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
 import com.github.julkw.dnsg.util._
 
@@ -20,7 +22,7 @@ object SearchOnGraphActor {
   sealed trait SearchOnGraphEvent extends dNSGSerializable
 
   // setup
-  final case class GraphAndData(graph: Map[Int, Seq[Int]], cacheData: CacheData[Float]) extends SearchOnGraphEvent
+  final case class GraphAndData(graph: Map[Int, Seq[Int]], cacheData: CacheData[Float], sender: ActorRef[BuildGraphEvent]) extends SearchOnGraphEvent
 
   final case class GraphReceived(graphHolder: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
@@ -60,13 +62,15 @@ object SearchOnGraphActor {
   // safe knng to file
   final case class SendGraphForFile(sender: ActorRef[LoadDataEvent]) extends SearchOnGraphEvent
 
-  def apply(clusterCoordinator: ActorRef[CoordinationEvent]): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
+  def apply(clusterCoordinator: ActorRef[CoordinationEvent],
+            nodeLocatorHolder: ActorRef[NodeLocationEvent]): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
     val settings = Settings(ctx.system.settings.config)
-    new SearchOnGraphActor(clusterCoordinator, new WaitingOnLocation, settings, ctx).waitForLocalGraph()
+    new SearchOnGraphActor(clusterCoordinator, nodeLocatorHolder, new WaitingOnLocation, settings, ctx).waitForLocalGraph()
   }
 }
 
 class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
+                         nodeLocatorHolder: ActorRef[NodeLocationEvent],
                          waitingOnLocation: WaitingOnLocation,
                          settings: Settings,
                          ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends SearchOnGraph(waitingOnLocation, settings.maxMessageSize, ctx) {
@@ -74,9 +78,9 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
   def waitForLocalGraph(): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
-      case GraphAndData(graph, localData) =>
+      case GraphAndData(graph, localData, sender) =>
         // The data is send over with cache because there is a 1:1 mapping between knngWorkers and searchOnGraphActors and the first stops using the data after it has send it to the latter
-        clusterCoordinator ! SearchOnGraphDistributionInfo(graph.keys.toSeq, ctx.self)
+        nodeLocatorHolder ! SearchOnGraphGotGraphFrom(sender, ctx.self)
         waitForDistributionInfo(graph, localData)
     }
 
@@ -88,6 +92,10 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case FindNearestNeighbors(value, k, asker) =>
         ctx.self ! FindNearestNeighbors(value, k, asker)
+        waitForDistributionInfo(graph, data)
+
+      case GetSearchOnGraphInfo(sender) =>
+        ctx.self ! GetSearchOnGraphInfo(sender)
         waitForDistributionInfo(graph, data)
 
       case SendGraphForFile(sender) =>
@@ -198,7 +206,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case ConnectGraph(graphConnectorSupervisor) =>
         val responsibility = graph.keys.filter(node => nodeLocator.findResponsibleActor(node) == ctx.self).toSeq
-        ctx.spawn(GraphConnector(data.data, graph, responsibility, graphConnectorSupervisor), name="graphConnector")
+        ctx.spawn(GraphConnector(data.data, graph, responsibility, graphConnectorSupervisor, nodeLocatorHolder, ctx.self), name="graphConnector")
         searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed, toSend)
 
       case RedistributeGraph(primaryAssignments, secondaryAssignments, redistributionCoordinator) =>
@@ -218,7 +226,6 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed, toSend)
 
       case SendGraphForFile(sender) =>
-        ctx.log.info("Asked to send graph to dataHolder")
         val graphMessageSize = settings.maxMessageSize / (settings.k + 1)
         ctx.self ! SendGraphForFile(sender)
         // only send the graph information for the nodes for which I am the primary assignee

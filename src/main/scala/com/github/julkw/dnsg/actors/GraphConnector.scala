@@ -3,8 +3,9 @@ package com.github.julkw.dnsg.actors
 import scala.concurrent.duration._
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{AllConnected, ConnectionCoordinationEvent, ConnectorShutdown, FinishedUpdatingConnectivity, GraphConnectorDistributionInfo, UnconnectedNode}
+import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{AllConnected, ConnectionCoordinationEvent, ConnectorShutdown, FinishedUpdatingConnectivity, UnconnectedNode}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.RedistributionCoordinationEvent
+import com.github.julkw.dnsg.actors.NodeLocatorHolder.{GraphConnectorGotGraphFrom, NodeLocationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.SearchOnGraphEvent
 import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util.{NodeLocator, Settings, dNSGSerializable}
@@ -53,11 +54,13 @@ object GraphConnector {
   def apply(data: LocalData[Float],
             graph: Map[Int, Seq[Int]],
             responsibility: Seq[Int],
-            supervisor: ActorRef[ConnectionCoordinationEvent]): Behavior[ConnectGraphEvent] = Behaviors.setup { ctx =>
+            supervisor: ActorRef[ConnectionCoordinationEvent],
+            nodeLocatorHolder: ActorRef[NodeLocationEvent],
+            parent: ActorRef[SearchOnGraphEvent]): Behavior[ConnectGraphEvent] = Behaviors.setup { ctx =>
     // three seqs with each element containing two Ints -> limit each seq's size by maxMessageSize/6
     val messageSize = Settings(ctx.system.settings.config).maxMessageSize / 6
     Behaviors.withTimers(timers =>
-      new GraphConnector(data, graph, responsibility, messageSize, timers, supervisor, ctx).setup()
+      new GraphConnector(data, graph, responsibility, messageSize, timers, supervisor, nodeLocatorHolder, parent, ctx).setup()
     )
   }
 }
@@ -68,11 +71,13 @@ class GraphConnector(data: LocalData[Float],
                      messageSize: Int,
                      timers: TimerScheduler[GraphConnector.ConnectGraphEvent],
                      supervisor: ActorRef[ConnectionCoordinationEvent],
+                     nodeLocatorHolder: ActorRef[NodeLocationEvent],
+                     parent: ActorRef[SearchOnGraphEvent],
                      ctx: ActorContext[GraphConnector.ConnectGraphEvent]) {
   import GraphConnector._
 
   def setup(): Behavior[ConnectGraphEvent] = {
-    supervisor ! GraphConnectorDistributionInfo(responsibility, ctx.self)
+    nodeLocatorHolder ! GraphConnectorGotGraphFrom(parent, ctx.self)
     waitForDistInfo()
   }
 
@@ -159,7 +164,7 @@ class GraphConnector(data: LocalData[Float],
         Behaviors.stopped
 
       case StartGraphRedistributers(redistributionCoordinator, graphNodeLocator) =>
-        ctx.spawn(GraphRedistributer(data, tree, graphNodeLocator, redistributionCoordinator), name="GraphRedistributer")
+        ctx.spawn(GraphRedistributer(data, tree, graphNodeLocator, redistributionCoordinator, nodeLocatorHolder, ctx.self), name="GraphRedistributer")
         buildTree(nodeLocator, root, tree, alreadyConnected, toSend)
     }
 
