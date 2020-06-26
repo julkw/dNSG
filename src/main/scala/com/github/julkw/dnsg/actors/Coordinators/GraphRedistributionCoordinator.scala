@@ -5,7 +5,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionAchieved, ConnectorsCleanedUp, CoordinationEvent}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{CleanUpConnectors, ConnectionCoordinationEvent, StartGraphRedistribution}
 import com.github.julkw.dnsg.actors.DataHolder.LoadDataEvent
-import com.github.julkw.dnsg.actors.GraphRedistributer.{AssignWithParents, RedistributionEvent, SendSecondaryAssignments}
+import com.github.julkw.dnsg.actors.GraphRedistributer.{AssignWithParents, InitialAssignWithParents, RedistributionEvent, SendSecondaryAssignments}
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.{BuildRedistributionNodeLocator, NodeLocationEvent, SendNodeLocatorToClusterCoordinator, ShareNodeLocator, ShareRedistributionAssignments}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.SearchOnGraphEvent
 import com.github.julkw.dnsg.util.{LocalityCheck, NodeLocator, dNSGSerializable}
@@ -143,11 +143,17 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
                             primaryAssignmentRoots: Map[ActorRef[SearchOnGraphEvent], Seq[Int]]): Behavior[RedistributionCoordinationEvent] = {
     ctx.log.info("Find secondary assignments")
     var waitingOnAnswers = 0
-    primaryAssignmentRoots.foreach { case (worker, treeNodes) =>
-      treeNodes.foreach { assignmentRoot =>
-        redistributerLocator.findResponsibleActor(assignmentRoot) ! AssignWithParents(assignmentRoot, worker)
+    val toSend = primaryAssignmentRoots.keys.flatMap { worker =>
+      primaryAssignmentRoots(worker).map { node =>
         waitingOnAnswers += 1
+        (worker, node)
       }
+    }.groupBy { assignment =>
+      redistributerLocator.findResponsibleActor(assignment._2)
+    }
+    toSend.foreach { case (redistributer, assignments) =>
+      val groupedAssignments = assignments.groupBy(_._1).transform((_, assignment) => assignment.map(_._2).toSeq)
+      redistributer ! InitialAssignWithParents(groupedAssignments, false)
     }
     waitForParentsToBeAssigned(connectorCoordinator, waitingOnAnswers, redistributerLocator)
   }

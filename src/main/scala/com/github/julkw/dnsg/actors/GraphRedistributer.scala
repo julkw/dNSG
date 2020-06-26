@@ -32,8 +32,9 @@ object GraphRedistributer {
 
   final case class AssignWithChildren(assignments: Map[ActorRef[SearchOnGraphEvent], Seq[Int]], sender: ActorRef[RedistributionEvent]) extends RedistributionEvent
 
-  final case class AssignWithParents(g_node: Int, worker: ActorRef[SearchOnGraphEvent]) extends RedistributionEvent
-  //final case class AssignWithParents(assignments: Map[ActorRef[SearchOnGraphEvent], Seq[Int]], sender: ActorRef[RedistributionEvent]) extends RedistributionEvent
+  final case class InitialAssignWithParents(assignments: Map[ActorRef[SearchOnGraphEvent], Seq[Int]], askForMore: Boolean) extends RedistributionEvent
+
+  final case class AssignWithParents(assignments: Map[ActorRef[SearchOnGraphEvent], Seq[Int]], sender: ActorRef[RedistributionEvent]) extends RedistributionEvent
 
   final case object SendPrimaryAssignments extends RedistributionEvent
 
@@ -192,12 +193,12 @@ class GraphRedistributer(data: LocalData[Float],
       case AssignWithChildren(assignments, sender) =>
         val assignmentsToSend = assignChildren(assignments, distributionTree)
         sender ! GetNodeAssignments(ctx.self)
-        val updatedToSend = addAssignmentsToToSend(assignmentsToSend, nodeLocator, toSend)
+        val updatedToSend = addChildAssignmentsToToSend(assignmentsToSend, nodeLocator, toSend)
         distributeUsingTree(distributionTree, nodeLocator, updatedToSend)
 
       case GetNodeAssignments(sender) =>
         val allToSend = toSend(sender)._1
-        val updatedToSendForSender = sendAssignments(toSend(sender)._1, sendImmediately = true, sender)
+        val updatedToSendForSender = sendAssignmentsToChildren(toSend(sender)._1, sendImmediately = true, sender)
         val updatedToSend = toSend + (sender -> updatedToSendForSender)
         distributeUsingTree(distributionTree, nodeLocator, updatedToSend)
 
@@ -212,7 +213,8 @@ class GraphRedistributer(data: LocalData[Float],
           distributeUsingTree(distributionTree, nodeLocator, toSend)
         } else {
           nodeLocatorHolder ! LocalPrimaryNodeAssignments(distributionTree.transform((_, distInfo) => distInfo.assignedWorker.get))
-          findSecondaryAssignments(distributionTree, Map.empty, nodeLocator)
+          val toSendForParents = toSend.transform( (_, _) => (Seq.empty, true))
+          findSecondaryAssignments(distributionTree, Map.empty, nodeLocator, toSendForParents)
         }
     }
 
@@ -248,38 +250,38 @@ class GraphRedistributer(data: LocalData[Float],
       case AssignWithChildren(assignments, sender) =>
         val assignmentsToSend = assignChildren(assignments, distributionTree)
         sender ! GetNodeAssignments(ctx.self)
-        val updatedToSend = addAssignmentsToToSend(assignmentsToSend, nodeLocator, toSend)
+        val updatedToSend = addChildAssignmentsToToSend(assignmentsToSend, nodeLocator, toSend)
         chooseNodeToContinueSearch(nodesToChooseFrom, nodesExpected, parentNode, minNodes, maxNodes, waitingList, workersLeft, nodesLeft, distributionTree, nodeLocator, updatedToSend)
 
       case GetNodeAssignments(sender) =>
-        val allToSend = toSend(sender)._1
-        val updatedToSendForSender = sendAssignments(toSend(sender)._1, sendImmediately = true, sender)
+        val updatedToSendForSender = sendAssignmentsToChildren(toSend(sender)._1, sendImmediately = true, sender)
         val updatedToSend = toSend + (sender -> updatedToSendForSender)
         chooseNodeToContinueSearch(nodesToChooseFrom, nodesExpected, parentNode, minNodes, maxNodes, waitingList, workersLeft, nodesLeft, distributionTree, nodeLocator, updatedToSend)
     }
 
   def findSecondaryAssignments(distributionTree: Map[Int, DistributionTreeInfo],
                                secondaryAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]],
-                               nodeLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionEvent] =
+                               nodeLocator: NodeLocator[RedistributionEvent],
+                               toSend: Map[ActorRef[RedistributionEvent], (Seq[(ActorRef[SearchOnGraphEvent], Int)], Boolean)]): Behavior[RedistributionEvent] =
     Behaviors.receiveMessagePartial {
-      case GetNodeAssignments(sender) =>
-        findSecondaryAssignments(distributionTree, secondaryAssignments, nodeLocator)
+      case InitialAssignWithParents(assignments, askForMore) =>
+//        if (askForMore) {
+//          redistributionCoordinator !
+//        }
+        val (newAssignmentsToSend, updatedSecondaryAssignments) = assignParents(assignments, secondaryAssignments, distributionTree)
+        val updatedToSend = addParentAssignmentsToToSend(newAssignmentsToSend, nodeLocator, toSend)
+        findSecondaryAssignments(distributionTree, updatedSecondaryAssignments, nodeLocator, updatedToSend)
 
-      case AssignWithParents(g_node, worker) =>
-        val currentAssignees = secondaryAssignments.getOrElse(g_node, Set.empty)
-        val parent = tree(g_node).parent
-        if (currentAssignees.contains(worker) || parent == g_node) {
-          redistributionCoordinator ! AssignWithParentsDone
-          findSecondaryAssignments(distributionTree, secondaryAssignments, nodeLocator)
-        } else {
-          nodeLocator.findResponsibleActor(parent) ! AssignWithParents(parent, worker)
-          if (distributionTree(g_node).assignedWorker.get != worker) {
-            findSecondaryAssignments(distributionTree, secondaryAssignments + (g_node -> (currentAssignees + worker)), nodeLocator)
-          } else {
-            // if it is already the primary worker it does not need to be added to the secondary Assignees as well
-            findSecondaryAssignments(distributionTree, secondaryAssignments, nodeLocator)
-          }
-        }
+      case GetNodeAssignments(sender) =>
+        val updatedToSendForSender = sendAssignmentsToParents(toSend(sender)._1, sendImmediately = true, sender)
+        val updatedToSend = toSend + (sender -> updatedToSendForSender)
+        findSecondaryAssignments(distributionTree, secondaryAssignments, nodeLocator, updatedToSend)
+
+      case AssignWithParents(assignments, sender) =>
+        sender ! GetNodeAssignments(ctx.self)
+        val (newAssignmentsToSend, updatedSecondaryAssignments) = assignParents(assignments, secondaryAssignments, distributionTree)
+        val updatedToSend = addParentAssignmentsToToSend(newAssignmentsToSend, nodeLocator, toSend)
+        findSecondaryAssignments(distributionTree, updatedSecondaryAssignments, nodeLocator, updatedToSend)
 
       case SendSecondaryAssignments =>
         nodeLocatorHolder ! LocalSecondaryNodeAssignments(secondaryAssignments)
@@ -288,6 +290,7 @@ class GraphRedistributer(data: LocalData[Float],
 
   def startDistribution(distributionTree: Map[Int, DistributionTreeInfo],
                         nodeLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionEvent] = {
+    ctx.log.info("Finished calculating SubtreeSizes for every node, start assigning workers")
     distributionTree.valuesIterator.foreach(nodeInfo => nodeInfo.stillToDistribute = nodeInfo.subTreeSize)
     val toSend: Map[ActorRef[RedistributionEvent], (Seq[(ActorRef[SearchOnGraphEvent], Int)], Boolean)] = nodeLocator.allActors.map(actor => actor -> (Seq.empty, true)).toMap
     distributeUsingTree(distributionTree, nodeLocator, toSend)
@@ -300,7 +303,7 @@ class GraphRedistributer(data: LocalData[Float],
   : Map[ActorRef[RedistributionEvent], (Seq[(ActorRef[SearchOnGraphEvent], Int)], Boolean)] = {
     redistributionCoordinator ! PrimaryAssignmentParents(worker, waitingList.map(_.g_node))
     val assignments = waitingList.map(entry => (worker, entry.g_node))
-    addAssignmentsToToSend(assignments, nodeLocator, toSend)
+    addChildAssignmentsToToSend(assignments, nodeLocator, toSend)
   }
 
   def startSearchForNextWorkersNodes(nextNodeInSearch: Int,
@@ -319,14 +322,26 @@ class GraphRedistributer(data: LocalData[Float],
     }
   }
 
-  def addAssignmentsToToSend(assignments: Seq[(ActorRef[SearchOnGraphEvent], Int)],
-                             nodeLocator: NodeLocator[RedistributionEvent],
-                             toSend: Map[ActorRef[RedistributionEvent], (Seq[(ActorRef[SearchOnGraphEvent], Int)], Boolean)])
+  def addChildAssignmentsToToSend(assignments: Seq[(ActorRef[SearchOnGraphEvent], Int)],
+                                  nodeLocator: NodeLocator[RedistributionEvent],
+                                  toSend: Map[ActorRef[RedistributionEvent], (Seq[(ActorRef[SearchOnGraphEvent], Int)], Boolean)])
   : Map[ActorRef[RedistributionEvent], (Seq[(ActorRef[SearchOnGraphEvent], Int)], Boolean)] = {
     val groupedEntry = assignments.groupBy(assignment => nodeLocator.findResponsibleActor(assignment._2))
     val updatedToSend = toSend.transform { (actor, assignmentInfo) =>
       val updatedAssignments = assignmentInfo._1 ++ groupedEntry.getOrElse(actor, Seq.empty)
-      sendAssignments(updatedAssignments, assignmentInfo._2, actor)
+      sendAssignmentsToChildren(updatedAssignments, assignmentInfo._2, actor)
+    }
+    updatedToSend
+  }
+
+  def addParentAssignmentsToToSend(assignments: Seq[(ActorRef[SearchOnGraphEvent], Int)],
+                                   nodeLocator: NodeLocator[RedistributionEvent],
+                                   toSend: Map[ActorRef[RedistributionEvent], (Seq[(ActorRef[SearchOnGraphEvent], Int)], Boolean)])
+  : Map[ActorRef[RedistributionEvent], (Seq[(ActorRef[SearchOnGraphEvent], Int)], Boolean)] = {
+    val groupedEntry = assignments.groupBy(assignment => nodeLocator.findResponsibleActor(assignment._2))
+    val updatedToSend = toSend.transform { (actor, assignmentInfo) =>
+      val updatedAssignments = assignmentInfo._1 ++ groupedEntry.getOrElse(actor, Seq.empty)
+      sendAssignmentsToParents(updatedAssignments, assignmentInfo._2, actor)
     }
     updatedToSend
   }
@@ -343,14 +358,51 @@ class GraphRedistributer(data: LocalData[Float],
     }
   }
 
-  def sendAssignments(assignments: Seq[(ActorRef[SearchOnGraphEvent], Int)],
-                      sendImmediately: Boolean,
-                      actor: ActorRef[RedistributionEvent]): (Seq[(ActorRef[SearchOnGraphEvent], Int)], Boolean) = {
+  def assignParents(assignments: Map[ActorRef[SearchOnGraphEvent], Seq[Int]],
+                    secondaryAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]],
+                    distributionTree: Map[Int, DistributionTreeInfo])
+  : (Seq[(ActorRef[SearchOnGraphEvent], Int)], Map[Int, Set[ActorRef[SearchOnGraphEvent]]]) = {
+    var newAssignmentsToSend: Seq[(ActorRef[SearchOnGraphEvent], Int)] = Seq.empty
+    var updatedSecondaryAssignments = secondaryAssignments
+    assignments.foreach { case (worker, nodes) =>
+      nodes.foreach { g_node =>
+        val currentAssignees = updatedSecondaryAssignments.getOrElse(g_node, Set.empty)
+        val parent = tree(g_node).parent
+        if (currentAssignees.contains(worker) || parent == g_node) {
+          redistributionCoordinator ! AssignWithParentsDone
+        } else {
+          newAssignmentsToSend :+= (worker, parent)
+          if (distributionTree(g_node).assignedWorker.get != worker) {
+            updatedSecondaryAssignments += (g_node -> (currentAssignees + worker))
+          }
+        }
+      }
+    }
+    (newAssignmentsToSend, updatedSecondaryAssignments)
+  }
+
+  def sendAssignmentsToChildren(assignments: Seq[(ActorRef[SearchOnGraphEvent], Int)],
+                                sendImmediately: Boolean,
+                                actor: ActorRef[RedistributionEvent]): (Seq[(ActorRef[SearchOnGraphEvent], Int)], Boolean) = {
     if (sendImmediately && assignments.nonEmpty) {
       val sendNow = assignments.slice(0, maxMessageSize).groupBy(_._1).transform { (_, assignmentPair) =>
         assignmentPair.map(_._2)
       }
       actor ! AssignWithChildren(sendNow, ctx.self)
+      (assignments.slice(maxMessageSize, assignments.length), false)
+    } else {
+      (assignments, sendImmediately)
+    }
+  }
+
+  def sendAssignmentsToParents(assignments: Seq[(ActorRef[SearchOnGraphEvent], Int)],
+                               sendImmediately: Boolean,
+                               actor: ActorRef[RedistributionEvent]): (Seq[(ActorRef[SearchOnGraphEvent], Int)], Boolean) = {
+    if (sendImmediately && assignments.nonEmpty) {
+      val sendNow = assignments.slice(0, maxMessageSize).groupBy(_._1).transform { (_, assignmentPair) =>
+        assignmentPair.map(_._2)
+      }
+      actor ! AssignWithParents(sendNow, ctx.self)
       (assignments.slice(maxMessageSize, assignments.length), false)
     } else {
       (assignments, sendImmediately)
@@ -371,5 +423,4 @@ class GraphRedistributer(data: LocalData[Float],
       (messages, sendImmediately)
     }
   }
-
 }
