@@ -118,7 +118,7 @@ class NodeCoordinator(settings: Settings,
                        localGraphHolders: Set[ActorRef[SearchOnGraphEvent]],
                        nodeLocator: NodeLocator[SearchOnGraphEvent],
                        navigatingNode: Int): Behavior[NodeCoordinationEvent] = {
-    val responsibilityPerGraphHolder = nodeLocator.locationData.zipWithIndex.groupBy(assignment => assignment._1).transform((_, responsibility) => responsibility.map(_._2))
+    val responsibilityPerGraphHolder = nodeLocator.actorsResponsibilities()
     val mergerResponsibility = localGraphHolders.flatMap(graphHolder => responsibilityPerGraphHolder(graphHolder))
     val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, mergerResponsibility.toSeq, settings.nodesExpected, nodeLocator), name = "NSGMerger")
     var index = 0

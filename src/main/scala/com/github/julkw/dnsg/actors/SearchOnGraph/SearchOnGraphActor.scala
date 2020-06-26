@@ -211,7 +211,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case RedistributeGraph(primaryAssignments, secondaryAssignments, redistributionCoordinator) =>
         // if a worker is the primary assignee for a graph_node it should not appear with the secondary assignees
-        val nodesExpected = primaryAssignments.locationData.count(assignee => assignee == ctx.self) +
+        val nodesExpected = primaryAssignments.numberOfNodes(ctx.self) +
           secondaryAssignments.valuesIterator.count(assignees => assignees.contains(ctx.self))
         val toSend = graph.keys.groupBy(index => primaryAssignments.findResponsibleActor(index)).transform { (worker, nodes) =>
           val alsoSend = secondaryAssignments.keys.filter(node => graph.contains(node) && secondaryAssignments(node).contains(worker))
@@ -229,7 +229,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         val graphMessageSize = settings.maxMessageSize / (settings.k + 1)
         ctx.self ! SendGraphForFile(sender)
         // only send the graph information for the nodes for which I am the primary assignee
-        val nodesToSend = nodeLocator.locationData.zipWithIndex.filter(_._1 == ctx.self).map(_._2)
+        val nodesToSend = nodeLocator.nodesOf(ctx.self)
         sendGraphToDataHolder(nodesToSend, graphMessageSize, sender, graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed, toSend)
     }
 
@@ -408,14 +408,13 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
   def waitForNSG(nodeLocator: NodeLocator[SearchOnGraphEvent], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case PartialNSG(graph) =>
-        val myResponsibility = nodeLocator.locationData.zipWithIndex.filter(locData => locData._1 == ctx.self).map(_._2)
+        val myResponsibility = nodeLocator.nodesOf(ctx.self)
         val responsibilityMidPoint = (0 until data.data.dimension).map(dim => myResponsibility.map(index => data.get(index)).map(_(dim)).sum / myResponsibility.length)
         clusterCoordinator ! NSGonSOG(responsibilityMidPoint, ctx.self)
         val toSend = nodeLocator.allActors.map(worker => worker -> new SOGInfo).toMap
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1, toSend)
     }
 }
-
 
 
 

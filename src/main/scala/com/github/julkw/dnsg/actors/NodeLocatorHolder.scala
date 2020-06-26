@@ -151,7 +151,7 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case ShareNodeLocator(sendToCoordinator) =>
         val sogActors = actorMapping.values.toSet
-        val nodeLocator = NodeLocator(lastNodeLocator.locationData.map(knngActor => actorMapping(knngActor)), sogActors)
+        val nodeLocator = NodeLocator(lastNodeLocator.locationData, lastNodeLocator.actors.map(knngActor => actorMapping(knngActor)))
         val localSogActors = sogActors.filter(graphHolder => isLocal(graphHolder))
         localSogActors.foreach(graphHolder => graphHolder ! GraphDistribution(nodeLocator))
         if(sendToCoordinator) {
@@ -198,7 +198,7 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case ShareNodeLocator(sendToCoordinator) =>
         val graphConnectors = actorMapping.values.toSet
-        val nodeLocator = NodeLocator(lastNodeLocator.locationData.map(sogActor => actorMapping(sogActor)), graphConnectors)
+        val nodeLocator = NodeLocator(lastNodeLocator.locationData, lastNodeLocator.actors.map(sogActor => actorMapping(sogActor)))
         if (sendToCoordinator) {
           ctx.log.info("Send NodeLocator to (hopefully local) coordinator")
           connectorCoordinator ! GraphConnectorNodeLocator(nodeLocator)
@@ -237,7 +237,7 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case ShareNodeLocator(sendToCoordinator) =>
         val redistributers = actorMapping.values.toSet
-        val nodeLocator = NodeLocator(lastNodeLocator.locationData.map(connector => actorMapping(connector)), redistributers)
+        val nodeLocator = NodeLocator(lastNodeLocator.locationData, lastNodeLocator.actors.map(connector => actorMapping(connector)))
         if (sendToCoordinator) {
           ctx.log.info("Send NodeLocator to (hopefully local) coordinator")
           redistributionCoordinator ! RedistributerNodeLocator(nodeLocator)
@@ -271,7 +271,8 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
           }
           false
         }
-        val nodeLocator = nodeLocatorBuilder.addFromMap(nodeAssignments)
+        batches.foreach(batch => nodeLocatorBuilder.addLocation(batch._2, batch._1))
+        val nodeLocator = nodeLocatorBuilder.nodeLocator()
         if (nodeLocator.isDefined) {
           ctx.log.info("Primary assignments done")
           redistributionCoordinator ! PrimaryAssignmentsDone
