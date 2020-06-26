@@ -3,9 +3,10 @@ package com.github.julkw.dnsg.actors.Coordinators
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import akka.cluster.typed.{ClusterSingleton, SingletonActor}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, NodeCoordinatorIntroduction}
-import com.github.julkw.dnsg.actors.DataHolder
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, NodeIntroduction}
+import com.github.julkw.dnsg.actors.{DataHolder, NodeLocatorHolder}
 import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, LoadDataFromFile}
+import com.github.julkw.dnsg.actors.NodeLocatorHolder.NodeLocationEvent
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetNSGFrom, SearchOnGraphEvent, UpdatedLocalData}
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
@@ -42,18 +43,20 @@ object NodeCoordinator {
       SingletonActor(Behaviors.supervise(ClusterCoordinator()).onFailure[Exception](SupervisorStrategy.restart), "ClusterCoordinator"))
 
     val dh = ctx.spawn(DataHolder(ctx.self), name = "DataHolder")
-    clusterCoordinator ! NodeCoordinatorIntroduction(ctx.self, dh)
+    val nl = ctx.spawn(NodeLocatorHolder(clusterCoordinator, ctx.self, dh, settings.maxMessageSize), name = "NodeLocatorHolder")
+    clusterCoordinator ! NodeIntroduction(ctx.self, dh, nl)
     fileName match {
       case Some(fName) =>
-        new NodeCoordinator(settings, dh, clusterCoordinator, ctx).setUp(fName)
+        new NodeCoordinator(settings, dh, nl, clusterCoordinator, ctx).setUp(fName)
       case None =>
-        new NodeCoordinator(settings, dh, clusterCoordinator, ctx).waitForData()
+        new NodeCoordinator(settings, dh, nl, clusterCoordinator, ctx).waitForData()
     }
   }
 }
 
 class NodeCoordinator(settings: Settings,
                       dataHolder: ActorRef[LoadDataEvent],
+                      nodeLocatorHolder: ActorRef[NodeLocationEvent],
                       clusterCoordinator: ActorRef[CoordinationEvent],
                       ctx: ActorContext[NodeCoordinator.NodeCoordinationEvent]) extends Distance {
   import NodeCoordinator._
@@ -74,7 +77,7 @@ class NodeCoordinator(settings: Settings,
       assert(data.localDataSize > 0)
       ctx.log.info("Successfully loaded data")
       // create Actor to start distribution of data
-      val kw = ctx.spawn(KnngWorker(data, clusterCoordinator, ctx.self), name = "KnngWorker")
+      val kw = ctx.spawn(KnngWorker(data, clusterCoordinator, ctx.self, nodeLocatorHolder), name = "KnngWorker")
       kw ! ResponsibleFor(data.localIndices, 0, settings.workers)
       waitForKnng(Set.empty, data)
   }
@@ -91,7 +94,7 @@ class NodeCoordinator(settings: Settings,
     ctx.log.info("Start moving graph to SearchOnGraph Actors")
     var sogIndex = 0
     val graphHolders = knngWorkers.map { worker =>
-      val nsgw = ctx.spawn(SearchOnGraphActor(clusterCoordinator), name = "SearchOnGraph" + sogIndex.toString)
+      val nsgw = ctx.spawn(SearchOnGraphActor(clusterCoordinator, nodeLocatorHolder), name = "SearchOnGraph" + sogIndex.toString)
       sogIndex += 1
       worker ! MoveGraph(nsgw)
       nsgw

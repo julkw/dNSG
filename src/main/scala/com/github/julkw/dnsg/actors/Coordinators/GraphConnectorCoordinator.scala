@@ -4,15 +4,18 @@ import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionAchieved, ConnectorsCleanedUp, CoordinationEvent, KNearestNeighbors}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.RedistributionCoordinationEvent
-import com.github.julkw.dnsg.actors.GraphConnector.{AddEdgeAndContinue, BuildTreeFrom, ConnectGraphEvent, ConnectorDistributionInfo, FindUnconnectedNode, GraphConnected, StartGraphRedistributers}
+import com.github.julkw.dnsg.actors.GraphConnector.{AddEdgeAndContinue, BuildTreeFrom, ConnectGraphEvent, FindUnconnectedNode, GraphConnected, StartGraphRedistributers}
+import com.github.julkw.dnsg.actors.NodeLocatorHolder.{BuildConnectorNodeLocator, NodeLocationEvent, ShareNodeLocator}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{AddToGraph, ConnectGraph, FindNearestNeighborsStartingFrom, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.{NodeLocator, NodeLocatorBuilder, dNSGSerializable}
+import com.github.julkw.dnsg.util.{LocalityCheck, NodeLocator, dNSGSerializable}
 
 object GraphConnectorCoordinator {
 
   trait ConnectionCoordinationEvent extends dNSGSerializable
 
-  final case class GraphConnectorDistributionInfo(responsibility: Seq[Int], sender: ActorRef[ConnectGraphEvent]) extends ConnectionCoordinationEvent
+  final case object FinishedGraphConnectorNodeLocator extends ConnectionCoordinationEvent
+
+  final case class GraphConnectorNodeLocator(nodeLocator: NodeLocator[ConnectGraphEvent]) extends ConnectionCoordinationEvent
 
   final case object FinishedUpdatingConnectivity extends ConnectionCoordinationEvent
 
@@ -32,42 +35,42 @@ object GraphConnectorCoordinator {
 
   def apply(navigatingNodeIndex: Int,
             graphNodeLocator: NodeLocator[SearchOnGraphEvent],
+            nodeLocatorHolders: Set[ActorRef[NodeLocationEvent]],
             supervisor: ActorRef[CoordinationEvent]): Behavior[ConnectionCoordinationEvent] =
     Behaviors.setup { ctx =>
       val coordinationEventAdapter: ActorRef[CoordinationEvent] =
         ctx.messageAdapter { event => WrappedCoordinationEvent(event)}
 
-      new GraphConnectorCoordinator(navigatingNodeIndex, graphNodeLocator, supervisor, coordinationEventAdapter, ctx).setup()
+      new GraphConnectorCoordinator(navigatingNodeIndex, graphNodeLocator, nodeLocatorHolders, supervisor, coordinationEventAdapter, ctx).setup()
     }
 
 }
 
 class GraphConnectorCoordinator(navigatingNodeIndex: Int,
                                 graphNodeLocator: NodeLocator[SearchOnGraphEvent],
+                                nodeLocatorHolders: Set[ActorRef[NodeLocationEvent]],
                                 supervisor: ActorRef[CoordinationEvent],
                                 coordinationEventAdapter: ActorRef[CoordinationEvent],
-                                ctx: ActorContext[GraphConnectorCoordinator.ConnectionCoordinationEvent]) {
+                                ctx: ActorContext[GraphConnectorCoordinator.ConnectionCoordinationEvent]) extends LocalityCheck {
   import GraphConnectorCoordinator._
 
   def setup(): Behavior[ConnectionCoordinationEvent] = {
+    nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! BuildConnectorNodeLocator(ctx.self))
     graphNodeLocator.allActors.foreach( graphHolder => graphHolder ! ConnectGraph(ctx.self))
-    waitForGraphConnectors(Set.empty, NodeLocatorBuilder(graphNodeLocator.graphSize))
+    waitForGraphConnectorNodeLocator(nodeLocatorHolders.size)
   }
 
-  def waitForGraphConnectors(graphConnectors: Set[ActorRef[ConnectGraphEvent]],
-                             graphConnectorLocator: NodeLocatorBuilder[ConnectGraphEvent]): Behavior[ConnectionCoordinationEvent] =
+  def waitForGraphConnectorNodeLocator(waitingOnNodeLocatorHolders: Int): Behavior[ConnectionCoordinationEvent] =
     Behaviors.receiveMessagePartial {
-      case GraphConnectorDistributionInfo(responsibility, graphConnector) =>
-        val updatedConnectors = graphConnectors + graphConnector
-        val gcLocator = graphConnectorLocator.addLocation(responsibility, graphConnector)
-        gcLocator match {
-          case Some(newLocator) =>
-            updatedConnectors.foreach(connector => connector ! ConnectorDistributionInfo(newLocator))
-            newLocator.findResponsibleActor(navigatingNodeIndex) ! BuildTreeFrom(navigatingNodeIndex)
-            connectGraph(newLocator, updatedConnectors, waitOnNodeAck = 0, latestUnconnectedNodeIndex = -1, allConnected = false)
-          case None =>
-            waitForGraphConnectors(updatedConnectors, graphConnectorLocator)
+      case FinishedGraphConnectorNodeLocator =>
+        if (waitingOnNodeLocatorHolders == 1) {
+          nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! ShareNodeLocator(isLocal(nodeLocatorHolder)))
         }
+        waitForGraphConnectorNodeLocator(waitingOnNodeLocatorHolders - 1)
+
+      case GraphConnectorNodeLocator(nodeLocator) =>
+        nodeLocator.findResponsibleActor(navigatingNodeIndex) ! BuildTreeFrom(navigatingNodeIndex)
+        connectGraph(nodeLocator, nodeLocator.allActors, waitOnNodeAck = 0, latestUnconnectedNodeIndex = -1, allConnected = false)
     }
 
   def connectGraph(connectorLocator: NodeLocator[ConnectGraphEvent],

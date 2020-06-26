@@ -7,7 +7,7 @@ import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{AverageValu
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{DataRef, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{SearchOnGraphEvent, SendGraphForFile}
 import com.github.julkw.dnsg.util.Data.{LocalData, LocalSequentialData, LocalUnorderedData}
-import com.github.julkw.dnsg.util.{FileInteractor, NodeLocator, Settings, dNSGSerializable}
+import com.github.julkw.dnsg.util.{FileInteractor, LocalityCheck, NodeLocator, Settings, dNSGSerializable}
 
 import scala.language.postfixOps
 
@@ -25,8 +25,6 @@ object DataHolder {
   final case class PartialData(partialData: Seq[Seq[Float]], dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
   final case class GetNext(alreadyReceived: Int, dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
-
-  final case class StartRedistributingData(primaryAssignments: NodeLocator[SearchOnGraphEvent], secondaryAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
 
   final case class RedistributeData(primaryAssignments: NodeLocator[SearchOnGraphEvent], secondaryAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]]) extends LoadDataEvent
 
@@ -59,7 +57,7 @@ object DataHolder {
   }
 }
 
-class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSize: Int, ctx: ActorContext[DataHolder.LoadDataEvent]) extends FileInteractor {
+class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSize: Int, ctx: ActorContext[DataHolder.LoadDataEvent]) extends FileInteractor with LocalityCheck {
   import DataHolder._
 
   def loadData(): Behavior[LoadDataEvent] =
@@ -168,14 +166,10 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
         replyTo ! LocalAverage(averageValue, data.localDataSize)
         holdData(data, dataHolders)
 
-      case StartRedistributingData(primaryAssignments, secondaryAssignments) =>
-        dataHolders.foreach(dataHolder => dataHolder ! RedistributeData(primaryAssignments, secondaryAssignments))
-        holdData(data, dataHolders)
-
       case RedistributeData(primaryAssignments, secondaryAssignments) =>
         val expectedDataSize = (0 until primaryAssignments.graphSize).count { nodeIndex =>
-          primaryAssignments.findResponsibleActor(nodeIndex).path.root == ctx.self.path.root ||
-            secondaryAssignments.getOrElse(nodeIndex, Set.empty).exists(worker => worker.path.root == ctx.self.path.root)
+          isLocal(primaryAssignments.findResponsibleActor(nodeIndex)) ||
+            secondaryAssignments.getOrElse(nodeIndex, Set.empty).exists(worker => isLocal(worker))
         }
         val toSend = data.localIndices.groupBy(index => primaryAssignments.findResponsibleActor(index))
         val sendToDHs = dataHolders.map { dataHolder =>
