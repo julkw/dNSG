@@ -3,10 +3,10 @@ package com.github.julkw.dnsg.actors.Coordinators
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{AllSharedReplication, NoReplication, OnlyParentsReplication}
-import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartBuildingNSG, StartDistributingData, StartSearchOnGraph}
-import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, GetGraphFromFile, LoadDataEvent, LoadDataFromFile, ReadTestQueries, SaveGraphToFile}
+import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartDistributingData, StartSearchOnGraph}
+import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries, SaveGraphToFile}
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.{AllNodeLocatorHolders, NodeLocationEvent, SendNodeLocatorToNodeCoordinator, ShareNodeLocator}
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, GraphDistribution, RedistributeGraph, SearchOnGraphEvent}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker._
 import com.github.julkw.dnsg.util._
@@ -71,7 +71,7 @@ object ClusterCoordinator {
 }
 
 class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent],
-                         settings: Settings) extends Distance {
+                         settings: Settings) extends Distance with LocalityCheck {
   import ClusterCoordinator._
 
   def setUp(nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
@@ -100,7 +100,9 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
     Behaviors.receiveMessagePartial {
       case FinishedKnngNodeLocator =>
         if (waitingOnNodeLocators == 1) {
-          nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! ShareNodeLocator)
+          nodeLocatorHolders.foreach { nodeLocatorHolder =>
+            nodeLocatorHolder ! ShareNodeLocator(isLocal(nodeLocatorHolder))
+          }
         }
         waitForKnngDataDistribution(nodeCoordinators, dataHolder, nodeLocatorHolders, waitingOnNodeLocators - 1)
 
@@ -165,6 +167,10 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         confirmNNDescent(nodeLocator, updatedConfirmedWorkers, nodeCoordinators, dataHolder, nodeLocatorHolders)
       }
 
+    case FinishedNNDescent(worker) =>
+      // ignore
+      confirmNNDescent(nodeLocator, confirmedWorkers, nodeCoordinators, dataHolder, nodeLocatorHolders)
+
     case CorrectFinishedNNDescent(worker) =>
       ctx.log.info("Actor not done during confirmation")
       // apparently not all are done, go back to waiting again
@@ -181,7 +187,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         if (waitingOnNodeLocators == 1) {
           ctx.log.info("All graphs now with SearchOnGraph actors")
           oldWorkers.foreach(worker => worker ! AllKnngWorkersDone)
-          nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! ShareNodeLocator)
+          nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! ShareNodeLocator(isLocal(nodeLocatorHolder)))
         }
         waitOnSearchOnGraphNodeLocator(oldWorkers, nodeCoordinators, dataHolder, nodeLocatorHolders, waitingOnNodeLocators - 1)
 
@@ -285,7 +291,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                    nodeLocatorHolders: Set[ActorRef[NodeLocationEvent]]): Behavior[CoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case NSGonSOG(responsibilityMidPoint, sender) =>
-        val updatedActorMidPoints = actorMidPoints :+ (sender, responsibilityMidPoint)
+        val updatedActorMidPoints = actorMidPoints :+ ((sender, responsibilityMidPoint))
         if (updatedActorMidPoints.length == nodeLocator.allActors.size) {
           ctx.log.info("NSG moved to SearchOnGraphActors. Now connecting graph")
           ctx.spawn(GraphConnectorCoordinator(navigatingNodeIndex, nodeLocator, nodeLocatorHolders, ctx.self), name="GraphConnectorCoordinator")

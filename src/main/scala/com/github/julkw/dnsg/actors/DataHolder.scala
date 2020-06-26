@@ -7,7 +7,7 @@ import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{AverageValu
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{DataRef, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{SearchOnGraphEvent, SendGraphForFile}
 import com.github.julkw.dnsg.util.Data.{LocalData, LocalSequentialData, LocalUnorderedData}
-import com.github.julkw.dnsg.util.{FileInteractor, NodeLocator, Settings, dNSGSerializable}
+import com.github.julkw.dnsg.util.{FileInteractor, LocalityCheck, NodeLocator, Settings, dNSGSerializable}
 
 import scala.language.postfixOps
 
@@ -57,7 +57,7 @@ object DataHolder {
   }
 }
 
-class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSize: Int, ctx: ActorContext[DataHolder.LoadDataEvent]) extends FileInteractor {
+class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSize: Int, ctx: ActorContext[DataHolder.LoadDataEvent]) extends FileInteractor with LocalityCheck {
   import DataHolder._
 
   def loadData(): Behavior[LoadDataEvent] =
@@ -168,12 +168,12 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
 
       case RedistributeData(primaryAssignments, secondaryAssignments) =>
         val expectedDataSize = (0 until primaryAssignments.graphSize).count { nodeIndex =>
-          primaryAssignments.findResponsibleActor(nodeIndex).path.root == ctx.self.path.root ||
-            secondaryAssignments.getOrElse(nodeIndex, Set.empty).exists(worker => worker.path.root == ctx.self.path.root)
+          isLocal(primaryAssignments.findResponsibleActor(nodeIndex)) ||
+            secondaryAssignments.getOrElse(nodeIndex, Set.empty).exists(worker => isLocal(worker))
         }
         val toSend = data.localIndices.groupBy(index => primaryAssignments.findResponsibleActor(index))
         val sendToDHs = dataHolders.map { dataHolder =>
-          val correspondingWorkers = toSend.keys.filter(actor => actor.path.root == dataHolder.path.root)
+          val correspondingWorkers = toSend.keys.filter(actor => isLocal(actor))
           val sendToDH = correspondingWorkers.flatMap { worker =>
             toSend(worker) ++ secondaryAssignments.keys.filter ( index => data.isLocal(index) && secondaryAssignments(index).contains(worker))
           }
@@ -181,6 +181,8 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
         }.toMap
         sendToDHs.keys.foreach(dataHolder => dataHolder ! PrepareForRedistributedData(ctx.self))
         val dataMessageSize = maxMessageSize / data.dimension
+        ctx.log.info("Expect to receive: {}", expectedDataSize)
+        ctx.log.info("Expect to send: {}", toSend.values.map(_.length))
         redistributeData(data, Map.empty, expectedDataSize, sendToDHs, dataMessageSize, dataHolders)
 
       case PrepareForRedistributedData(sender) =>
@@ -222,6 +224,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
             sender ! PartialRedistributedData(dataToSend, ctx.self)
             redistributeData(oldData, newData, expectedNewData, toSend + (sender -> indicesToSend.slice(dataMessageSize, indicesToSend.length)), dataMessageSize, dataHolders)
           } else if (toSend.size == 1 && newData.size == expectedNewData) {
+            ctx.log.info("Received all expected data and send everything I had to send")
             val localData = LocalUnorderedData(newData)
             nodeCoordinator ! DataRef(localData)
             holdData(localData, dataHolders)
@@ -236,7 +239,9 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
       case PartialRedistributedData(data, sender) =>
         sender ! GetRedistributedData(ctx.self)
         val updatedData = newData ++ data
+        ctx.log.info("DataReceived: {} of {}", updatedData.size, expectedNewData)
         if (updatedData.size == expectedNewData && toSend.isEmpty) {
+          ctx.log.info("Received all expected data and send everything I had to send")
           val localData = LocalUnorderedData(updatedData)
           nodeCoordinator ! DataRef(localData)
           holdData(localData, dataHolders)

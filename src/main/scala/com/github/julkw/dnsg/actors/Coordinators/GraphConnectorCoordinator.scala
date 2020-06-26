@@ -7,7 +7,7 @@ import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.
 import com.github.julkw.dnsg.actors.GraphConnector.{AddEdgeAndContinue, BuildTreeFrom, ConnectGraphEvent, FindUnconnectedNode, GraphConnected, StartGraphRedistributers}
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.{BuildConnectorNodeLocator, NodeLocationEvent, ShareNodeLocator}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{AddToGraph, ConnectGraph, FindNearestNeighborsStartingFrom, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.{NodeLocator, dNSGSerializable}
+import com.github.julkw.dnsg.util.{LocalityCheck, NodeLocator, dNSGSerializable}
 
 object GraphConnectorCoordinator {
 
@@ -51,7 +51,7 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
                                 nodeLocatorHolders: Set[ActorRef[NodeLocationEvent]],
                                 supervisor: ActorRef[CoordinationEvent],
                                 coordinationEventAdapter: ActorRef[CoordinationEvent],
-                                ctx: ActorContext[GraphConnectorCoordinator.ConnectionCoordinationEvent]) {
+                                ctx: ActorContext[GraphConnectorCoordinator.ConnectionCoordinationEvent]) extends LocalityCheck {
   import GraphConnectorCoordinator._
 
   def setup(): Behavior[ConnectionCoordinationEvent] = {
@@ -64,7 +64,7 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
     Behaviors.receiveMessagePartial {
       case FinishedGraphConnectorNodeLocator =>
         if (waitingOnNodeLocatorHolders == 1) {
-          nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! ShareNodeLocator)
+          nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! ShareNodeLocator(isLocal(nodeLocatorHolder)))
         }
         waitForGraphConnectorNodeLocator(waitingOnNodeLocatorHolders - 1)
 

@@ -5,10 +5,10 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionAchieved, ConnectorsCleanedUp, CoordinationEvent}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{CleanUpConnectors, ConnectionCoordinationEvent, StartGraphRedistribution}
 import com.github.julkw.dnsg.actors.DataHolder.LoadDataEvent
-import com.github.julkw.dnsg.actors.GraphRedistributer.{AssignWithParents, DistributeData, RedistributionEvent, SendSecondaryAssignments}
+import com.github.julkw.dnsg.actors.GraphRedistributer.{AssignWithParents, RedistributionEvent, SendSecondaryAssignments}
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.{BuildRedistributionNodeLocator, NodeLocationEvent, SendNodeLocatorToClusterCoordinator, ShareNodeLocator, ShareRedistributionAssignments}
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{RedistributeGraph, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.{NodeLocator, NodeLocatorBuilder, dNSGSerializable}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.SearchOnGraphEvent
+import com.github.julkw.dnsg.util.{LocalityCheck, NodeLocator, dNSGSerializable}
 
 object GraphRedistributionCoordinator {
 
@@ -60,7 +60,7 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
                                      nodeLocatorHolders: Set[ActorRef[NodeLocationEvent]],
                                      clusterCoordinator: ActorRef[CoordinationEvent],
                                      coordinationEventAdapter: ActorRef[CoordinationEvent],
-                                     ctx: ActorContext[GraphRedistributionCoordinator.RedistributionCoordinationEvent]) {
+                                     ctx: ActorContext[GraphRedistributionCoordinator.RedistributionCoordinationEvent]) extends LocalityCheck {
   import GraphRedistributionCoordinator._
 
   def setup(): Behavior[RedistributionCoordinationEvent] = {
@@ -86,7 +86,7 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
       case FinishedRedistributerNodeLocator =>
         if (waitingOnNodeLocatorHolders == 1) {
           ctx.log.info("All redistributers started")
-          nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! ShareNodeLocator)
+          nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! ShareNodeLocator(isLocal(nodeLocatorHolder)))
         }
         waitOnRedistributerNodeLocator(waitingOnNodeLocatorHolders - 1, connectorCoordinator)
 
@@ -158,6 +158,7 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
     Behaviors.receiveMessagePartial {
       case AssignWithParentsDone =>
         if (waitingOn == 1) {
+          ctx.log.info("Done with assigning parents, now collecting secondary assignments")
           redistributerLocator.allActors.foreach ( redistributer => redistributer ! SendSecondaryAssignments)
           waitForSecondaryAssignments(connectorCoordinator, nodeLocatorHolders.size)
         } else {
@@ -197,7 +198,9 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
         event match {
           case ConnectorsCleanedUp =>
             ctx.log.info("Done with data redistribution")
-            nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! SendNodeLocatorToClusterCoordinator)
+            val localHolders = nodeLocatorHolders.filter(nodeLocatorHolder => nodeLocatorHolder.path.address.host.isEmpty)
+            assert(localHolders.size == 1)
+            localHolders.head ! SendNodeLocatorToClusterCoordinator
             Behaviors.stopped
         }
     }
