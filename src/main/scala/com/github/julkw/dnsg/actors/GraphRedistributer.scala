@@ -16,7 +16,9 @@ object GraphRedistributer {
   final case class DistributeData(nodeLocator: NodeLocator[RedistributionEvent]) extends RedistributionEvent
 
   // calculating subtree-sizes
-  final case class ChildSubtreeSize(g_node: Int, childIndex: Int, childSubtreeSize: Int) extends RedistributionEvent
+  final case class ChildSubtreeSizes(subtreeSizes: Seq[SubtreeInfo], sender: ActorRef[RedistributionEvent]) extends RedistributionEvent
+
+  final case class GetChildSubtreeSizes(sender: ActorRef[RedistributionEvent]) extends RedistributionEvent
 
   // Search for nodes to assign
   final case class FindNodesInRange(g_node: Int, minNodes: Int, maxNodes: Int, removeFromDescendants: Int, waitingList: Seq[WaitingListEntry], workersLeft: Set[ActorRef[SearchOnGraphEvent]], nodesLeft: Int) extends RedistributionEvent
@@ -26,6 +28,7 @@ object GraphRedistributer {
   final case class LocationForRedistribution(index: Int, location: Seq[Float]) extends RedistributionEvent
 
   // assigning nodes to workers
+  // TODO bundle these two
   final case class AssignWithChildren(g_node: Int, worker: ActorRef[SearchOnGraphEvent]) extends RedistributionEvent
 
   final case class AssignWithParents(g_node: Int, worker: ActorRef[SearchOnGraphEvent]) extends RedistributionEvent
@@ -39,6 +42,8 @@ object GraphRedistributer {
 
   protected case class WaitingListEntry(g_node: Int, subTreeSize: Int)
 
+  protected case class SubtreeInfo(parentIndex: Int, childIndex: Int, childSubtreeSize: Int)
+
   def apply(data: LocalData[Float],
             tree: Map[Int, CTreeNode],
             graphNodeLocator: NodeLocator[SearchOnGraphEvent],
@@ -46,8 +51,9 @@ object GraphRedistributer {
             nodeLocatorHolder: ActorRef[NodeLocationEvent],
             parent: ActorRef[ConnectGraphEvent]): Behavior[RedistributionEvent] =
     Behaviors.setup { ctx =>
+      val maxMessageSize = Settings(ctx.system.settings.config).maxMessageSize
       val optimalRedistribution = Settings(ctx.system.settings.config).dataRedistribution == "optimalRedistribution"
-      new GraphRedistributer(data, tree, optimalRedistribution, graphNodeLocator, redistributionCoordinator, nodeLocatorHolder, parent, ctx).setup()
+      new GraphRedistributer(data, tree, optimalRedistribution, graphNodeLocator, redistributionCoordinator, nodeLocatorHolder, parent, maxMessageSize, ctx).setup()
     }
 }
 
@@ -58,6 +64,7 @@ class GraphRedistributer(data: LocalData[Float],
                          redistributionCoordinator: ActorRef[RedistributionCoordinationEvent],
                          nodeLocatorHolder: ActorRef[NodeLocationEvent],
                          parent: ActorRef[ConnectGraphEvent],
+                         maxMessageSize: Int,
                          ctx: ActorContext[GraphRedistributer.RedistributionEvent]) extends Distance {
   import GraphRedistributer._
 
@@ -69,59 +76,96 @@ class GraphRedistributer(data: LocalData[Float],
 
   def waitForStartSignal(distributionTree: Map[Int, DistributionTreeInfo]): Behavior[RedistributionEvent] = Behaviors.receiveMessagePartial {
     case DistributeData(nodeLocator) =>
-      tree.foreach { case (node, nodeInfo) =>
-        if (nodeInfo.children.isEmpty) {
-          nodeLocator.findResponsibleActor(nodeInfo.parent) ! ChildSubtreeSize(nodeInfo.parent, node, 1)
+      val leafNodes = tree.collect { case (node, nodeInfo) if (nodeInfo.children.isEmpty) =>
+         SubtreeInfo(nodeInfo.parent, node, 1)
+      }
+      val toSend = leafNodes.groupBy(leafNode => nodeLocator.findResponsibleActor(leafNode.parentIndex))
+      val fullToSend = nodeLocator.allActors.map { redistributer =>
+        if (toSend.contains(redistributer)) {
+          redistributer -> (toSend(redistributer).toSeq, false)
+        } else {
+          redistributer -> (Seq.empty, false)
         }
-      }
-      calculateNodeSizes(distributionTree, graphNodeLocator.allActors, nodeLocator)
+      }.toMap
+      nodeLocator.allActors.foreach(redistributer => redistributer ! GetChildSubtreeSizes(ctx.self))
+      calculateNodeSizes(distributionTree, graphNodeLocator.allActors, nodeLocator, maxMessageSize / 3, fullToSend)
 
-    case ChildSubtreeSize(g_node, childIndex, childSubtreeSize) =>
-      val currentNode = distributionTree(g_node)
-      if (currentNode.waitingForResponses == 1) {
-        // I need the nodeLocator to tell the parent about subtree size, so just wait for that
-        ctx.self ! ChildSubtreeSize(g_node, childIndex, childSubtreeSize)
-      } else {
-        currentNode.subTreeSize += childSubtreeSize
-        currentNode.waitingForResponses -= 1
-      }
+    case GetChildSubtreeSizes(sender) =>
+      ctx.self ! GetChildSubtreeSizes(sender)
       waitForStartSignal(distributionTree)
   }
 
   def calculateNodeSizes(distributionTree: Map[Int, DistributionTreeInfo],
                          workers: Set[ActorRef[SearchOnGraphEvent]],
-                         nodeLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionEvent] =
+                         nodeLocator: NodeLocator[RedistributionEvent],
+                         maxSubtreeMessageSize: Int,
+                         toSend: Map[ActorRef[RedistributionEvent], (Seq[SubtreeInfo], Boolean)]): Behavior[RedistributionEvent] =
     Behaviors.receiveMessagePartial {
-      case ChildSubtreeSize(g_node, childIndex, childSubtreeSize) =>
-        val currentNode = distributionTree(g_node)
-        currentNode.subTreeSize += childSubtreeSize
-        currentNode.waitingForResponses -= 1
-        if (currentNode.waitingForResponses == 0) {
-          val currentParent = tree(g_node).parent
-          if (currentParent == g_node) {
-            // this is the root
-            assert(currentNode.subTreeSize == nodeLocator.graphSize)
-            startSearchForNextWorkersNodes(g_node, 0, nodeLocator.graphSize, workers, nodeLocator)
-            startDistribution(distributionTree, workers, nodeLocator)
-          } else {
-            nodeLocator.findResponsibleActor(currentParent) ! ChildSubtreeSize(currentParent, g_node, currentNode.subTreeSize)
-            calculateNodeSizes(distributionTree, workers, nodeLocator)
-          }
+      case GetChildSubtreeSizes(sender) =>
+        val allMessagesToSend = toSend(sender)._1
+        if (allMessagesToSend.nonEmpty) {
+          val messageToSend = allMessagesToSend.slice(0, maxSubtreeMessageSize)
+          sender ! ChildSubtreeSizes(messageToSend, ctx.self)
+          val toSendLater = allMessagesToSend.slice(maxSubtreeMessageSize, allMessagesToSend.length)
+          val updatedToSend = toSend + (sender -> (toSendLater, false))
+          calculateNodeSizes(distributionTree, workers, nodeLocator, maxSubtreeMessageSize, updatedToSend)
         } else {
-          calculateNodeSizes(distributionTree, workers, nodeLocator)
+          val updatedToSend = toSend + (sender -> (toSend(sender)._1, true))
+          calculateNodeSizes(distributionTree, workers, nodeLocator, maxSubtreeMessageSize, updatedToSend)
+        }
+
+      case ChildSubtreeSizes(subtreeSizes, sender) =>
+        var newMessages: Seq[SubtreeInfo] = Seq.empty
+        var rootNodeDone = -1
+        subtreeSizes.foreach { subtreeInfo =>
+          val currentNode = distributionTree(subtreeInfo.parentIndex)
+          currentNode.subTreeSize += subtreeInfo.childSubtreeSize
+          currentNode.waitingForResponses -= 1
+          if (currentNode.waitingForResponses == 0) {
+            val currentParent = tree(subtreeInfo.parentIndex).parent
+            if (currentParent == subtreeInfo.parentIndex) {
+              // this is the root
+              assert(currentNode.subTreeSize == nodeLocator.graphSize)
+              rootNodeDone = currentParent
+            } else {
+              newMessages :+= SubtreeInfo(currentParent, subtreeInfo.parentIndex, currentNode.subTreeSize)
+            }
+          }
+        }
+        if (rootNodeDone >= 0) {
+          // all subtree sizes have been calculated, start assigning workers
+          startSearchForNextWorkersNodes(rootNodeDone, removeDescendants = 0, nodeLocator.graphSize, workers, nodeLocator)
+          startDistribution(distributionTree, nodeLocator)
+        } else {
+          sender ! GetChildSubtreeSizes(ctx.self)
+          // add new messages to toSend and send out new info to the actors waiting for some
+          val groupedNewMessages = newMessages.groupBy(subtreeInfo => nodeLocator.findResponsibleActor(subtreeInfo.parentIndex))
+          val updatedToSend = toSend.transform { (actor, toSendInfo) =>
+            val updatedMessages = toSendInfo._1 ++ groupedNewMessages.getOrElse(actor, Seq.empty)
+            if (toSendInfo._2 && updatedMessages.nonEmpty) {
+              // send new info immediately
+              val messageToSend = updatedMessages.slice(0, maxSubtreeMessageSize)
+              actor ! ChildSubtreeSizes(messageToSend, ctx.self)
+              val toSendLater = updatedMessages.slice(maxSubtreeMessageSize, updatedMessages.length)
+              (toSendLater, false)
+            } else {
+              (updatedMessages, toSendInfo._2)
+            }
+          }
+          calculateNodeSizes(distributionTree, workers, nodeLocator, maxSubtreeMessageSize, updatedToSend)
         }
 
       case FindNodesInRange(g_node, minNodes, maxNodes, removeFromDescendants, waitingList, workersLeft, nodesLeft) =>
         ctx.self ! FindNodesInRange(g_node, minNodes, maxNodes, removeFromDescendants, waitingList, workersLeft, nodesLeft)
-        startDistribution(distributionTree, workers, nodeLocator)
+        startDistribution(distributionTree, nodeLocator)
 
       case AssignWithChildren(g_node, worker) =>
         ctx.self ! AssignWithChildren(g_node, worker)
-        startDistribution(distributionTree, workers, nodeLocator)
+        startDistribution(distributionTree, nodeLocator)
 
       case GetLocationForRedistribution(index, sender) =>
         sender ! LocationForRedistribution(index, data.get(index))
-        startDistribution(distributionTree, workers, nodeLocator)
+        startDistribution(distributionTree, nodeLocator)
     }
 
   def distributeUsingTree(distributionTree: Map[Int, DistributionTreeInfo],
@@ -237,7 +281,6 @@ class GraphRedistributer(data: LocalData[Float],
     }
 
   def startDistribution(distributionTree: Map[Int, DistributionTreeInfo],
-                        workers: Set[ActorRef[SearchOnGraphEvent]],
                         nodeLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionEvent] = {
     distributionTree.valuesIterator.foreach(nodeInfo => nodeInfo.stillToDistribute = nodeInfo.subTreeSize)
     distributeUsingTree(distributionTree, nodeLocator)
