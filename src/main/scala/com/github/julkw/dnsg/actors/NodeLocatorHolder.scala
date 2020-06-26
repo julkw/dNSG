@@ -124,7 +124,6 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
         val nodeLocator = finalNodeLocator.get
         localWorkers.foreach(worker => worker ! BuildApproximateGraph(nodeLocator))
         if (sendToCoordinator) {
-          ctx.log.info("Send NodeLocator to (hopefully local) coordinator")
           clusterCoordinator ! KnngNodeLocator(nodeLocator)
         }
         gatherSOGDistInfo(otherNodeLocatorHolders.keys.toSet, nodeLocator, Map.empty)
@@ -171,7 +170,6 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
         holdSOGNodeLocator(otherNodeLocatorHolders, nodeLocator)
 
       case SendNodeLocatorToClusterCoordinator =>
-        ctx.log.info("Send NodeLocator to (hopefully local) coordinator")
         clusterCoordinator ! SearchOnGraphNodeLocator(nodeLocator)
         holdSOGNodeLocator(otherNodeLocatorHolders, nodeLocator)
 
@@ -200,7 +198,6 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
         val graphConnectors = actorMapping.values.toSet
         val nodeLocator = NodeLocator(lastNodeLocator.locationData, lastNodeLocator.actors.map(sogActor => actorMapping(sogActor)))
         if (sendToCoordinator) {
-          ctx.log.info("Send NodeLocator to (hopefully local) coordinator")
           connectorCoordinator ! GraphConnectorNodeLocator(nodeLocator)
         }
         val localConnectors = graphConnectors.filter(connector => isLocal(connector))
@@ -239,7 +236,6 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
         val redistributers = actorMapping.values.toSet
         val nodeLocator = NodeLocator(lastNodeLocator.locationData, lastNodeLocator.actors.map(connector => actorMapping(connector)))
         if (sendToCoordinator) {
-          ctx.log.info("Send NodeLocator to (hopefully local) coordinator")
           redistributionCoordinator ! RedistributerNodeLocator(nodeLocator)
         }
         val localRedistributers = redistributers.filter(redistributer => isLocal(redistributer))
@@ -274,7 +270,6 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
         batches.foreach(batch => nodeLocatorBuilder.addLocation(batch._2, batch._1))
         val nodeLocator = nodeLocatorBuilder.nodeLocator()
         if (nodeLocator.isDefined) {
-          ctx.log.info("Primary assignments done")
           redistributionCoordinator ! PrimaryAssignmentsDone
         }
         gatherAndSharePrimaryRedistributionAssignments(updatedNodeLocatorHolders, redistributers, distInfoBatches ++ batches, nodeLocatorBuilder, nodeLocator, redistributionCoordinator)
@@ -330,7 +325,6 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
         val batches = nodeAssignments.keys.toSeq.groupBy{ index => nodeAssignments(index) }.toSeq.flatMap { case (actor, indices) =>
           indices.grouped(maxMessageSize).map(batchedIndices => (actor, batchedIndices))
         }
-        ctx.log.info("{} batches to send, still waiting on locals: {}", batches.length, waitingOnLocals - 1)
           val batchNumber = distInfoBatches.length
           // send new info immediately to those actors who have already asked for more
           val updatedNodeLocatorHolders = otherNodeLocatorHolders.transform { (nodeLocatorHolder, sendImmediately) =>
@@ -357,7 +351,6 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
           redistributionCoordinator)
 
       case SecondaryAssignmentBatch(indices, responsibleActors, batchNumber, lastBatch, sender) =>
-        ctx.log.info("Batch received, is last: {}", lastBatch)
         val newAssignments = indices.map(index => index -> responsibleActors)
         val updatedSecondaryAssignments = secondaryAssignments ++ newAssignments
         val updatedWaitingOnNodeLocators = if (lastBatch) { waitingOnNodeLocators - 1 } else { waitingOnNodeLocators }
