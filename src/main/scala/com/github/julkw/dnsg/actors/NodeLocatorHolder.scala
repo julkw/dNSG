@@ -338,7 +338,7 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
                 val lastBatch = waitingOnLocals == 1 && batches.length == 1
                 nodeLocatorHolder ! SecondaryAssignmentBatch(batches.head._2, batches.head._1, batchNumber, lastBatch, ctx.self)
               } else if (waitingOnLocals == 1) {
-                // none of our local workers gave us anything to send but the other nodes expect at least one message from us
+                // the other still expects a message from us but there is (and won't be) any new info to send
                 nodeLocatorHolder ! SecondaryAssignmentBatch(Seq.empty, Set.empty, 0, lastBatch = true, ctx.self)
               }
             }
@@ -356,10 +356,11 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
           redistributionCoordinator)
 
       case SecondaryAssignmentBatch(indices, responsibleActors, batchNumber, lastBatch, sender) =>
+        ctx.log.info("Batch received, is last: {}", lastBatch)
         val newAssignments = indices.map(index => index -> responsibleActors)
         val updatedSecondaryAssignments = secondaryAssignments ++ newAssignments
-        val updatedWaitingOnNodeLocators = if (lastBatch) {waitingOnNodeLocators - 1} else { waitingOnNodeLocators }
-        if (!lastBatch) {
+        val updatedWaitingOnNodeLocators = if (lastBatch) { waitingOnNodeLocators - 1 } else { waitingOnNodeLocators }
+        if (!lastBatch && indices.nonEmpty) {
           sender ! GetNextBatch(batchNumber + 1, ctx.self)
         } else if (updatedWaitingOnNodeLocators == 0 && waitingOnLocals == 0) {
           redistributionCoordinator ! SecondaryAssignmentsDone
@@ -379,6 +380,7 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
             waitingOnNodeLocators,
             redistributionCoordinator)
         } else {
+          SecondaryAssignmentBatch(Seq.empty, Set.empty, 0, waitingOnLocals == 0, ctx.self)
           gatherAndShareSecondaryRedistributionAssignments(otherNodeLocatorHolders + (sender -> true),
             distInfoBatches,
             secondaryAssignments,

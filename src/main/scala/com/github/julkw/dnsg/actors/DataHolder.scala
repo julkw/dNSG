@@ -173,7 +173,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
         }
         val toSend = data.localIndices.groupBy(index => primaryAssignments.findResponsibleActor(index))
         val sendToDHs = dataHolders.map { dataHolder =>
-          val correspondingWorkers = toSend.keys.filter(actor => isLocal(actor))
+          val correspondingWorkers = toSend.keys.filter(actor => actor.path.root == dataHolder.path.root)
           val sendToDH = correspondingWorkers.flatMap { worker =>
             toSend(worker) ++ secondaryAssignments.keys.filter ( index => data.isLocal(index) && secondaryAssignments(index).contains(worker))
           }
@@ -181,8 +181,6 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
         }.toMap
         sendToDHs.keys.foreach(dataHolder => dataHolder ! PrepareForRedistributedData(ctx.self))
         val dataMessageSize = maxMessageSize / data.dimension
-        ctx.log.info("Expect to receive: {}", expectedDataSize)
-        ctx.log.info("Expect to send: {}", toSend.values.map(_.length))
         redistributeData(data, Map.empty, expectedDataSize, sendToDHs, dataMessageSize, dataHolders)
 
       case PrepareForRedistributedData(sender) =>
@@ -224,7 +222,6 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
             sender ! PartialRedistributedData(dataToSend, ctx.self)
             redistributeData(oldData, newData, expectedNewData, toSend + (sender -> indicesToSend.slice(dataMessageSize, indicesToSend.length)), dataMessageSize, dataHolders)
           } else if (toSend.size == 1 && newData.size == expectedNewData) {
-            ctx.log.info("Received all expected data and send everything I had to send")
             val localData = LocalUnorderedData(newData)
             nodeCoordinator ! DataRef(localData)
             holdData(localData, dataHolders)
@@ -239,9 +236,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
       case PartialRedistributedData(data, sender) =>
         sender ! GetRedistributedData(ctx.self)
         val updatedData = newData ++ data
-        ctx.log.info("DataReceived: {} of {}", updatedData.size, expectedNewData)
         if (updatedData.size == expectedNewData && toSend.isEmpty) {
-          ctx.log.info("Received all expected data and send everything I had to send")
           val localData = LocalUnorderedData(updatedData)
           nodeCoordinator ! DataRef(localData)
           holdData(localData, dataHolders)
