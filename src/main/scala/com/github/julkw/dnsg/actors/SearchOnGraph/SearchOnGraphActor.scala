@@ -38,6 +38,7 @@ object SearchOnGraphActor {
   final case class UpdatedLocalData(data: LocalData[Float]) extends  SearchOnGraphEvent
 
   // queries
+  // TODO bundle these messages as well?
   final case class FindNearestNeighbors(query: Seq[Float], k: Int, asker: ActorRef[CoordinationEvent]) extends SearchOnGraphEvent
 
   final case class FindNearestNeighborsStartingFrom(query: Seq[Float], startingPoint: Int, k: Int, asker: ActorRef[CoordinationEvent]) extends SearchOnGraphEvent

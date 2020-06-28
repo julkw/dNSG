@@ -120,15 +120,14 @@ class NodeCoordinator(settings: Settings,
                        navigatingNode: Int): Behavior[NodeCoordinationEvent] = {
     val responsibilityPerGraphHolder = nodeLocator.actorsResponsibilities()
     val mergerResponsibility = localGraphHolders.flatMap(graphHolder => responsibilityPerGraphHolder(graphHolder))
-    val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, mergerResponsibility.toSeq, settings.nodesExpected, nodeLocator), name = "NSGMerger")
+    val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, mergerResponsibility.toSeq, settings.nodesExpected, settings.maxMessageSize, nodeLocator), name = "NSGMerger")
     var index = 0
     localGraphHolders.foreach { graphHolder =>
-      val nsgWorker = ctx.spawn(NSGWorker(clusterCoordinator, data, navigatingNode, settings.k, settings.maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)
+      val nsgWorker = ctx.spawn(NSGWorker(data, navigatingNode, settings.k, settings.maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)
       index += 1
       // 1 to 1 mapping from searchOnGraphActors to NSGWorkers
       val responsibilities = responsibilityPerGraphHolder(graphHolder)
       nsgWorker ! Responsibility(responsibilities)
-      nsgWorker
     }
     moveNSGToSearchOnGraph(localGraphHolders, nsgMerger)
   }
