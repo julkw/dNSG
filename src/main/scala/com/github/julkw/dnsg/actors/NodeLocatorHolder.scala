@@ -325,20 +325,22 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
         val batches = nodeAssignments.keys.toSeq.groupBy{ index => nodeAssignments(index) }.toSeq.flatMap { case (actor, indices) =>
           indices.grouped(maxMessageSize).map(batchedIndices => (actor, batchedIndices))
         }
-          val batchNumber = distInfoBatches.length
-          // send new info immediately to those actors who have already asked for more
-          val updatedNodeLocatorHolders = otherNodeLocatorHolders.transform { (nodeLocatorHolder, sendImmediately) =>
-            if (sendImmediately) {
-              if (batches.nonEmpty) {
-                val lastBatch = waitingOnLocals == 1 && batches.length == 1
-                nodeLocatorHolder ! SecondaryAssignmentBatch(batches.head._2, batches.head._1, batchNumber, lastBatch, ctx.self)
-              } else if (waitingOnLocals == 1) {
-                // the other still expects a message from us but there is (and won't be) any new info to send
-                nodeLocatorHolder ! SecondaryAssignmentBatch(Seq.empty, Set.empty, 0, lastBatch = true, ctx.self)
-              }
+        // ctx.log.info("Received {} local batches", batches.length)
+        val batchNumber = distInfoBatches.length
+        // send new info immediately to those actors who have already asked for more
+        val updatedNodeLocatorHolders = otherNodeLocatorHolders.transform { (nodeLocatorHolder, sendImmediately) =>
+          if (sendImmediately) {
+            if (batches.nonEmpty) {
+              val lastBatch = waitingOnLocals == 1 && batches.length == 1
+              nodeLocatorHolder ! SecondaryAssignmentBatch(batches.head._2, batches.head._1, batchNumber, lastBatch, ctx.self)
+            } else if (waitingOnLocals == 1) {
+              // the other still expects a message from us but there is (and won't be) any new info to send
+              nodeLocatorHolder ! SecondaryAssignmentBatch(Seq.empty, Set.empty, 0, lastBatch = true, ctx.self)
             }
-            sendImmediately && waitingOnLocals > 1 && batches.isEmpty
           }
+          // if it was true before and nothing was sent, it is still true
+          sendImmediately && waitingOnLocals > 1 && batches.isEmpty
+        }
         if (waitingOnLocals == 1 && waitingOnNodeLocators == 0) {
           redistributionCoordinator ! SecondaryAssignmentsDone
         }
@@ -354,6 +356,7 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
         val newAssignments = indices.map(index => index -> responsibleActors)
         val updatedSecondaryAssignments = secondaryAssignments ++ newAssignments
         val updatedWaitingOnNodeLocators = if (lastBatch) { waitingOnNodeLocators - 1 } else { waitingOnNodeLocators }
+        // ctx.log.info("Got batch {}, which is the last: {}", batchNumber, lastBatch)
         if (!lastBatch && indices.nonEmpty) {
           sender ! GetNextBatch(batchNumber + 1, ctx.self)
         } else if (updatedWaitingOnNodeLocators == 0 && waitingOnLocals == 0) {
@@ -374,7 +377,7 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
             waitingOnNodeLocators,
             redistributionCoordinator)
         } else {
-          SecondaryAssignmentBatch(Seq.empty, Set.empty, 0, waitingOnLocals == 0, ctx.self)
+          sender ! SecondaryAssignmentBatch(Seq.empty, Set.empty, -1, waitingOnLocals == 0, ctx.self)
           gatherAndShareSecondaryRedistributionAssignments(otherNodeLocatorHolders + (sender -> true),
             distInfoBatches,
             secondaryAssignments,

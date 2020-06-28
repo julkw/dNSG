@@ -18,6 +18,7 @@ object NSGMerger {
 
   final case class ReverseNeighbors(nodeIndex: Int, reverseNeighbors: Seq[Int]) extends MergeNSGEvent
 
+  // TODO bundle messages between NSGs
   final case class AddNeighbor(nodeIndex: Int, neighborIndex: Int, sendAckTo: ActorRef[MergeNSGEvent]) extends MergeNSGEvent
 
   final case object NeighborReceived extends MergeNSGEvent
@@ -61,7 +62,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
   def waitForRegistrations(graph: mutable.Map[Int, Seq[Int]], mergers: Set[ActorRef[MergeNSGEvent]]): Behavior[MergeNSGEvent] =
     Behaviors.receiveMessagePartial {
       case ListingResponse(nsgMergerServiceKey.Listing(listings)) =>
-        if (listings.size >= nodesExpected) {
+        if (listings.size == nodesExpected) {
           buildGraph(graph, graph.size, awaitingNeighborAcks=0, listings)
         } else {
           waitForRegistrations(graph, listings)
@@ -127,7 +128,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
 
   def distributeGraph(graph: Map[Int, Seq[Int]]): Behavior[MergeNSGEvent] = Behaviors.receiveMessagePartial {
     case GetPartialNSG(nodes, sender) =>
-      val partialGraph = graph.filter{case(node, _) =>
+      val partialGraph = graph.filter { case(node, _) =>
         nodes.contains(node)
       }
       // can be send as a whole because it is only send to other actors on the same node

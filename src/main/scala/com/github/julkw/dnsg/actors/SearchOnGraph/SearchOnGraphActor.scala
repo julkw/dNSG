@@ -201,8 +201,9 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case CheckedNodesOnSearch(endPoint, startingPoint, neighborsWanted, asker) =>
         ctx.self ! CheckedNodesOnSearch(endPoint, startingPoint, neighborsWanted, asker)
-        val newToSend = nodeLocator.allActors.map(worker => worker -> new SOGInfo).toMap
-        searchOnGraphForNSG(graph, data, nodeLocator, Map.empty, Map.empty, QueryResponseLocations(data), newToSend)
+        toSend.foreach { case (_, sendInfo) => sendInfo.sendImmediately = true }
+        sendMessagesImmediately(toSend)
+        searchOnGraphForNSG(graph, data, nodeLocator, Map.empty, Map.empty, QueryResponseLocations(data), toSend)
 
       case ConnectGraph(graphConnectorSupervisor) =>
         val responsibility = graph.keys.filter(node => nodeLocator.findResponsibleActor(node) == ctx.self).toSeq
