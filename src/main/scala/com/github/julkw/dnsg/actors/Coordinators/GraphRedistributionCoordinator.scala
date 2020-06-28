@@ -4,8 +4,7 @@ import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConnectionAchieved, ConnectorsCleanedUp, CoordinationEvent}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{CleanUpConnectors, ConnectionCoordinationEvent, StartGraphRedistribution}
-import com.github.julkw.dnsg.actors.DataHolder.LoadDataEvent
-import com.github.julkw.dnsg.actors.GraphRedistributer.{AssignWithParents, InitialAssignWithParents, RedistributionEvent, SendSecondaryAssignments}
+import com.github.julkw.dnsg.actors.GraphRedistributer.{InitialAssignWithParents, RedistributionEvent, SendSecondaryAssignments}
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.{BuildRedistributionNodeLocator, NodeLocationEvent, SendNodeLocatorToClusterCoordinator, ShareNodeLocator, ShareRedistributionAssignments}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.SearchOnGraphEvent
 import com.github.julkw.dnsg.util.{LocalityCheck, NodeLocator, dNSGSerializable}
@@ -26,6 +25,8 @@ object GraphRedistributionCoordinator {
 
   final case object AssignWithParentsDone extends RedistributionCoordinationEvent
 
+  final case class GetMoreInitialAssignments(sender: ActorRef[RedistributionEvent]) extends RedistributionCoordinationEvent
+
   final case object SecondaryAssignmentsDone extends RedistributionCoordinationEvent
 
   final case class WrappedCoordinationEvent(event: CoordinationEvent) extends RedistributionCoordinationEvent
@@ -43,23 +44,21 @@ object GraphRedistributionCoordinator {
   def apply(navigatingNodeIndex: Int,
             replicationModel: DataReplicationModel,
             graphNodeLocator: NodeLocator[SearchOnGraphEvent],
-            dataHolder: ActorRef[LoadDataEvent],
             nodeLocatorHolders: Set[ActorRef[NodeLocationEvent]],
-            clusterCoordinator: ActorRef[CoordinationEvent]): Behavior[RedistributionCoordinationEvent] =
+            maxMessageSize: Int): Behavior[RedistributionCoordinationEvent] =
     Behaviors.setup { ctx =>
       val coordinationEventAdapter: ActorRef[CoordinationEvent] =
         ctx.messageAdapter { event => WrappedCoordinationEvent(event)}
-      new GraphRedistributionCoordinator(navigatingNodeIndex, replicationModel, graphNodeLocator, dataHolder, nodeLocatorHolders, clusterCoordinator, coordinationEventAdapter, ctx).setup()
+      new GraphRedistributionCoordinator(navigatingNodeIndex, replicationModel, graphNodeLocator, nodeLocatorHolders, coordinationEventAdapter, maxMessageSize, ctx).setup()
     }
 }
 
 class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
                                      replicationModel: GraphRedistributionCoordinator.DataReplicationModel,
                                      graphNodeLocator: NodeLocator[SearchOnGraphEvent],
-                                     dataHolder: ActorRef[LoadDataEvent],
                                      nodeLocatorHolders: Set[ActorRef[NodeLocationEvent]],
-                                     clusterCoordinator: ActorRef[CoordinationEvent],
                                      coordinationEventAdapter: ActorRef[CoordinationEvent],
+                                     maxMessageSize: Int,
                                      ctx: ActorContext[GraphRedistributionCoordinator.RedistributionCoordinationEvent]) extends LocalityCheck {
   import GraphRedistributionCoordinator._
 
@@ -150,25 +149,29 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
       }
     }.groupBy { assignment =>
       redistributerLocator.findResponsibleActor(assignment._2)
-    }
-    toSend.foreach { case (redistributer, assignments) =>
+    }.transform { (redistributer, assignments) =>
       val groupedAssignments = assignments.groupBy(_._1).transform((_, assignment) => assignment.map(_._2).toSeq)
-      redistributer ! InitialAssignWithParents(groupedAssignments, false)
+      sendInitialAssignments(redistributer, groupedAssignments)
     }
-    waitForParentsToBeAssigned(connectorCoordinator, waitingOnAnswers, redistributerLocator)
+    waitForParentsToBeAssigned(connectorCoordinator, toSend, waitingOnAnswers, redistributerLocator)
   }
 
   def waitForParentsToBeAssigned(connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
+                                 initialAssignmentsToSend: Map[ActorRef[RedistributionEvent], Map[ActorRef[SearchOnGraphEvent], Seq[Int]]],
                                  waitingOn: Int,
                                  redistributerLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionCoordinationEvent] =
     Behaviors.receiveMessagePartial {
+      case GetMoreInitialAssignments(sender) =>
+        val updatedAssignmentsToSend = initialAssignmentsToSend + (sender -> sendInitialAssignments(sender, initialAssignmentsToSend(sender)))
+        waitForParentsToBeAssigned(connectorCoordinator, updatedAssignmentsToSend, waitingOn, redistributerLocator)
+
       case AssignWithParentsDone =>
         if (waitingOn == 1) {
           ctx.log.info("Done with assigning parents, now collecting secondary assignments")
           redistributerLocator.allActors.foreach ( redistributer => redistributer ! SendSecondaryAssignments)
           waitForSecondaryAssignments(connectorCoordinator, nodeLocatorHolders.size)
         } else {
-          waitForParentsToBeAssigned(connectorCoordinator, waitingOn - 1, redistributerLocator)
+          waitForParentsToBeAssigned(connectorCoordinator, initialAssignmentsToSend, waitingOn - 1, redistributerLocator)
         }
     }
 
@@ -210,4 +213,24 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
             Behaviors.stopped
         }
     }
+
+  def sendInitialAssignments(redistributer: ActorRef[RedistributionEvent], assignments: Map[ActorRef[SearchOnGraphEvent], Seq[Int]]): Map[ActorRef[SearchOnGraphEvent], Seq[Int]] = {
+    var messageSize = 0
+    val sendAssignments = assignments.takeWhile { assignment =>
+      messageSize += assignment._2.length
+      messageSize <= maxMessageSize
+    }
+    val assignmentsLeftToSend = assignments -- sendAssignments.keys
+    if (messageSize < maxMessageSize && assignmentsLeftToSend.nonEmpty) {
+      val splitAssignment = assignmentsLeftToSend.head
+      val leftOverSpaceToSend = maxMessageSize - messageSize
+      val splitAssignmentSendNow = splitAssignment._2.slice(0, leftOverSpaceToSend)
+      redistributer ! InitialAssignWithParents(sendAssignments + (splitAssignment._1 -> splitAssignmentSendNow), true)
+      val splitAssignmentSendLater = splitAssignment._2.slice(leftOverSpaceToSend, splitAssignment._2.length)
+      sendAssignments + (splitAssignment._1 -> splitAssignmentSendLater)
+    } else {
+      redistributer ! InitialAssignWithParents(sendAssignments, assignmentsLeftToSend.nonEmpty)
+      assignmentsLeftToSend
+    }
+  }
 }

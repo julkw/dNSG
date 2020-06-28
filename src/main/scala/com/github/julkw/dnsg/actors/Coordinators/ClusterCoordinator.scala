@@ -239,7 +239,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
             case _ =>
               NoReplication
           }
-          ctx.spawn(GraphRedistributionCoordinator(neighbors.head, replicationModel, nodeLocator, dataHolder, nodeLocatorHolders, ctx.self), name="GraphRedistributionCoordinator")
+          ctx.spawn(GraphRedistributionCoordinator(neighbors.head, replicationModel, nodeLocator, nodeLocatorHolders, settings.maxMessageSize), name="GraphRedistributionCoordinator")
           waitOnRedistribution(neighbors.head, nodeCoordinators, dataHolder, nodeLocatorHolders)
         } else {
           startNSG(navigatingNode, nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders)

@@ -285,10 +285,15 @@ class KnngWorker(data: CacheData[Float],
         val cleanedGraph: Map[Int, Seq[Int]] = graph.map{case (index, neighbors) => index -> neighbors.map(_._1)}
         graphHolder ! GraphAndData(cleanedGraph, data, ctx.self)
         waitForShutdown()
+
+      case AllKnngWorkersDone =>
+        ctx.log.info("Got the message to shutdown before moving my graph of size: {}", graph.size)
+        Behaviors.stopped
     }
 
   def waitForShutdown(): Behavior[BuildGraphEvent] = Behaviors.receiveMessagePartial {
     case AllKnngWorkersDone =>
+      ctx.log.info("Shutting down knngWorker as it is not needed anymore")
       Behaviors.stopped
   }
 
