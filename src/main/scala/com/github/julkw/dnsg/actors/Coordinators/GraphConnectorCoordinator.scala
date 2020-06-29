@@ -7,7 +7,7 @@ import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.
 import com.github.julkw.dnsg.actors.GraphConnector.{AddEdgeAndContinue, BuildTreeFrom, ConnectGraphEvent, FindUnconnectedNode, GraphConnected, StartGraphRedistributers}
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.{BuildConnectorNodeLocator, NodeLocationEvent, ShareNodeLocator}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{AddToGraph, ConnectGraph, FindNearestNeighborsStartingFrom, SearchOnGraphEvent}
-import com.github.julkw.dnsg.util.{LocalityCheck, NodeLocator, dNSGSerializable}
+import com.github.julkw.dnsg.util.{LocalityCheck, NodeLocator, Settings, dNSGSerializable}
 
 object GraphConnectorCoordinator {
 
@@ -41,12 +41,14 @@ object GraphConnectorCoordinator {
       val coordinationEventAdapter: ActorRef[CoordinationEvent] =
         ctx.messageAdapter { event => WrappedCoordinationEvent(event)}
 
-      new GraphConnectorCoordinator(navigatingNodeIndex, graphNodeLocator, nodeLocatorHolders, supervisor, coordinationEventAdapter, ctx).setup()
+      val candidateQueueSize = Settings(ctx.system.settings.config).candidateQueueSizeKnng
+      new GraphConnectorCoordinator(navigatingNodeIndex, candidateQueueSize, graphNodeLocator, nodeLocatorHolders, supervisor, coordinationEventAdapter, ctx).setup()
     }
 
 }
 
 class GraphConnectorCoordinator(navigatingNodeIndex: Int,
+                                candidateQueueSize: Int,
                                 graphNodeLocator: NodeLocator[SearchOnGraphEvent],
                                 nodeLocatorHolders: Set[ActorRef[NodeLocationEvent]],
                                 supervisor: ActorRef[CoordinationEvent],
@@ -87,7 +89,7 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
 
       case UnconnectedNode(nodeIndex, nodeData) =>
         graphNodeLocator.findResponsibleActor(nodeIndex) !
-          FindNearestNeighborsStartingFrom(nodeData, navigatingNodeIndex, 1, coordinationEventAdapter)
+          FindNearestNeighborsStartingFrom(nodeData, navigatingNodeIndex, candidateQueueSize, coordinationEventAdapter)
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, nodeIndex, allConnected)
 
       case WrappedCoordinationEvent(event) =>

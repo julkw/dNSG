@@ -221,7 +221,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       case AverageValue(value) =>
         ctx.log.info("Received average value, now looking for Navigating Node")
         // find navigating Node, start from random
-        nodeLocator.allActors.head ! FindNearestNeighbors(value, settings.k, ctx.self)
+        nodeLocator.allActors.head ! FindNearestNeighbors(value, settings.candidateQueueSizeKnng, ctx.self)
         findNavigatingNode(nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders)
 
       case KNearestNeighbors(query, neighbors) =>
@@ -350,7 +350,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         case TestQueries(testQueries) =>
           ctx.log.info("Testing {} queries. Perfect answer would be {} correct nearest neighbors found.", testQueries.size, testQueries.size * settings.k)
           testQueries.foreach(query => nodeLocator.findResponsibleActor(query._1) !
-              FindNearestNeighborsStartingFrom(query._1, navigatingNodeIndex, settings.k, ctx.self))
+              FindNearestNeighborsStartingFrom(query._1, navigatingNodeIndex, settings.candidateQueueSizeNSG, ctx.self))
           testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, testQueries.toMap, sumOfNeighborsFound)
 
         case KNearestNeighbors(query, neighbors) =>

@@ -23,18 +23,18 @@ object NSGWorker {
 
   def apply(data: LocalData[Float],
             navigatingNode: Int,
-            k: Int,
+            candidateQueueSize: Int,
             maxReverseNeighbors: Int,
             nodeLocator: NodeLocator[SearchOnGraphEvent],
             nsgMerger: ActorRef[MergeNSGEvent]): Behavior[BuildNSGEvent] = Behaviors.setup { ctx =>
     Behaviors.setup(ctx =>
-      new NSGWorker(data, navigatingNode, k, maxReverseNeighbors, nodeLocator, nsgMerger, ctx).setup())
+      new NSGWorker(data, navigatingNode, candidateQueueSize, maxReverseNeighbors, nodeLocator, nsgMerger, ctx).setup())
   }
 }
 
 class NSGWorker(data: LocalData[Float],
                 navigatingNode: Int,
-                k: Int,
+                candidateQueueSize: Int,
                 maxReverseNeighbors: Int,
                 nodeLocator: NodeLocator[SearchOnGraphEvent],
                 nsgMerger: ActorRef[MergeNSGEvent],
@@ -58,7 +58,7 @@ class NSGWorker(data: LocalData[Float],
         }
         val nodeToProcess = responsibility(responsibilityIndex)
         nodeLocator.findResponsibleActor(nodeToProcess) !
-          CheckedNodesOnSearch(nodeToProcess, navigatingNode, k, ctx.self)
+          CheckedNodesOnSearch(nodeToProcess, navigatingNode, candidateQueueSize, ctx.self)
         buildNSG(responsibility)
 
       case SortedCheckedNodes(queryIndex, checkedNodes) =>

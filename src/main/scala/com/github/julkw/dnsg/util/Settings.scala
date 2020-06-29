@@ -18,6 +18,10 @@ case class Settings(config: Config) {
 
   val maxReverseNeighbors: Int= config.getInt(s"$namespace.max-reverse-neighbors")
 
+  val candidateQueueSizeKnng: Int = config.getInt(s"$namespace.candidate-queue-size-knng")
+
+  val candidateQueueSizeNSG: Int = config.getInt(s"$namespace.candidate-queue-size-nsg")
+
   val workers: Int = config.getInt(s"$namespace.workers")
 
   val nodesExpected: Int = config.getInt(s"$namespace.nodes-expected")
