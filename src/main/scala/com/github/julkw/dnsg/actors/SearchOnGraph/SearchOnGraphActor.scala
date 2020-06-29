@@ -74,7 +74,8 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                          nodeLocatorHolder: ActorRef[NodeLocationEvent],
                          waitingOnLocation: WaitingOnLocation,
                          settings: Settings,
-                         ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends SearchOnGraph(waitingOnLocation, settings.maxMessageSize, ctx) {
+                         ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent])
+  extends SearchOnGraph(waitingOnLocation, settings.maxMessageSize, settings.maxNeighborCandidates, ctx) {
   import SearchOnGraphActor._
 
   def waitForLocalGraph(): Behavior[SearchOnGraphEvent] =

@@ -11,6 +11,7 @@ import com.github.julkw.dnsg.util.{Distance, NodeLocator, WaitingOnLocation}
 
 abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation,
                              maxMessageSize: Int,
+                             maxNSGCandidates: Int,
                              ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends Distance {
   // data type for more readable code
   protected case class QueryCandidate(index: Int, distance: Double, var processed: Boolean)
@@ -165,7 +166,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation,
     val checkedNodes = queryInfo.candidates.map { candidate =>
       (candidate.index, responseLocations.location(candidate.index))
     }
-    respondTo ! SortedCheckedNodes(queryId, checkedNodes)
+    respondTo ! SortedCheckedNodes(queryId, checkedNodes.slice(0, maxNSGCandidates))
     queryInfo.candidates.foreach(candidate => responseLocations.removedFromCandidateList(candidate.index))
   }
 }
