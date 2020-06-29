@@ -350,6 +350,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       Behaviors.receiveMessagePartial{
         case TestQueries(testQueries) =>
           ctx.log.info("Testing {} queries. Perfect answer would be {} correct nearest neighbors found.", testQueries.size, testQueries.size * settings.k)
+          // TODO limit number of queries sent at once to prevent message oerflow
           testQueries.foreach(query => nodeLocator.findResponsibleActor(query._1) !
               FindNearestNeighborsStartingFrom(query._1, navigatingNodeIndex, settings.candidateQueueSizeNSG, ctx.self))
           testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, testQueries.toMap, sumOfExactNeighborFound, sumOfNeighborsFound)
