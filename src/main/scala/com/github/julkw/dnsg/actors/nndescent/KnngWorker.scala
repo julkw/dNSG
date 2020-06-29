@@ -175,7 +175,7 @@ class KnngWorker(data: CacheData[Float],
   def startNNDescent(nodeLocator: NodeLocator[BuildGraphEvent],
                      graph: Map[Int, Seq[(Int, Double)]]): Behavior[BuildGraphEvent] = {
     // for debugging
-    ctx.log.info("Average distance in graph before nndescent: {}", averageGraphDist(graph, settings.k))
+    //ctx.log.info("Average distance in graph before nndescent: {}", averageGraphDist(graph, settings.k))
     graph.keys.foreach{ g_node =>
       // do the initial local joins through messages to self to prevent Heartbeat problems
       ctx.self ! SendReverseNeighbors(g_node)
@@ -284,7 +284,7 @@ class KnngWorker(data: CacheData[Float],
 
       case MoveGraph(graphHolder) =>
         // move graph to SearchOnGraphActor
-        ctx.log.info("Average distance in graph after nndescent: {}", averageGraphDist(graph, settings.k))
+        //ctx.log.info("Average distance in graph after nndescent: {}", averageGraphDist(graph, settings.k))
         val cleanedGraph: Map[Int, Seq[Int]] = graph.map{case (index, neighbors) => index -> neighbors.map(_._1)}
         graphHolder ! GraphAndData(cleanedGraph, data, ctx.self)
         waitForShutdown()
