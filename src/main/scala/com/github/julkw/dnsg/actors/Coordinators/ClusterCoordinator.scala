@@ -334,7 +334,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                      dataHolder: ActorRef[LoadDataEvent]): Behavior[CoordinationEvent] = {
       if (settings.queryFilePath.nonEmpty && settings.queryResultFilePath.nonEmpty) {
         dataHolder ! ReadTestQueries(settings.queryFilePath, settings.queryResultFilePath, ctx.self)
-        testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, Map.empty, sumOfNeighborsFound = 0)
+        testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, Map.empty, sumOfExactNeighborFound = 0, sumOfNeighborsFound = 0)
       } else {
         shutdown(nodeCoordinators)
       }
@@ -345,22 +345,25 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                 nodeLocator: QueryNodeLocator[SearchOnGraphEvent],
                 nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                 queries: Map[Seq[Float], Seq[Int]],
+                sumOfExactNeighborFound: Int,
                 sumOfNeighborsFound: Int): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial{
         case TestQueries(testQueries) =>
           ctx.log.info("Testing {} queries. Perfect answer would be {} correct nearest neighbors found.", testQueries.size, testQueries.size * settings.k)
           testQueries.foreach(query => nodeLocator.findResponsibleActor(query._1) !
               FindNearestNeighborsStartingFrom(query._1, navigatingNodeIndex, settings.candidateQueueSizeNSG, ctx.self))
-          testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, testQueries.toMap, sumOfNeighborsFound)
+          testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, testQueries.toMap, sumOfExactNeighborFound, sumOfNeighborsFound)
 
         case KNearestNeighbors(query, neighbors) =>
           val correctNeighborIndices = queries(query)
           val newSum = sumOfNeighborsFound + correctNeighborIndices.intersect(neighbors).length
+          val firstNearestNeighborFound = if (neighbors.head == correctNeighborIndices.head) { 1 } else { 0 }
           if (queries.size == 1) {
+            ctx.log.info("Overall 1st nearest neighbors found: {}", sumOfExactNeighborFound + firstNearestNeighborFound)
             ctx.log.info("Overall correct neighbors found: {}", newSum)
             shutdown(nodeCoordinators)
           } else {
-            testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, queries - query, newSum)
+            testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, queries - query, sumOfExactNeighborFound + firstNearestNeighborFound, newSum)
           }
       }
 
