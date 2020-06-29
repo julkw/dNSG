@@ -3,9 +3,10 @@ package com.github.julkw.dnsg.actors.Coordinators
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import akka.cluster.typed.{ClusterSingleton, SingletonActor}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, NodeCoordinatorIntroduction}
-import com.github.julkw.dnsg.actors.DataHolder
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, NodeIntroduction}
+import com.github.julkw.dnsg.actors.{DataHolder, NodeLocatorHolder}
 import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, LoadDataFromFile}
+import com.github.julkw.dnsg.actors.NodeLocatorHolder.NodeLocationEvent
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetNSGFrom, SearchOnGraphEvent, UpdatedLocalData}
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
@@ -42,18 +43,20 @@ object NodeCoordinator {
       SingletonActor(Behaviors.supervise(ClusterCoordinator()).onFailure[Exception](SupervisorStrategy.restart), "ClusterCoordinator"))
 
     val dh = ctx.spawn(DataHolder(ctx.self), name = "DataHolder")
-    clusterCoordinator ! NodeCoordinatorIntroduction(ctx.self, dh)
+    val nl = ctx.spawn(NodeLocatorHolder(clusterCoordinator, ctx.self, dh, settings.maxMessageSize), name = "NodeLocatorHolder")
+    clusterCoordinator ! NodeIntroduction(ctx.self, dh, nl)
     if (settings.filename.nonEmpty) {
       ctx.log.info("Load data from {}", settings.filename)
-      new NodeCoordinator(settings, dh, clusterCoordinator, ctx).setUp(settings.filename)
+      new NodeCoordinator(settings, dh, nl, clusterCoordinator, ctx).setUp(settings.filename)
     } else {
-      new NodeCoordinator(settings, dh, clusterCoordinator, ctx).waitForData()
+      new NodeCoordinator(settings, dh, nl, clusterCoordinator, ctx).waitForData()
     }
   }
 }
 
 class NodeCoordinator(settings: Settings,
                       dataHolder: ActorRef[LoadDataEvent],
+                      nodeLocatorHolder: ActorRef[NodeLocationEvent],
                       clusterCoordinator: ActorRef[CoordinationEvent],
                       ctx: ActorContext[NodeCoordinator.NodeCoordinationEvent]) extends Distance {
   import NodeCoordinator._
@@ -74,7 +77,7 @@ class NodeCoordinator(settings: Settings,
       assert(data.localDataSize > 0)
       ctx.log.info("Successfully loaded data of size: {}", data.localDataSize)
       // create Actor to start distribution of data
-      val kw = ctx.spawn(KnngWorker(data, clusterCoordinator, ctx.self), name = "KnngWorker")
+      val kw = ctx.spawn(KnngWorker(data, clusterCoordinator, ctx.self, nodeLocatorHolder), name = "KnngWorker")
       kw ! ResponsibleFor(data.localIndices, 0, settings.workers)
       waitForKnng(Set.empty, data)
   }
@@ -91,7 +94,7 @@ class NodeCoordinator(settings: Settings,
     ctx.log.info("Start moving graph to SearchOnGraph Actors")
     var sogIndex = 0
     val graphHolders = knngWorkers.map { worker =>
-      val nsgw = ctx.spawn(SearchOnGraphActor(clusterCoordinator), name = "SearchOnGraph" + sogIndex.toString)
+      val nsgw = ctx.spawn(SearchOnGraphActor(clusterCoordinator, nodeLocatorHolder), name = "SearchOnGraph" + sogIndex.toString)
       sogIndex += 1
       worker ! MoveGraph(nsgw)
       nsgw
@@ -115,17 +118,16 @@ class NodeCoordinator(settings: Settings,
                        localGraphHolders: Set[ActorRef[SearchOnGraphEvent]],
                        nodeLocator: NodeLocator[SearchOnGraphEvent],
                        navigatingNode: Int): Behavior[NodeCoordinationEvent] = {
-    val responsibilityPerGraphHolder = nodeLocator.locationData.zipWithIndex.groupBy(assignment => assignment._1).transform((_, responsibility) => responsibility.map(_._2))
+    val responsibilityPerGraphHolder = nodeLocator.actorsResponsibilities()
     val mergerResponsibility = localGraphHolders.flatMap(graphHolder => responsibilityPerGraphHolder(graphHolder))
-    val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, mergerResponsibility.toSeq, settings.nodesExpected, nodeLocator), name = "NSGMerger")
+    val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, mergerResponsibility.toSeq, settings.nodesExpected, settings.maxMessageSize, nodeLocator), name = "NSGMerger")
     var index = 0
     localGraphHolders.foreach { graphHolder =>
-      val nsgWorker = ctx.spawn(NSGWorker(clusterCoordinator, data, navigatingNode, settings.k, settings.maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)
+      val nsgWorker = ctx.spawn(NSGWorker(data, navigatingNode, settings.candidateQueueSizeKnng, settings.maxReverseNeighbors, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)
       index += 1
       // 1 to 1 mapping from searchOnGraphActors to NSGWorkers
       val responsibilities = responsibilityPerGraphHolder(graphHolder)
       nsgWorker ! Responsibility(responsibilities)
-      nsgWorker
     }
     moveNSGToSearchOnGraph(localGraphHolders, nsgMerger)
   }
