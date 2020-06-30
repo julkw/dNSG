@@ -1,13 +1,15 @@
 package com.github.julkw.dnsg.actors.nndescent
 
+import com.github.julkw.dnsg.actors.nndescent.KnngWorker.Neighbor
+
 import scala.collection.mutable
 
 object NNDInfo {
 
   trait NNDescentEvent
-  final case class PotentialNeighbor(g_node: Int, potentialNeighbor: (Int, Double)) extends NNDescentEvent
+  final case class PotentialNeighbor(g_node: Int, potentialNeighbor: Neighbor) extends NNDescentEvent
 
-  final case class JoinNodes(g_nodes: Seq[Int], potentialNeighborIndex: Int) extends NNDescentEvent
+  final case class JoinNodes(g_nodes: Seq[(Int, Int)], potentialNeighbor: (Int, Int)) extends NNDescentEvent
 
   final case class SendLocation(g_node: Int) extends NNDescentEvent
 
@@ -15,7 +17,7 @@ object NNDInfo {
 
   final case class RemoveReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int) extends NNDescentEvent
 
-  final case class AddReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int) extends NNDescentEvent
+  final case class AddReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int, iteration: Int) extends NNDescentEvent
 }
 
 case class NNDInfo() {
@@ -40,11 +42,11 @@ case class NNDInfo() {
     val newMessage = messagesToSend.dequeueWhile {message =>
       val thisMessageSize = message match {
         case PotentialNeighbor(_, _) =>
-          3
+          4
         case JoinNodes(g_nodes, _) =>
-          g_nodes.length + 1
-        case RemoveReverseNeighbor(_, _) | AddReverseNeighbor(_, _) =>
-          2
+          (g_nodes.length + 1) * 2
+        case RemoveReverseNeighbor(_, _) | AddReverseNeighbor(_, _, _) =>
+          3
         case SendLocation(_) =>
           1
         case PotentialNeighborLocation(_, potentialNeighbor) =>

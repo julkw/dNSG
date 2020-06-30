@@ -66,7 +66,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         if (listings.size == nodesExpected) {
           val toSend = listings.map(merger => merger -> (Seq.empty, false)).toMap
           listings.foreach(merger => merger ! GetNeighbors(ctx.self))
-          buildGraph(graph, graph.size, waitingOnMergers = 0, toSend, listings)
+          buildGraph(graph, graph.size, waitingOnMergers = nodesExpected, toSend, listings)
         } else {
           waitForRegistrations(graph, listings)
         }
@@ -101,7 +101,6 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       val updatedToSend = toSend ++ updatedMessages
       sendImmediately(updatedToSend, waitingOnNSGWorkers <= 1)
       if (waitingOnMergers == 0 && waitingOnNSGWorkers <= 1) {
-        // ctx.log.info("Local NSGMerger is done")
         supervisor ! InitialNSGDone(ctx.self)
       }
       buildGraph(graph, waitingOnNSGWorkers - 1, waitingOnMergers, updatedToSend, mergers)

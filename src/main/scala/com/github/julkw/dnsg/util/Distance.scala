@@ -1,5 +1,7 @@
 package com.github.julkw.dnsg.util
 
+import com.github.julkw.dnsg.actors.nndescent.KnngWorker.Neighbor
+
 import scala.math.{pow, sqrt}
 
 trait Distance {
@@ -7,10 +9,10 @@ trait Distance {
     sqrt((pointX zip pointY).map { case (x,y) => pow(y - x, 2) }.sum)
   }
 
-  def averageGraphDist(graph: Map[Int, Seq[(Int, Double)]], k: Int): Double = {
-    val allLocalDists = graph.toSeq.flatMap{case (node, neighbors) =>
-      neighbors.map{_._2}
-    }.sum
-    allLocalDists / (graph.size * k)
+  def averageGraphDist(graph: Map[Int, Seq[Neighbor]]): Double = {
+    val allLocalDists = graph.toSeq.flatMap { case (node, neighbors) =>
+      neighbors.map{_.distance}
+    }
+    allLocalDists.sum / allLocalDists.length
   }
 }
