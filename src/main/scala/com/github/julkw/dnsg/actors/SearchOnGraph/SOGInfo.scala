@@ -12,7 +12,7 @@ object SOGInfo {
 
   final case class Location(index: Int, location: Seq[Float]) extends SOGEvent
 }
-// TODO add trait to reduce code cuplication with NNDInfo
+// TODO add trait to reduce code duplication with NNDInfo
 case class SOGInfo() {
   import SOGInfo._
   protected val messagesToSend: mutable.Queue[SOGEvent] = mutable.Queue.empty

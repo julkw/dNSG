@@ -2,6 +2,7 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 
 import akka.actor.typed.ActorRef
 import akka.actor.typed.scaladsl.ActorContext
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, KNearestNeighbors, KNearestNeighborsWithDist}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SOGInfo.{GetLocation, GetNeighbors}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{SearchOnGraphEvent, SearchOnGraphInfo}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, SortedCheckedNodes}
@@ -16,7 +17,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation,
   // data type for more readable code
   protected case class QueryCandidate(index: Int, distance: Double, var processed: Boolean)
   // also refactor to remove vars?
-  protected case class QueryInfo(query: Seq[Float], neighborsWanted: Int, var candidates: Seq[QueryCandidate], var waitingOn: Int)
+  protected case class QueryInfo(query: Seq[Float], neighborsWanted: Int, var candidates: Seq[QueryCandidate], var waitingOn: Int, sendWithDist: Boolean = false)
 
   def sendMessagesImmediately(toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Unit = {
     toSend.foreach { case (graphHolder, sogInfo) =>
@@ -44,6 +45,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation,
         val currentCandidateIndices = oldCandidates.map(_.index)
         // only add candidates that are not already in the candidateList
         // candidates for which we have the location can be added immediately
+        val debug = potentialNewCandidates.diff(currentCandidateIndices)
         val (localCandidates, remoteCandidates) = potentialNewCandidates.diff(currentCandidateIndices).partition(potentialCandidate => data.isLocal(potentialCandidate))
         val newCandidates = localCandidates.map { candidateIndex =>
             val location = data.get(candidateIndex)
@@ -163,11 +165,26 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation,
     allProcessed && queryInfo.waitingOn == 0 && !usableCandidate
   }
 
-  def sendResults(queryId: Int, queryInfo: QueryInfo, responseLocations: QueryResponseLocations[Float], respondTo: ActorRef[BuildNSGEvent]): Unit = {
+  def sendPathResults(queryId: Int, queryInfo: QueryInfo, responseLocations: QueryResponseLocations[Float], respondTo: ActorRef[BuildNSGEvent]): Unit = {
     val checkedNodes = queryInfo.candidates.map { candidate =>
       (candidate.index, responseLocations.location(candidate.index))
     }
     respondTo ! SortedCheckedNodes(queryId, checkedNodes.slice(0, maxNSGCandidates))
     queryInfo.candidates.foreach(candidate => responseLocations.removedFromCandidateList(candidate.index))
+  }
+
+  def sendKNNResults(queryInfo: QueryInfo, sendResults: ActorRef[CoordinationEvent]): Unit = {
+    if (queryInfo.sendWithDist) {
+      val finalNeighbors = queryInfo.candidates.map(qi => (qi.index, qi.distance))
+      sendResults ! KNearestNeighborsWithDist(queryInfo.query, finalNeighbors)
+    } else {
+      val finalNeighbors = queryInfo.candidates.map(_.index)
+      sendResults ! KNearestNeighbors(queryInfo.query, finalNeighbors)
+    }
+  }
+
+  def randomNodes(nodesNeeded: Int, graphSize: Int): Seq[Int] = {
+    val r = scala.util.Random
+    (0 until nodesNeeded - 1).map(_ => r.nextInt(graphSize))
   }
 }

@@ -8,12 +8,12 @@ import com.github.julkw.dnsg.actors.{DataHolder, NodeLocatorHolder}
 import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, LoadDataFromFile}
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.NodeLocationEvent
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetNSGFrom, SearchOnGraphEvent, UpdatedLocalData}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetNSGFrom, InitializeGraph, SearchOnGraphEvent, UpdatedLocalData}
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.Responsibility
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker
-import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildGraphEvent, MoveGraph, ResponsibleFor}
+import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildKNNGEvent, MoveGraph}
 import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, Settings, dNSGSerializable}
 
@@ -23,14 +23,15 @@ object NodeCoordinator {
 
   final case class StartDistributingData(dataHolders: Set[ActorRef[LoadDataEvent]]) extends NodeCoordinationEvent
 
-  final case class DataRef(dataRef: LocalData[Float]) extends NodeCoordinationEvent
+  final case class DataRef(dataRef: LocalData[Float], graphSize: Int) extends NodeCoordinationEvent
+
+  final case class StartImprovingGraph(nodeLocator: NodeLocator[SearchOnGraphEvent]) extends NodeCoordinationEvent
 
   final case object StartSearchOnGraph extends NodeCoordinationEvent
 
   final case class StartBuildingNSG(navigatingNode: Int, nodeLocator: NodeLocator[SearchOnGraphEvent]) extends NodeCoordinationEvent
 
-
-  final case class LocalKnngWorker(worker: ActorRef[BuildGraphEvent]) extends NodeCoordinationEvent
+  final case class LocalKnngWorker(worker: ActorRef[BuildKNNGEvent]) extends NodeCoordinationEvent
 
   final case object AllDone extends NodeCoordinationEvent
 
@@ -68,44 +69,28 @@ class NodeCoordinator(settings: Settings,
   }
 
   def waitForData(): Behavior[NodeCoordinationEvent] = Behaviors.receiveMessagePartial {
-    case StartDistributingData(dataHolders) =>
+    case StartDistributingData(_) =>
       // this node doesn't have the file and so can do nothing but wait
       waitForData()
 
-    case DataRef(dataRef) =>
+    case DataRef(dataRef, graphSize) =>
       val data = dataRef
       assert(data.localDataSize > 0)
       ctx.log.info("Successfully loaded data of size: {}", data.localDataSize)
-      // create Actor to start distribution of data
-      val kw = ctx.spawn(KnngWorker(data, clusterCoordinator, ctx.self, nodeLocatorHolder), name = "KnngWorker")
-      kw ! ResponsibleFor(data.localIndices, 0, settings.workers)
-      waitForKnng(Set.empty, data)
-  }
-
-  def waitForKnng(knngWorkers: Set[ActorRef[BuildGraphEvent]], data: LocalData[Float]): Behavior[NodeCoordinationEvent] =
-    Behaviors.receiveMessagePartial {
-      case LocalKnngWorker(worker) =>
-        waitForKnng(knngWorkers + worker, data)
-      case StartSearchOnGraph =>
-        moveKnngToSearchOnGraph(knngWorkers, data)
-    }
-
-  def moveKnngToSearchOnGraph(knngWorkers: Set[ActorRef[BuildGraphEvent]], data: LocalData[Float]): Behavior[NodeCoordinationEvent] = {
-    ctx.log.info("Start moving graph to SearchOnGraph Actors")
-    var sogIndex = 0
-    val graphHolders = knngWorkers.map { worker =>
-      val nsgw = ctx.spawn(SearchOnGraphActor(clusterCoordinator, nodeLocatorHolder), name = "SearchOnGraph" + sogIndex.toString)
-      sogIndex += 1
-      worker ! MoveGraph(nsgw)
-      nsgw
-    }
-    waitForNavigatingNode(data, graphHolders)
+      // distribute data to SearchOnGraphActors
+      val responsibilities = data.localIndices.grouped(data.localDataSize / settings.workers)
+      val localGraphHolders = responsibilities.zipWithIndex.map { case (responsibility, index) =>
+        val sog = ctx.spawn(SearchOnGraphActor(clusterCoordinator, nodeLocatorHolder), name = "SearchOnGraphActor" + index.toString)
+        sog ! InitializeGraph(responsibility, graphSize, data)
+        sog
+      }.toSet
+      waitForNavigatingNode(data, localGraphHolders)
   }
 
   def waitForNavigatingNode(data: LocalData[Float], localGraphHolders: Set[ActorRef[SearchOnGraphEvent]]): Behavior[NodeCoordinationEvent] =
     Behaviors.receiveMessagePartial {
       // In case of data redistribution
-      case DataRef(newData) =>
+      case DataRef(newData, _) =>
         ctx.log.info("Received new data, forwarding to graphHolders")
         localGraphHolders.foreach(graphHolder => graphHolder ! UpdatedLocalData(newData))
         waitForNavigatingNode(newData, localGraphHolders)

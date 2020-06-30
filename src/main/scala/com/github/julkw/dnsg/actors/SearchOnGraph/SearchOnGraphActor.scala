@@ -2,16 +2,17 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, GetMoreQueries, KNearestNeighbors, NSGonSOG}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, GetMoreQueries, KNearestNeighbors, KNearestNeighborsWithDist, NSGonSOG, UpdatedGraph}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{ConnectionCoordinationEvent, ReceivedNewEdge}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{DoneWithRedistribution, RedistributionCoordinationEvent}
 import com.github.julkw.dnsg.actors.DataHolder.{GraphForFile, LoadDataEvent}
 import com.github.julkw.dnsg.actors.GraphConnector
-import com.github.julkw.dnsg.actors.NodeLocatorHolder.{NodeLocationEvent, SearchOnGraphGotGraphFrom}
+import com.github.julkw.dnsg.actors.NodeLocatorHolder.{KnngWorkerGotGraphFrom, LocalSOGDistributionInfo, NodeLocationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SOGInfo.{GetLocation, GetNeighbors, Location, Neighbors, SOGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialNSG, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, GetMorePathQueries}
-import com.github.julkw.dnsg.actors.nndescent.KnngWorker.BuildGraphEvent
+import com.github.julkw.dnsg.actors.nndescent.KnngWorker
+import com.github.julkw.dnsg.actors.nndescent.KnngWorker.BuildKNNGEvent
 import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
 import com.github.julkw.dnsg.util._
 
@@ -22,7 +23,9 @@ object SearchOnGraphActor {
   sealed trait SearchOnGraphEvent extends dNSGSerializable
 
   // setup
-  final case class GraphAndData(graph: Map[Int, Seq[Int]], cacheData: CacheData[Float], sender: ActorRef[BuildGraphEvent]) extends SearchOnGraphEvent
+  final case class InitializeGraph(responsibility: Seq[Int], graphSize: Int, localData: LocalData[Float]) extends SearchOnGraphEvent
+
+  final case class GraphAndData(graph: Map[Int, Seq[Int]], cacheData: CacheData[Float], sender: ActorRef[BuildKNNGEvent]) extends SearchOnGraphEvent
 
   final case class GraphReceived(graphHolder: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
@@ -38,7 +41,7 @@ object SearchOnGraphActor {
   final case class UpdatedLocalData(data: LocalData[Float]) extends  SearchOnGraphEvent
 
   // queries
-  final case class FindNearestNeighbors(queries: Seq[Seq[Float]], k: Int, asker: ActorRef[CoordinationEvent], moreQueries: Boolean) extends SearchOnGraphEvent
+  final case class FindNearestNeighbors(queries: Seq[Seq[Float]], k: Int, asker: ActorRef[CoordinationEvent], sendWithDist: Boolean, moreQueries: Boolean) extends SearchOnGraphEvent
 
   final case class FindNearestNeighborsStartingFrom(queries: Seq[Seq[Float]], startingPoint: Int,  k: Int, asker: ActorRef[CoordinationEvent], moreQueries: Boolean) extends SearchOnGraphEvent
 
@@ -65,7 +68,7 @@ object SearchOnGraphActor {
   def apply(clusterCoordinator: ActorRef[CoordinationEvent],
             nodeLocatorHolder: ActorRef[NodeLocationEvent]): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
     val settings = Settings(ctx.system.settings.config)
-    new SearchOnGraphActor(clusterCoordinator, nodeLocatorHolder, new WaitingOnLocation, settings, ctx).waitForLocalGraph()
+    new SearchOnGraphActor(clusterCoordinator, nodeLocatorHolder, new WaitingOnLocation, settings, ctx).setup()
   }
 }
 
@@ -77,22 +80,25 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
   extends SearchOnGraph(waitingOnLocation, settings.maxMessageSize, settings.maxNeighborCandidates, ctx) {
   import SearchOnGraphActor._
 
-  def waitForLocalGraph(): Behavior[SearchOnGraphEvent] =
+  def setup(): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
-      case GraphAndData(graph, localData, sender) =>
-        // The data is send over with cache because there is a 1:1 mapping between knngWorkers and searchOnGraphActors and the first stops using the data after it has send it to the latter
-        nodeLocatorHolder ! SearchOnGraphGotGraphFrom(sender, ctx.self)
-        waitForDistributionInfo(graph, localData)
+      case InitializeGraph(responsibility, graphSize, localData) =>
+        val graph = responsibility.map { index =>
+          index -> randomNodes(settings.k, graphSize).toSet.toSeq
+        }.toMap
+        nodeLocatorHolder ! LocalSOGDistributionInfo(responsibility, ctx.self)
+        waitForDistributionInfo(graph, CacheData(settings.cacheSize, localData))
     }
 
   def waitForDistributionInfo(graph: Map[Int, Seq[Int]], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case GraphDistribution(nodeLocator) =>
+        ctx.spawn(KnngWorker(data.data, nodeLocator, ctx.self, clusterCoordinator, nodeLocatorHolder), name = "KnngWorker")
         val toSend = nodeLocator.allActors.map(worker => worker -> new SOGInfo).toMap
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1, toSend)
 
-      case FindNearestNeighbors(queries, k, asker, moreQueries) =>
-        ctx.self ! FindNearestNeighbors(queries, k, asker, moreQueries)
+      case FindNearestNeighbors(queries, k, asker, sendWithDist, moreQueries) =>
+        ctx.self ! FindNearestNeighbors(queries, k, asker, sendWithDist, moreQueries)
         waitForDistributionInfo(graph, data)
 
       case GetSearchOnGraphInfo(sender) =>
@@ -112,29 +118,26 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                     lastIdUsed: Int,
                     toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial {
-      case FindNearestNeighbors(queries, k, asker, moreQueries) =>
+      case FindNearestNeighbors(queries, k, asker, sendWithDist, moreQueries) =>
         if (moreQueries) {
           asker ! GetMoreQueries(ctx.self)
         }
         var lastQueryId = lastIdUsed
-
         // choose node to start search from local nodes
         val newQueries = queries.map { query =>
           val queryId = lastQueryId + 1
           // initialize candidate pool with random nodes
-          val r = scala.util.Random
-          val graphSize = nodeLocator.graphSize
-          // ensure at least one of the initial candidates is local
-          val initialCandidates = ((0 until k - 1).map(_ => r.nextInt(graphSize)) :+ graph.head._1).toSet
+          // ensure at least one of the initial candidates is local & since the node itself will probably end up in the solution return k + 1
+          val initialCandidates = (randomNodes(k, nodeLocator.graphSize) :+ graph.head._1).toSet
           val (localCandidates, remoteCandidates) = initialCandidates.partition(potentialCandidate => data.isLocal(potentialCandidate))
           val newCandidates = localCandidates.map { candidateIndex =>
             val location = data.get(candidateIndex)
             QueryCandidate(candidateIndex, euclideanDist(query, location), processed = false)
-          }.toSeq.sortBy(_.distance).slice(0, k)
+          }.toSeq.sortBy(_.distance)
           // candidates for which we don't have the location have to ask for it first
           var waitingOn = 0
           remoteCandidates.foreach(remoteNeighbor => waitingOn += askForLocation(remoteNeighbor, queryId, nodeLocator, toSend))
-          val queryInfo = QueryInfo(query, k, newCandidates, waitingOn)
+          val queryInfo = QueryInfo(query, k, newCandidates, waitingOn, sendWithDist)
           askForNeighbors(newCandidates.head.index, queryId, graph, nodeLocator, toSend)
           lastQueryId = queryId
           (queryId, queryInfo)
@@ -194,8 +197,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                   askForNeighbors(nextCandidate.index, queryId, graph, nodeLocator, toSend)
                 case None =>
                   if (updatedNeighborQueries(queryId).waitingOn == 0) {
-                    val finalNeighbors = queryInfo.candidates.map(_.index)
-                    respondTo(queryId) ! KNearestNeighbors(queryInfo.query, finalNeighbors)
+                    sendKNNResults(queryInfo, respondTo(queryId))
                     updatedNeighborQueries -= queryId
                   }
               }
@@ -212,8 +214,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                 queryInfo.waitingOn -= 1
                 val queryFinished = addCandidate(queryInfo, queryId, index, location, graph, nodeLocator, toSend)
                 if (queryFinished) {
-                  val finalNeighbors = queryInfo.candidates.map(_.index)
-                  respondTo(queryId) ! KNearestNeighbors(queryInfo.query, finalNeighbors)
+                  sendKNNResults(queryInfo, respondTo(queryId))
                   updatedNeighborQueries -= queryId
                 }
               }
@@ -262,6 +263,12 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         // only send the graph information for the nodes for which I am the primary assignee
         val nodesToSend = nodeLocator.nodesOf(ctx.self)
         sendGraphToDataHolder(nodesToSend, graphMessageSize, sender, graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed, toSend)
+
+      case GraphAndData(newGraph, newData, _) =>
+        // use the knngWorker's cache
+        assert(neighborQueries.isEmpty)
+        clusterCoordinator ! UpdatedGraph
+        searchOnGraph(newGraph, newData, nodeLocator, neighborQueries, respondTo, lastIdUsed, toSend)
     }
 
   def sendGraphToDataHolder(toSend: Seq[Int],
@@ -407,7 +414,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                 if (updatedPathQueries(queryId).waitingOn > 0) {
                   // do nothing for now
                 } else {
-                  sendResults(queryId, queryInfo, responseLocations, respondTo(queryId))
+                  sendPathResults(queryId, queryInfo, responseLocations, respondTo(queryId))
                   updatedPathQueries -= queryId
                 }
             }
@@ -427,7 +434,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                 }
                 if (queryFinished) {
                   updatedPathQueries -= queryId
-                  sendResults(queryId, queryInfo, responseLocations, respondTo(queryId))
+                  sendPathResults(queryId, queryInfo, responseLocations, respondTo(queryId))
                 }
               }
             }

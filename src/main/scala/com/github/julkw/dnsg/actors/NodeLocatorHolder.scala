@@ -2,7 +2,7 @@ package com.github.julkw.dnsg.actors
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, FinishedKnngNodeLocator, FinishedSearchOnGraphNodeLocator, KnngNodeLocator, SearchOnGraphNodeLocator}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, FinishedKnngNodeLocator, FinishedSearchOnGraphNodeLocator, SearchOnGraphNodeLocator}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{ConnectionCoordinationEvent, FinishedGraphConnectorNodeLocator, GraphConnectorNodeLocator}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{AllSharedReplication, DataReplicationModel, FinishedRedistributerNodeLocator, PrimaryAssignmentsDone, RedistributerNodeLocator, RedistributionCoordinationEvent, SecondaryAssignmentsDone}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{NodeCoordinationEvent, StartBuildingNSG}
@@ -10,7 +10,7 @@ import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, RedistributeData}
 import com.github.julkw.dnsg.actors.GraphConnector.{ConnectGraphEvent, ConnectorDistributionInfo}
 import com.github.julkw.dnsg.actors.GraphRedistributer.{DistributeData, RedistributionEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GraphDistribution, RedistributeGraph, SearchOnGraphEvent}
-import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildApproximateGraph, BuildGraphEvent}
+import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildKNNGEvent, KnngWorkerNodeLocator}
 import com.github.julkw.dnsg.util.{LocalityCheck, NodeLocator, NodeLocatorBuilder, dNSGSerializable}
 
 object NodeLocatorHolder {
@@ -18,9 +18,9 @@ object NodeLocatorHolder {
 
   final case class AllNodeLocatorHolders(nodeLocatorHolders: Set[ActorRef[NodeLocationEvent]], graphSize: Int) extends NodeLocationEvent
 
-  final case class LocalKnngDistributionInfo(responsibility: Seq[Int], sender: ActorRef[BuildGraphEvent]) extends NodeLocationEvent
+  final case class LocalSOGDistributionInfo(responsibility: Seq[Int], sender: ActorRef[SearchOnGraphEvent]) extends NodeLocationEvent
 
-  final case class KnngDistInfoBatch(indices: Seq[Int], responsibleActor: ActorRef[BuildGraphEvent], batchNumber: Int, sender: ActorRef[NodeLocationEvent]) extends NodeLocationEvent
+  final case class SOGDistInfoBatch(indices: Seq[Int], responsibleActor: ActorRef[SearchOnGraphEvent], batchNumber: Int, sender: ActorRef[NodeLocationEvent]) extends NodeLocationEvent
 
   final case class GetNextBatch(nextBatchNumber: Int, sender: ActorRef[NodeLocationEvent]) extends NodeLocationEvent
 
@@ -28,7 +28,7 @@ object NodeLocatorHolder {
 
   final case object SendNodeLocatorToClusterCoordinator extends NodeLocationEvent
 
-  final case class SearchOnGraphGotGraphFrom(knngActor: ActorRef[BuildGraphEvent], searchOnGraphActor: ActorRef[SearchOnGraphEvent]) extends NodeLocationEvent
+  final case class KnngWorkerGotGraphFrom(searchOnGraphActor: ActorRef[SearchOnGraphEvent], knngActor: ActorRef[BuildKNNGEvent]) extends NodeLocationEvent
 
   final case class BuildConnectorNodeLocator(connectorCoordinator: ActorRef[ConnectionCoordinationEvent]) extends NodeLocationEvent
 
@@ -69,94 +69,92 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
   Behaviors.receiveMessagePartial {
     case AllNodeLocatorHolders(nodeLocatorHolders, graphSize) =>
       val otherNodeLocatorHolders = (nodeLocatorHolders - ctx.self).map(actor => actor -> true).toMap
-      gatherAndShareKnngWorkerDistInfo(otherNodeLocatorHolders, Seq.empty, Set.empty, new NodeLocatorBuilder[BuildGraphEvent](graphSize), None)
+      gatherAndShareSOGWorkerDistInfo(otherNodeLocatorHolders, Seq.empty, Set.empty, new NodeLocatorBuilder[SearchOnGraphEvent](graphSize), None)
 
-    case LocalKnngDistributionInfo(responsibility, sender) =>
-      ctx.self ! LocalKnngDistributionInfo(responsibility, sender)
+    case LocalSOGDistributionInfo(responsibility, sender) =>
+      ctx.self ! LocalSOGDistributionInfo(responsibility, sender)
       setup()
 
-    case KnngDistInfoBatch(indices, responsibleActor, batchNumber, sender) =>
-      ctx.self ! KnngDistInfoBatch(indices, responsibleActor, batchNumber, sender)
+    case SOGDistInfoBatch(indices, responsibleActor, batchNumber, sender) =>
+      ctx.self ! SOGDistInfoBatch(indices, responsibleActor, batchNumber, sender)
       setup()
   }
 
-  def gatherAndShareKnngWorkerDistInfo(otherNodeLocatorHolders: Map[ActorRef[NodeLocationEvent], Boolean],
-                                       distInfoBatches: Seq[(ActorRef[BuildGraphEvent], Seq[Int])],
-                                       localWorkers: Set[ActorRef[BuildGraphEvent]],
-                                       nodeLocatorBuilder: NodeLocatorBuilder[BuildGraphEvent],
-                                       finalNodeLocator: Option[NodeLocator[BuildGraphEvent]]): Behavior[NodeLocationEvent] =
+  def gatherAndShareSOGWorkerDistInfo(otherNodeLocatorHolders: Map[ActorRef[NodeLocationEvent], Boolean],
+                                      distInfoBatches: Seq[(ActorRef[SearchOnGraphEvent], Seq[Int])],
+                                      localGraphHolders: Set[ActorRef[SearchOnGraphEvent]],
+                                      nodeLocatorBuilder: NodeLocatorBuilder[SearchOnGraphEvent],
+                                      finalNodeLocator: Option[NodeLocator[SearchOnGraphEvent]]): Behavior[NodeLocationEvent] =
     Behaviors.receiveMessagePartial {
-      case LocalKnngDistributionInfo(responsibility, sender) =>
+      case LocalSOGDistributionInfo(responsibility, sender) =>
         val batches = responsibility.grouped(maxMessageSize).map(indices => (sender, indices)).toSeq
         val batchNumber = distInfoBatches.length
         // send new info immediately to those actors who have already asked for more
         val updatedNodeLocatorHolders = otherNodeLocatorHolders.transform { (nodeLocatorHolder, sendImmediately) =>
           if (sendImmediately) {
-            nodeLocatorHolder ! KnngDistInfoBatch(batches.head._2, batches.head._1, batchNumber, ctx.self)
+            nodeLocatorHolder ! SOGDistInfoBatch(batches.head._2, batches.head._1, batchNumber, ctx.self)
           }
           false
         }
         val nodeLocator = nodeLocatorBuilder.addLocation(responsibility, sender)
         if (nodeLocator.isDefined) {
-          clusterCoordinator ! FinishedKnngNodeLocator
+          clusterCoordinator ! FinishedSearchOnGraphNodeLocator
         }
-        gatherAndShareKnngWorkerDistInfo(updatedNodeLocatorHolders, distInfoBatches ++ batches, localWorkers + sender, nodeLocatorBuilder, nodeLocator)
+        gatherAndShareSOGWorkerDistInfo(updatedNodeLocatorHolders, distInfoBatches ++ batches, localGraphHolders + sender, nodeLocatorBuilder, nodeLocator)
 
-      case KnngDistInfoBatch(indices, responsibleActor, batchNumber, sender) =>
+      case SOGDistInfoBatch(indices, responsibleActor, batchNumber, sender) =>
         val nodeLocator = nodeLocatorBuilder.addLocation(indices, responsibleActor)
         if (nodeLocator.isDefined) {
-          clusterCoordinator ! FinishedKnngNodeLocator
+          clusterCoordinator ! FinishedSearchOnGraphNodeLocator
         } else {
           sender ! GetNextBatch(batchNumber + 1, ctx.self)
         }
-        gatherAndShareKnngWorkerDistInfo(otherNodeLocatorHolders, distInfoBatches, localWorkers, nodeLocatorBuilder, nodeLocator)
+        gatherAndShareSOGWorkerDistInfo(otherNodeLocatorHolders, distInfoBatches, localGraphHolders, nodeLocatorBuilder, nodeLocator)
 
       case GetNextBatch(nextBatchNumber, sender) =>
         if (nextBatchNumber < distInfoBatches.length) {
           val nextBatch = distInfoBatches(nextBatchNumber)
-          sender ! KnngDistInfoBatch(nextBatch._2, nextBatch._1, nextBatchNumber, ctx.self)
-          gatherAndShareKnngWorkerDistInfo(otherNodeLocatorHolders, distInfoBatches, localWorkers, nodeLocatorBuilder, finalNodeLocator)
+          sender ! SOGDistInfoBatch(nextBatch._2, nextBatch._1, nextBatchNumber, ctx.self)
+          gatherAndShareSOGWorkerDistInfo(otherNodeLocatorHolders, distInfoBatches, localGraphHolders, nodeLocatorBuilder, finalNodeLocator)
         } else {
-          gatherAndShareKnngWorkerDistInfo(otherNodeLocatorHolders + (sender -> true), distInfoBatches, localWorkers, nodeLocatorBuilder, finalNodeLocator)
+          gatherAndShareSOGWorkerDistInfo(otherNodeLocatorHolders + (sender -> true), distInfoBatches, localGraphHolders, nodeLocatorBuilder, finalNodeLocator)
         }
 
       case ShareNodeLocator(sendToCoordinator) =>
         val nodeLocator = finalNodeLocator.get
-        localWorkers.foreach(worker => worker ! BuildApproximateGraph(nodeLocator))
+        localGraphHolders.foreach(graphHolder => graphHolder ! GraphDistribution(nodeLocator))
+          //.foreach(worker => worker ! BuildApproximateGraph(nodeLocator))
         if (sendToCoordinator) {
-          clusterCoordinator ! KnngNodeLocator(nodeLocator)
-        }
-        gatherSOGDistInfo(otherNodeLocatorHolders.keys.toSet, nodeLocator, Map.empty)
-
-      case SearchOnGraphGotGraphFrom(knngActor, searchOnGraphActor) =>
-        ctx.self ! SearchOnGraphGotGraphFrom(knngActor, searchOnGraphActor)
-        gatherAndShareKnngWorkerDistInfo(otherNodeLocatorHolders, distInfoBatches, localWorkers, nodeLocatorBuilder, finalNodeLocator)
-  }
-
-  def gatherSOGDistInfo(otherNodeLocatorHolders: Set[ActorRef[NodeLocationEvent]],
-                        lastNodeLocator: NodeLocator[BuildGraphEvent],
-                        actorMapping: Map[ActorRef[BuildGraphEvent], ActorRef[SearchOnGraphEvent]]): Behavior[NodeLocationEvent] =
-    Behaviors.receiveMessagePartial {
-      case SearchOnGraphGotGraphFrom(knngActor, searchOnGraphActor) =>
-        if (isLocal(searchOnGraphActor)) {
-          // share info with other nodeLocatorHolders
-          otherNodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! SearchOnGraphGotGraphFrom(knngActor, searchOnGraphActor))
-        }
-        val updatedMapping = actorMapping + (knngActor -> searchOnGraphActor)
-        if (updatedMapping.size == lastNodeLocator.allActors.size) {
-          clusterCoordinator ! FinishedSearchOnGraphNodeLocator
-        }
-        gatherSOGDistInfo(otherNodeLocatorHolders, lastNodeLocator, updatedMapping)
-
-      case ShareNodeLocator(sendToCoordinator) =>
-        val sogActors = actorMapping.values.toSet
-        val nodeLocator = NodeLocator(lastNodeLocator.locationData, lastNodeLocator.actors.map(knngActor => actorMapping(knngActor)))
-        val localSogActors = sogActors.filter(graphHolder => isLocal(graphHolder))
-        localSogActors.foreach(graphHolder => graphHolder ! GraphDistribution(nodeLocator))
-        if(sendToCoordinator) {
           clusterCoordinator ! SearchOnGraphNodeLocator(nodeLocator)
         }
-        holdSOGNodeLocator(otherNodeLocatorHolders, nodeLocator)
+        gatherKNNGDistInfo(otherNodeLocatorHolders.keys.toSet, nodeLocator, Map.empty)
+
+      case KnngWorkerGotGraphFrom(knngActor, searchOnGraphActor) =>
+        ctx.self ! KnngWorkerGotGraphFrom(knngActor, searchOnGraphActor)
+        gatherAndShareSOGWorkerDistInfo(otherNodeLocatorHolders, distInfoBatches, localGraphHolders, nodeLocatorBuilder, finalNodeLocator)
+  }
+
+  def gatherKNNGDistInfo(otherNodeLocatorHolders: Set[ActorRef[NodeLocationEvent]],
+                         lastNodeLocator: NodeLocator[SearchOnGraphEvent],
+                         actorMapping: Map[ActorRef[SearchOnGraphEvent], ActorRef[BuildKNNGEvent]]): Behavior[NodeLocationEvent] =
+    Behaviors.receiveMessagePartial {
+      case KnngWorkerGotGraphFrom(searchOnGraphActor, knngActor) =>
+        if (isLocal(searchOnGraphActor)) {
+          // share info with other nodeLocatorHolders
+          otherNodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! KnngWorkerGotGraphFrom(searchOnGraphActor, knngActor))
+        }
+        val updatedMapping = actorMapping + (searchOnGraphActor -> knngActor)
+        if (updatedMapping.size == lastNodeLocator.allActors.size) {
+          clusterCoordinator ! FinishedKnngNodeLocator
+        }
+        gatherKNNGDistInfo(otherNodeLocatorHolders, lastNodeLocator, updatedMapping)
+
+      case ShareNodeLocator(_) =>
+        val worker = actorMapping.values.toSet
+        val nodeLocator = NodeLocator(lastNodeLocator.locationData, lastNodeLocator.actors.map(knngActor => actorMapping(knngActor)))
+        val localKNNGWorkers = worker.filter(knngWorker => isLocal(knngWorker))
+        localKNNGWorkers.foreach(knngWorker => knngWorker ! KnngWorkerNodeLocator(nodeLocator))
+        holdSOGNodeLocator(otherNodeLocatorHolders, lastNodeLocator)
   }
 
   def holdSOGNodeLocator(otherNodeLocatorHolders: Set[ActorRef[NodeLocationEvent]],
