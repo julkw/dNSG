@@ -16,9 +16,11 @@ case class Settings(config: Config) {
 
   val k: Int = config.getInt(s"$namespace.k")
 
+  val preNNDescentK = config.getInt(s"$namespace.pre-nndescent-k")
+
   val sampleRate: Double = config.getDouble(s"$namespace.sample-rate")
 
-  val maxReverseNeighbors: Int= config.getInt(s"$namespace.max-reverse-neighbors")
+  val maxReverseNeighborsNSG: Int= config.getInt(s"$namespace.max-reverse-neighbors-nsg")
 
   val maxNeighborCandidates: Int= config.getInt(s"$namespace.max-neighbor-candidates")
 
@@ -51,7 +53,7 @@ case class Settings(config: Config) {
     ctx.log.info("sampleRate: {}", sampleRate)
     ctx.log.info("workers: {}", workers)
     ctx.log.info("nodes: {}", nodesExpected)
-    ctx.log.info("maxReverseNeighbors: {}", maxReverseNeighbors)
+    ctx.log.info("maxReverseNeighbors: {}", maxReverseNeighborsNSG)
     ctx.log.info("lines: {}", lines)
     ctx.log.info("maxMessageSize: {}", maxMessageSize)
     ctx.log.info("cacheSize: {}", cacheSize)

@@ -72,7 +72,7 @@ class KnngWorker(data: CacheData[Float],
     // ask for one neighbor too many in case the node itself ends up in the result set
     // send all requests at once since this is a local message and therefore not limited in size
     val sendWithDist = true
-    parent ! FindNearestNeighbors(queries.keys.toSeq, settings.k + 1, coordinationEventAdapter, sendWithDist, false)
+    parent ! FindNearestNeighbors(queries.keys.toSeq, settings.preNNDescentK + 1, coordinationEventAdapter, sendWithDist, false)
     buildInitialGraph(queries, Map.empty, None)
   }
 

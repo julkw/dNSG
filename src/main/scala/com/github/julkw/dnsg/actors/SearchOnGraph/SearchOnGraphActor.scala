@@ -84,7 +84,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
     Behaviors.receiveMessagePartial{
       case InitializeGraph(responsibility, graphSize, localData) =>
         val graph = responsibility.map { index =>
-          index -> randomNodes(settings.k, graphSize).toSet.toSeq
+          index -> randomNodes(settings.preNNDescentK, graphSize).toSet.toSeq
         }.toMap
         nodeLocatorHolder ! LocalSOGDistributionInfo(responsibility, ctx.self)
         waitForDistributionInfo(graph, CacheData(settings.cacheSize, localData))

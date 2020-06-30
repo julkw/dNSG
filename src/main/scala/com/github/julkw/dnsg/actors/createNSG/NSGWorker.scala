@@ -75,7 +75,7 @@ class NSGWorker(data: LocalData[Float],
         var nodeIndex = 0
         // don't make a node its own neighbor
         if (checkedNodes.head._1 == queryIndex) nodeIndex = 1
-        while (neighborIndices.length < settings.maxReverseNeighbors && nodeIndex < checkedNodes.length) {
+        while (neighborIndices.length < settings.maxReverseNeighborsNSG && nodeIndex < checkedNodes.length) {
           val node = checkedNodes(nodeIndex)._2
           if (!conflictFound(query, node, neighborLocations)) {
             neighborIndices = neighborIndices :+ checkedNodes(nodeIndex)._1

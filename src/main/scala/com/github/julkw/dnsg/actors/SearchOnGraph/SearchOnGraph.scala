@@ -45,7 +45,6 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation,
         val currentCandidateIndices = oldCandidates.map(_.index)
         // only add candidates that are not already in the candidateList
         // candidates for which we have the location can be added immediately
-        val debug = potentialNewCandidates.diff(currentCandidateIndices)
         val (localCandidates, remoteCandidates) = potentialNewCandidates.diff(currentCandidateIndices).partition(potentialCandidate => data.isLocal(potentialCandidate))
         val newCandidates = localCandidates.map { candidateIndex =>
             val location = data.get(candidateIndex)
