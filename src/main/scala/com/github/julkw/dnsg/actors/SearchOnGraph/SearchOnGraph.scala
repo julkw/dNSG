@@ -50,7 +50,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation,
             QueryCandidate(candidateIndex, euclideanDist(queryInfo.query, location), processed = false)
           }
         // candidates for which we don't have the location have to ask for it first
-        remoteCandidates.foreach(remoteNeighbor => askForLocation(remoteNeighbor, queryId, queryInfo, nodeLocator, toSend))
+        remoteCandidates.foreach(remoteNeighbor => queryInfo.waitingOn += askForLocation(remoteNeighbor, queryId, nodeLocator, toSend))
 
         val updatedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance).slice(0, queryInfo.neighborsWanted)
         candidate.processed = true
@@ -86,7 +86,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation,
             QueryCandidate(candidateIndex, euclideanDist(queryInfo.query, location), processed = false)
           }
         // candidates for which we don't have the location have to ask for it first
-        remoteCandidates.foreach(remoteCandidate => askForLocation(remoteCandidate, queryId, queryInfo, nodeLocator, toSend))
+        remoteCandidates.foreach(remoteCandidate => queryInfo.waitingOn += askForLocation(remoteCandidate, queryId, nodeLocator, toSend))
 
         val mergedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance)
         // update responseLocations
@@ -105,7 +105,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation,
     }
   }
 
-  def aksForNeighbors(node: Int,
+  def askForNeighbors(node: Int,
                       queryId: Int,
                       graph: Map[Int, Seq[Int]],
                       nodeLocator: NodeLocator[SearchOnGraphEvent],
@@ -120,15 +120,16 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation,
 
   def askForLocation(remoteIndex: Int,
                      queryId: Int,
-                     queryInfo: QueryInfo,
                      nodeLocator: NodeLocator[SearchOnGraphEvent],
-                     toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Unit = {
+                     toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Int = {
     if (!waitingOnLocation.alreadyIn(remoteIndex, queryId)) {
-      queryInfo.waitingOn += 1
       val askForLocation = waitingOnLocation.insert(remoteIndex, queryId)
       if (askForLocation) {
         toSend(nodeLocator.findResponsibleActor(remoteIndex)).addMessage(GetLocation(remoteIndex))
       }
+      1
+    } else {
+      0
     }
   }
 
@@ -155,7 +156,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation,
       queryInfo.candidates = updatedCandidates
       // If all other candidates have already been processed, the new now needs to be processed
       if (allProcessed) {
-        aksForNeighbors(candidateId, queryId, graph, nodeLocator, toSend)
+        askForNeighbors(candidateId, queryId, graph, nodeLocator, toSend)
       }
     }
     // return if the query is finished

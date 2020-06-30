@@ -51,7 +51,6 @@ object DataHolder {
 
 
   def apply(nodeCoordinator: ActorRef[NodeCoordinationEvent]): Behavior[LoadDataEvent] = Behaviors.setup { ctx =>
-
     val maxMessageSize = Settings(ctx.system.settings.config).maxMessageSize
     new DataHolder(nodeCoordinator, maxMessageSize, ctx).loadData()
   }
