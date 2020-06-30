@@ -89,7 +89,7 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
 
       case UnconnectedNode(nodeIndex, nodeData) =>
         graphNodeLocator.findResponsibleActor(nodeIndex) !
-          FindNearestNeighborsStartingFrom(nodeData, navigatingNodeIndex, candidateQueueSize, coordinationEventAdapter)
+          FindNearestNeighborsStartingFrom(Seq(nodeData), navigatingNodeIndex, candidateQueueSize, coordinationEventAdapter, false)
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, nodeIndex, allConnected)
 
       case WrappedCoordinationEvent(event) =>

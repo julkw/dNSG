@@ -2,7 +2,7 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, KNearestNeighbors, NSGonSOG}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, GetMoreQueries, KNearestNeighbors, NSGonSOG}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{ConnectionCoordinationEvent, ReceivedNewEdge}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{DoneWithRedistribution, RedistributionCoordinationEvent}
 import com.github.julkw.dnsg.actors.DataHolder.{GraphForFile, LoadDataEvent}
@@ -10,7 +10,7 @@ import com.github.julkw.dnsg.actors.GraphConnector
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.{NodeLocationEvent, SearchOnGraphGotGraphFrom}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SOGInfo.{GetLocation, GetNeighbors, Location, Neighbors, SOGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialNSG, MergeNSGEvent}
-import com.github.julkw.dnsg.actors.createNSG.NSGWorker.BuildNSGEvent
+import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, GetMorePathQueries}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker.BuildGraphEvent
 import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
 import com.github.julkw.dnsg.util._
@@ -38,12 +38,11 @@ object SearchOnGraphActor {
   final case class UpdatedLocalData(data: LocalData[Float]) extends  SearchOnGraphEvent
 
   // queries
-  // TODO bundle these messages as well?
-  final case class FindNearestNeighbors(query: Seq[Float], k: Int, asker: ActorRef[CoordinationEvent]) extends SearchOnGraphEvent
+  final case class FindNearestNeighbors(queries: Seq[Seq[Float]], k: Int, asker: ActorRef[CoordinationEvent], moreQueries: Boolean) extends SearchOnGraphEvent
 
-  final case class FindNearestNeighborsStartingFrom(query: Seq[Float], startingPoint: Int, k: Int, asker: ActorRef[CoordinationEvent]) extends SearchOnGraphEvent
+  final case class FindNearestNeighborsStartingFrom(queries: Seq[Seq[Float]], startingPoint: Int,  k: Int, asker: ActorRef[CoordinationEvent], moreQueries: Boolean) extends SearchOnGraphEvent
 
-  final case class CheckedNodesOnSearch(endPoint: Int, startingPoint: Int, neighborsWanted: Int, asker: ActorRef[BuildNSGEvent]) extends SearchOnGraphEvent
+  final case class CheckedNodesOnSearch(queries: Seq[Int], startingPoint: Int, k: Int, asker: ActorRef[BuildNSGEvent], moreQueries: Boolean) extends SearchOnGraphEvent
 
   // search
   final case class GetSearchOnGraphInfo(sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
@@ -92,8 +91,8 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         val toSend = nodeLocator.allActors.map(worker => worker -> new SOGInfo).toMap
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1, toSend)
 
-      case FindNearestNeighbors(value, k, asker) =>
-        ctx.self ! FindNearestNeighbors(value, k, asker)
+      case FindNearestNeighbors(queries, k, asker, moreQueries) =>
+        ctx.self ! FindNearestNeighbors(queries, k, asker, moreQueries)
         waitForDistributionInfo(graph, data)
 
       case GetSearchOnGraphInfo(sender) =>
@@ -113,30 +112,49 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                     lastIdUsed: Int,
                     toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial {
-      case FindNearestNeighbors(query, k, asker) =>
+      case FindNearestNeighbors(queries, k, asker, moreQueries) =>
+        if (moreQueries) {
+          asker ! GetMoreQueries(ctx.self)
+        }
+        var lastQueryId = lastIdUsed
         // choose node to start search from local nodes
-        val startingNodeIndex: Int = graph.keys.head
-        val queryInfo = QueryInfo(query, k, Seq(QueryCandidate(startingNodeIndex, euclideanDist(data.get(startingNodeIndex), query), processed = false)), 0)
-        val queryId = lastIdUsed + 1
-        // since this node is located locally, just ask self
-        toSend(ctx.self).addMessage(GetNeighbors(startingNodeIndex, queryId))
-        sendMessagesImmediately(toSend)
-        searchOnGraph(graph, data, nodeLocator, neighborQueries + (queryId -> queryInfo), respondTo + (queryId -> asker), queryId, toSend)
-
-      case FindNearestNeighborsStartingFrom(query, startingPoint, k, asker) =>
-        val queryId = lastIdUsed + 1
-        val queryInfo = if (data.isLocal(startingPoint)) {
-          val location = data.get(startingPoint)
-          aksForNeighbors(startingPoint, queryId, graph, nodeLocator, toSend)
-          toSend(nodeLocator.findResponsibleActor(startingPoint)).addMessage(GetNeighbors(startingPoint, queryId))
-          QueryInfo(query, k, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false)), 0)
-        } else {
-          val qi = QueryInfo(query, k, Seq.empty, 0)
-          askForLocation(startingPoint, queryId, qi, nodeLocator, toSend)
-          qi
+        val newQueries = queries.map { query =>
+          val startingNodeIndex: Int = graph.keys.head
+          // TODO: Fill initial candidates with random candidates
+          val queryInfo = QueryInfo(query, k, Seq(QueryCandidate(startingNodeIndex, euclideanDist(data.get(startingNodeIndex), query), processed = false)), 0)
+          val queryId = lastQueryId + 1
+          // since this node is located locally, just ask self
+          toSend(ctx.self).addMessage(GetNeighbors(startingNodeIndex, queryId))
+          lastQueryId = queryId
+          (queryId, queryInfo)
         }
         sendMessagesImmediately(toSend)
-        searchOnGraph(graph, data, nodeLocator, neighborQueries + (queryId -> queryInfo), respondTo + (queryId -> asker), queryId, toSend)
+        val newRespondTo = newQueries.map { case (queryId, _) => (queryId, asker) }
+        searchOnGraph(graph, data, nodeLocator, neighborQueries ++ newQueries, respondTo ++ newRespondTo, lastQueryId, toSend)
+
+      case FindNearestNeighborsStartingFrom(queries, startingPoint, k, asker, moreQueries) =>
+        if (moreQueries) {
+          asker ! GetMoreQueries(ctx.self)
+        }
+        var lastQueryId = lastIdUsed
+        val newQueries = queries.map { query =>
+          val queryId = lastQueryId + 1
+          val queryInfo = if (data.isLocal(startingPoint)) {
+            val location = data.get(startingPoint)
+            aksForNeighbors(startingPoint, queryId, graph, nodeLocator, toSend)
+            toSend(nodeLocator.findResponsibleActor(startingPoint)).addMessage(GetNeighbors(startingPoint, queryId))
+            QueryInfo(query, k, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false)), 0)
+          } else {
+            val qi = QueryInfo(query, k, Seq.empty, 0)
+            askForLocation(startingPoint, queryId, qi, nodeLocator, toSend)
+            qi
+          }
+          lastQueryId = queryId
+          (queryId, queryInfo)
+        }
+        sendMessagesImmediately(toSend)
+        val newRespondTo = newQueries.map { case (queryId, _) => (queryId, asker) }
+        searchOnGraph(graph, data, nodeLocator, neighborQueries ++ newQueries, respondTo ++ newRespondTo, lastQueryId, toSend)
 
       case GetSearchOnGraphInfo(sender) =>
         if (toSend(sender).nonEmpty) {
@@ -201,8 +219,8 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         val newNeighbors = graph(startNode) :+ endNode
         searchOnGraph(graph + (startNode -> newNeighbors), data, nodeLocator, neighborQueries, respondTo, lastIdUsed, toSend)
 
-      case CheckedNodesOnSearch(endPoint, startingPoint, neighborsWanted, asker) =>
-        ctx.self ! CheckedNodesOnSearch(endPoint, startingPoint, neighborsWanted, asker)
+      case CheckedNodesOnSearch(endPoints, startingPoint, neighborsWanted, asker, moreQueries) =>
+        ctx.self ! CheckedNodesOnSearch(endPoints, startingPoint, neighborsWanted, asker, moreQueries)
         toSend.foreach { case (_, sendInfo) => sendInfo.sendImmediately = true }
         sendMessagesImmediately(toSend)
         searchOnGraphForNSG(graph, data, nodeLocator, Map.empty, Map.empty, QueryResponseLocations(data), toSend)
@@ -322,25 +340,32 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                           responseLocations: QueryResponseLocations[Float],
                           toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial {
-      case CheckedNodesOnSearch(endPoint, startingPoint, neighborsWanted, asker) =>
-        // the end point should always be local, because that is how the SoG Actor is chosen
-        val query = data.get(endPoint)
-        val queryId = endPoint
-        // starting point is navigating node, so as of yet not always local
-        val pathQueryInfo = if (responseLocations.hasLocation(startingPoint)) {
-          val location = responseLocations.location(startingPoint)
-          responseLocations.addedToCandidateList(startingPoint, location)
-          aksForNeighbors(startingPoint, queryId, graph, nodeLocator, toSend)
-          QueryInfo(query, neighborsWanted, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false)), 0)
-        } else {
-          val queryInfo = QueryInfo(query, neighborsWanted, Seq.empty, 0)
-          askForLocation(startingPoint, queryId, queryInfo, nodeLocator, toSend)
-          queryInfo
+      case CheckedNodesOnSearch(endPoints, startingPoint, neighborsWanted, asker, moreQueries) =>
+        if (moreQueries) {
+          asker ! GetMorePathQueries(ctx.self)
         }
+        // the end point should always be local, because that is how the SoG Actor is chosen
+        val newQueries = endPoints.map { endPoint =>
+          val query = data.get(endPoint)
+          val queryId = endPoint
+          // starting point is navigating node, so as of yet not always local
+          val pathQueryInfo = if (responseLocations.hasLocation(startingPoint)) {
+            val location = responseLocations.location(startingPoint)
+            responseLocations.addedToCandidateList(startingPoint, location)
+            aksForNeighbors(startingPoint, queryId, graph, nodeLocator, toSend)
+            QueryInfo(query, neighborsWanted, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false)), 0)
+          } else {
+            val queryInfo = QueryInfo(query, neighborsWanted, Seq.empty, 0)
+            askForLocation(startingPoint, queryId, queryInfo, nodeLocator, toSend)
+            queryInfo
+          }
+          (queryId, pathQueryInfo)
+        }
+        val newRespondTo = newQueries.map { case(queryId, _) => (queryId, asker)}
         sendMessagesImmediately(toSend)
         searchOnGraphForNSG(graph, data, nodeLocator,
-          pathQueries + (queryId -> pathQueryInfo),
-          respondTo  + (queryId -> asker),
+          pathQueries ++ newQueries,
+          respondTo  ++ newRespondTo,
           responseLocations,
           toSend)
 

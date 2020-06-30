@@ -5,7 +5,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{CheckedNodesOnSearch, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{MergeNSGEvent, ReverseNeighbors}
 import com.github.julkw.dnsg.util.Data.LocalData
-import com.github.julkw.dnsg.util.{Distance, NodeLocator, dNSGSerializable}
+import com.github.julkw.dnsg.util.{Distance, NodeLocator, Settings, dNSGSerializable}
 
 import scala.language.postfixOps
 
@@ -16,7 +16,7 @@ object NSGWorker {
   // setup
   final case class Responsibility(responsibility: Seq[Int]) extends BuildNSGEvent
   // build NSG
-  final case class StartEdgeFindingProcessFor(responsibilityIndex: Int) extends BuildNSGEvent
+  final case class GetMorePathQueries(sender: ActorRef[SearchOnGraphEvent]) extends BuildNSGEvent
 
   final case class SortedCheckedNodes(queryIndex: Int, checkedNodes: Seq[(Int, Seq[Float])]) extends BuildNSGEvent
 
@@ -26,15 +26,16 @@ object NSGWorker {
             maxReverseNeighbors: Int,
             nodeLocator: NodeLocator[SearchOnGraphEvent],
             nsgMerger: ActorRef[MergeNSGEvent]): Behavior[BuildNSGEvent] = Behaviors.setup { ctx =>
-    Behaviors.setup(ctx =>
-      new NSGWorker(data, navigatingNode, candidateQueueSize, maxReverseNeighbors, nodeLocator, nsgMerger, ctx).setup())
+    Behaviors.setup { ctx =>
+      val settings = Settings(ctx.system.settings.config)
+      new NSGWorker(data, navigatingNode, settings, nodeLocator, nsgMerger, ctx).setup()
+    }
   }
 }
 
 class NSGWorker(data: LocalData[Float],
                 navigatingNode: Int,
-                candidateQueueSize: Int,
-                maxReverseNeighbors: Int,
+                settings: Settings,
                 nodeLocator: NodeLocator[SearchOnGraphEvent],
                 nsgMerger: ActorRef[MergeNSGEvent],
                 ctx: ActorContext[NSGWorker.BuildNSGEvent]) extends Distance {
@@ -43,22 +44,27 @@ class NSGWorker(data: LocalData[Float],
 
   def setup(): Behavior[BuildNSGEvent] = Behaviors.receiveMessagePartial {
     case Responsibility(responsibility) =>
-      if (responsibility.nonEmpty) {
-        ctx.self ! StartEdgeFindingProcessFor(0)
+      val toSend = responsibility.groupBy ( nodeIndex => nodeLocator.findResponsibleActor(nodeIndex) ).transform { (actor, nodes) =>
+        val toSendNow = nodes.slice(0, settings.maxMessageSize)
+        val toSendLater = nodes.slice(settings.maxMessageSize, nodes.length)
+        if (toSendNow.nonEmpty) {
+          actor ! CheckedNodesOnSearch(toSendNow, navigatingNode, settings.candidateQueueSizeNSG, ctx.self, toSendLater.nonEmpty)
+        }
+        toSendLater
       }
-      buildNSG(responsibility)
+      buildNSG(toSend)
   }
 
-  def buildNSG(responsibility: Seq[Int]): Behavior[BuildNSGEvent] =
+  def buildNSG(toSend: Map[ActorRef[SearchOnGraphEvent], Seq[Int]]): Behavior[BuildNSGEvent] =
     Behaviors.receiveMessagePartial {
-      case StartEdgeFindingProcessFor(responsibilityIndex) =>
-        if (responsibilityIndex < responsibility.length - 1) {
-          ctx.self ! StartEdgeFindingProcessFor(responsibilityIndex + 1)
+      case GetMorePathQueries(sender) =>
+        val toSendTo = toSend(sender)
+        val toSendNow = toSendTo.slice(0, settings.maxMessageSize)
+        val toSendLater = toSendTo.slice(settings.maxMessageSize, toSendTo.length)
+        if (toSendNow.nonEmpty) {
+          sender ! CheckedNodesOnSearch(toSendNow, navigatingNode, settings.candidateQueueSizeNSG, ctx.self, toSendLater.nonEmpty)
         }
-        val nodeToProcess = responsibility(responsibilityIndex)
-        nodeLocator.findResponsibleActor(nodeToProcess) !
-          CheckedNodesOnSearch(nodeToProcess, navigatingNode, candidateQueueSize, ctx.self)
-        buildNSG(responsibility)
+        buildNSG(toSend + (sender -> toSendLater))
 
       case SortedCheckedNodes(queryIndex, checkedNodes) =>
         // check neighbor candidates for conflicts
@@ -69,7 +75,7 @@ class NSGWorker(data: LocalData[Float],
         var nodeIndex = 0
         // don't make a node its own neighbor
         if (checkedNodes.head._1 == queryIndex) nodeIndex = 1
-        while (neighborIndices.length < maxReverseNeighbors && nodeIndex < checkedNodes.length) {
+        while (neighborIndices.length < settings.maxReverseNeighbors && nodeIndex < checkedNodes.length) {
           val node = checkedNodes(nodeIndex)._2
           if (!conflictFound(query, node, neighborLocations)) {
             neighborIndices = neighborIndices :+ checkedNodes(nodeIndex)._1
@@ -78,7 +84,7 @@ class NSGWorker(data: LocalData[Float],
           nodeIndex += 1
         }
         nsgMerger ! ReverseNeighbors(queryIndex, neighborIndices)
-        buildNSG(responsibility)
+        buildNSG(toSend)
   }
 
   def conflictFound(query: Seq[Float], nodeToTest: Seq[Float], neighborsSoFar: Seq[Seq[Float]]): Boolean = {
