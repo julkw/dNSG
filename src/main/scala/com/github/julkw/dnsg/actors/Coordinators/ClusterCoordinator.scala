@@ -347,15 +347,24 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                        nodeLocator: QueryNodeLocator[SearchOnGraphEvent],
                        nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]]): Behavior[CoordinationEvent] = Behaviors.receiveMessagePartial {
       case TestQueries(testQueries) =>
-        ctx.log.info("Testing {} queries. Perfect answer would be {} correct nearest neighbors found.", testQueries.size, testQueries.size * settings.k)
+        val neighborsExpectedPerQuery = testQueries.head._2.length
+        ctx.log.info("Testing {} queries. Perfect answer would be {} correct nearest neighbors found.", testQueries.size, testQueries.size * neighborsExpectedPerQuery)
         val maxQueriesToAskFor = settings.maxMessageSize / testQueries.head._1.length
         val newToSend = testQueries.map(_._1).groupBy( query => nodeLocator.findResponsibleActor(query)).transform { (actor, queries) =>
           val queriesToAskForNow = queries.slice(0, maxQueriesToAskFor)
           val queriesToAskForLater = queries.slice(maxQueriesToAskFor, queries.length)
-          actor ! FindNearestNeighborsStartingFrom(queriesToAskForNow, navigatingNodeIndex, settings.candidateQueueSizeNSG, ctx.self, queriesToAskForLater.nonEmpty)
+          actor ! FindNearestNeighborsStartingFrom(queriesToAskForNow, navigatingNodeIndex, neighborsExpectedPerQuery, ctx.self, queriesToAskForLater.nonEmpty)
           queriesToAskForLater
         }
-        testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, testQueries.toMap, newToSend, maxQueriesToAskFor, sumOfExactNeighborFound = 0, sumOfNeighborsFound = 0)
+        testNSG(navigatingNodeIndex,
+          nodeLocator,
+          nodeCoordinators,
+          testQueries.toMap,
+          newToSend,
+          maxQueriesToAskFor,
+          sumOfExactNeighborFound = 0,
+          sumOfNeighborsFound = 0,
+          testQueries.size * neighborsExpectedPerQuery)
     }
 
     def testNSG(navigatingNodeIndex: Int,
@@ -365,7 +374,8 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                 toSend: Map[ActorRef[SearchOnGraphEvent], Seq[Seq[Float]]],
                 maxQueriesToAskFor: Int,
                 sumOfExactNeighborFound: Int,
-                sumOfNeighborsFound: Int): Behavior[CoordinationEvent] =
+                sumOfNeighborsFound: Int,
+                sumOfNearestNeighbors: Int): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial{
         case GetMoreQueries(sender) =>
           val toSendTo = toSend(sender)
@@ -373,7 +383,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
           val toSendLater = toSendTo.slice(maxQueriesToAskFor, toSend.size)
           sender !  FindNearestNeighborsStartingFrom(toSendNow, navigatingNodeIndex, settings.candidateQueueSizeNSG, ctx.self, toSendLater.nonEmpty)
           val updatedToSend = toSend + (sender -> toSendLater)
-          testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, queries, updatedToSend, maxQueriesToAskFor, sumOfExactNeighborFound, sumOfNeighborsFound)
+          testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, queries, updatedToSend, maxQueriesToAskFor, sumOfExactNeighborFound, sumOfNeighborsFound, sumOfNearestNeighbors)
 
         case KNearestNeighbors(query, neighbors) =>
           val correctNeighborIndices = queries(query)
@@ -382,9 +392,10 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
           if (queries.size == 1) {
             ctx.log.info("Overall 1st nearest neighbors found: {}", sumOfExactNeighborFound + firstNearestNeighborFound)
             ctx.log.info("Overall correct neighbors found: {}", newSum)
+            ctx.log.info("Precision: {}", newSum.toFloat / sumOfNearestNeighbors.toFloat)
             shutdown(nodeCoordinators)
           } else {
-            testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, queries - query, toSend, maxQueriesToAskFor, sumOfExactNeighborFound + firstNearestNeighborFound, newSum)
+            testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, queries - query, toSend, maxQueriesToAskFor, sumOfExactNeighborFound + firstNearestNeighborFound, newSum, sumOfNearestNeighbors)
           }
       }
 
