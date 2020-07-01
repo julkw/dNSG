@@ -74,7 +74,7 @@ object SearchOnGraphActor {
 
 class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                          nodeLocatorHolder: ActorRef[NodeLocationEvent],
-                         waitingOnLocation: WaitingOnLocation,
+                         waitingOnLocation: WaitingOnLocation[Int],
                          settings: Settings,
                          ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent])
   extends SearchOnGraph(waitingOnLocation, settings.maxMessageSize, settings.maxNeighborCandidates, ctx) {

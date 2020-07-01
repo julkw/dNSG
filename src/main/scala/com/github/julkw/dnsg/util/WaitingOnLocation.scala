@@ -1,9 +1,9 @@
 package com.github.julkw.dnsg.util
 
-class WaitingOnLocation {
-  private var waitingOnLocation: Map[Int, Set[Int]] = Map.empty
+class WaitingOnLocation[T] {
+  private var waitingOnLocation: Map[Int, Set[T]] = Map.empty
 
-  def alreadyIn(locationIndex: Int, needsLocationIndex: Int): Boolean = {
+  def alreadyIn(locationIndex: Int, needsLocationIndex: T): Boolean = {
     if (waitingOnLocation.contains(locationIndex)) {
       waitingOnLocation(locationIndex).contains(needsLocationIndex)
     } else {
@@ -12,7 +12,7 @@ class WaitingOnLocation {
   }
 
   // return whether the location still needs to be asked for
-  def insert(locationIndex: Int, needsLocationIndex: Int): Boolean = {
+  def insert(locationIndex: Int, needsLocationIndex: T): Boolean = {
     if (waitingOnLocation.contains(locationIndex)) {
       waitingOnLocation = waitingOnLocation + (locationIndex -> (waitingOnLocation(locationIndex) + needsLocationIndex))
       false
@@ -22,7 +22,7 @@ class WaitingOnLocation {
     }
   }
 
-  def insertMultiple(locationIndex: Int, needLocationIndex: Set[Int]): Boolean = {
+  def insertMultiple(locationIndex: Int, needLocationIndex: Set[T]): Boolean = {
     if (waitingOnLocation.contains(locationIndex)) {
       waitingOnLocation = waitingOnLocation + (locationIndex -> (waitingOnLocation(locationIndex) ++ needLocationIndex))
       false
@@ -32,7 +32,7 @@ class WaitingOnLocation {
     }
   }
 
-  def received(locationIndex: Int): Set[Int] = {
+  def received(locationIndex: Int): Set[T] = {
     if (waitingOnLocation.contains(locationIndex)) {
       val stuffToProcess = waitingOnLocation(locationIndex)
       waitingOnLocation = waitingOnLocation - locationIndex

@@ -66,7 +66,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         if (listings.size == nodesExpected) {
           val toSend = listings.map(merger => merger -> (Seq.empty, false)).toMap
           listings.foreach(merger => merger ! GetNeighbors(ctx.self))
-          buildGraph(graph, graph.size, waitingOnMergers = nodesExpected, toSend, listings)
+          buildGraph(graph, graph.size, nodesExpected, toSend, listings)
         } else {
           waitForRegistrations(graph, listings)
         }

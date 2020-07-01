@@ -16,9 +16,11 @@ case class Settings(config: Config) {
 
   val k: Int = config.getInt(s"$namespace.k")
 
-  val preNNDescentK = config.getInt(s"$namespace.pre-nndescent-k")
+  val preNNDescentK: Int = config.getInt(s"$namespace.pre-nndescent-k")
 
   val sampleRate: Double = config.getDouble(s"$namespace.sample-rate")
+
+  val nnDescentIterations: Int = config.getInt(s"$namespace.max-nndescent-iterations")
 
   val maxReverseNeighborsNSG: Int= config.getInt(s"$namespace.max-reverse-neighbors-nsg")
 

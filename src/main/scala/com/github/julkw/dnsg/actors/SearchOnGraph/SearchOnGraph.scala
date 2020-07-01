@@ -10,7 +10,7 @@ import com.github.julkw.dnsg.util.Data.CacheData
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, WaitingOnLocation}
 
 
-abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation,
+abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
                              maxMessageSize: Int,
                              maxNSGCandidates: Int,
                              ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends Distance {
