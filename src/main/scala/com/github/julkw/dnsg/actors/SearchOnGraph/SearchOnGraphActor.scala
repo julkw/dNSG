@@ -159,8 +159,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
             askForNeighbors(startingPoint, queryId, graph, nodeLocator, toSend)
             (queryId, QueryInfo(query, k, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false)), 0))
           } else {
-            askForLocation(startingPoint, queryId, nodeLocator, toSend)
-            (queryId, QueryInfo(query, k, Seq.empty, waitingOn = 1))
+            (queryId, QueryInfo(query, k, Seq.empty, askForLocation(startingPoint, queryId, nodeLocator, toSend)))
           }
         }
         sendMessagesImmediately(toSend)

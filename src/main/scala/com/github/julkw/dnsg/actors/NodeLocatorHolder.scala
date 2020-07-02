@@ -339,12 +339,13 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
           // if it was true before and nothing was sent, it is still true
           sendImmediately && waitingOnLocals > 1 && batches.isEmpty
         }
+        val updatedSecondaryAssignments = secondaryAssignments ++ nodeAssignments
         if (waitingOnLocals == 1 && waitingOnNodeLocators == 0) {
-          redistributionCoordinator ! SecondaryAssignmentsDone
+          sendSecondaryAssignmentsDone(updatedSecondaryAssignments, redistributionCoordinator)
         }
         gatherAndShareSecondaryRedistributionAssignments(updatedNodeLocatorHolders,
           distInfoBatches ++ batches,
-          secondaryAssignments ++ nodeAssignments,
+          updatedSecondaryAssignments,
           primaryAssignments,
           waitingOnLocals - 1,
           waitingOnNodeLocators,
@@ -358,7 +359,7 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
         if (!lastBatch && indices.nonEmpty) {
           sender ! GetNextBatch(batchNumber + 1, ctx.self)
         } else if (updatedWaitingOnNodeLocators == 0 && waitingOnLocals == 0) {
-          redistributionCoordinator ! SecondaryAssignmentsDone
+          sendSecondaryAssignmentsDone(updatedSecondaryAssignments, redistributionCoordinator)
         }
         gatherAndShareSecondaryRedistributionAssignments(otherNodeLocatorHolders, distInfoBatches, updatedSecondaryAssignments, primaryAssignments, waitingOnLocals, updatedWaitingOnNodeLocators, redistributionCoordinator)
 
@@ -396,4 +397,11 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
         localDataHolder ! RedistributeData(primaryAssignments, updatedSecondaryAssignments)
         holdSOGNodeLocator(otherNodeLocatorHolders.keys.toSet, primaryAssignments)
     }
+
+  def sendSecondaryAssignmentsDone(secondaryAssignments: Map[Int, Set[ActorRef[SearchOnGraphEvent]]],
+                                   redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]): Unit = {
+    val replicatedNodes = secondaryAssignments.size
+    val numberOfReplications = secondaryAssignments.values.flatten.size
+    redistributionCoordinator ! SecondaryAssignmentsDone(replicatedNodes, numberOfReplications)
+  }
 }

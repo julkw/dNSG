@@ -27,7 +27,7 @@ object GraphRedistributionCoordinator {
 
   final case class GetMoreInitialAssignments(sender: ActorRef[RedistributionEvent]) extends RedistributionCoordinationEvent
 
-  final case object SecondaryAssignmentsDone extends RedistributionCoordinationEvent
+  final case class SecondaryAssignmentsDone(replicatedNodes: Int, replications: Int) extends RedistributionCoordinationEvent
 
   final case class WrappedCoordinationEvent(event: CoordinationEvent) extends RedistributionCoordinationEvent
 
@@ -153,38 +153,48 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
       val groupedAssignments = assignments.groupBy(_._1).transform((_, assignment) => assignment.map(_._2).toSeq)
       sendInitialAssignments(redistributer, groupedAssignments)
     }
-    waitForParentsToBeAssigned(connectorCoordinator, toSend, waitingOnAnswers, redistributerLocator)
+    waitForParentsToBeAssigned(connectorCoordinator, toSend, waitingOnAnswers, primaryAssignmentRoots.size, redistributerLocator)
   }
 
   def waitForParentsToBeAssigned(connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
                                  initialAssignmentsToSend: Map[ActorRef[RedistributionEvent], Map[ActorRef[SearchOnGraphEvent], Seq[Int]]],
                                  waitingOn: Int,
+                                 numWorkers: Int,
                                  redistributerLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionCoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case GetMoreInitialAssignments(sender) =>
         val updatedAssignmentsToSend = initialAssignmentsToSend + (sender -> sendInitialAssignments(sender, initialAssignmentsToSend(sender)))
-        waitForParentsToBeAssigned(connectorCoordinator, updatedAssignmentsToSend, waitingOn, redistributerLocator)
+        waitForParentsToBeAssigned(connectorCoordinator, updatedAssignmentsToSend, waitingOn, numWorkers, redistributerLocator)
 
       case AssignWithParentsDone =>
         if (waitingOn == 1) {
           ctx.log.info("Done with assigning parents, now collecting secondary assignments")
           redistributerLocator.allActors.foreach ( redistributer => redistributer ! SendSecondaryAssignments)
-          waitForSecondaryAssignments(connectorCoordinator, nodeLocatorHolders.size)
+          waitForSecondaryAssignments(connectorCoordinator, replicatedNodesSum = 0, replicationsSum = 0, numWorkers, nodeLocatorHolders.size)
         } else {
-          waitForParentsToBeAssigned(connectorCoordinator, initialAssignmentsToSend, waitingOn - 1, redistributerLocator)
+          waitForParentsToBeAssigned(connectorCoordinator, initialAssignmentsToSend, waitingOn - 1, numWorkers, redistributerLocator)
         }
     }
 
   def waitForSecondaryAssignments(connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
+                                  replicatedNodesSum: Int,
+                                  replicationsSum: Int,
+                                  numWorkers: Int,
                                   waitingOn: Int): Behavior[RedistributionCoordinationEvent] =
     Behaviors.receiveMessagePartial {
-      case SecondaryAssignmentsDone =>
+      case SecondaryAssignmentsDone(replicatedNodes, replications) =>
+        val updatedReplicatedNodes = replicatedNodesSum + replicatedNodes
+        var updatedReplications = replicationsSum + replications
         if (waitingOn == 1) {
           ctx.log.info("Calculated secondary redistribution assignments")
+          if (replicationModel == AllSharedReplication) {
+            updatedReplications = updatedReplicatedNodes * numWorkers
+          }
+          ctx.log.info("{} nodes replicated, overall {} replications", updatedReplicatedNodes, updatedReplications)
           nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! ShareRedistributionAssignments(replicationModel))
           waitForRedistribution(connectorCoordinator, finishedWorkers = 0)
         } else {
-          waitForSecondaryAssignments(connectorCoordinator, waitingOn - 1)
+          waitForSecondaryAssignments(connectorCoordinator, updatedReplicatedNodes, updatedReplications, numWorkers, waitingOn - 1)
         }
     }
 

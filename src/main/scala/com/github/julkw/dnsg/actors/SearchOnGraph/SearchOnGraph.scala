@@ -122,6 +122,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
                      queryId: Int,
                      nodeLocator: NodeLocator[SearchOnGraphEvent],
                      toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Int = {
+    // if this query has already asked for this location, it's waitingOn does not need to be increased
     if (!waitingOnLocation.alreadyIn(remoteIndex, queryId)) {
       val askForLocation = waitingOnLocation.insert(remoteIndex, queryId)
       if (askForLocation) {
