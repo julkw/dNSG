@@ -377,6 +377,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         val newToSend = testQueries.map(_._1).groupBy( query => nodeLocator.findResponsibleActor(query)).transform { (actor, queries) =>
           val queriesToAskForNow = queries.slice(0, maxQueriesToAskFor)
           val queriesToAskForLater = queries.slice(maxQueriesToAskFor, queries.length)
+          ctx.log.info("Need to be asked for more queries: {}", queriesToAskForLater.nonEmpty)
           actor ! FindNearestNeighborsStartingFrom(queriesToAskForNow, navigatingNodeIndex, neighborsExpectedPerQuery, ctx.self, queriesToAskForLater.nonEmpty)
           queriesToAskForLater
         }
@@ -402,6 +403,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                 sumOfNearestNeighbors: Int): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial{
         case GetMoreQueries(sender) =>
+          ctx.log.info("Sending more queries")
           val toSendTo = toSend(sender)
           val toSendNow = toSendTo.slice(0, maxQueriesToAskFor)
           val toSendLater = toSendTo.slice(maxQueriesToAskFor, toSend.size)
@@ -410,10 +412,10 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
           testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, queries, updatedToSend, maxQueriesToAskFor, sumOfExactNeighborFound, sumOfNeighborsFound, sumOfNearestNeighbors)
 
         case KNearestNeighbors(query, neighbors) =>
-          ctx.log.info("Found nearest neighbors for query")
           val correctNeighborIndices = queries(query)
           val newSum = sumOfNeighborsFound + correctNeighborIndices.intersect(neighbors).length
           val firstNearestNeighborFound = if (neighbors.head == correctNeighborIndices.head) { 1 } else { 0 }
+          ctx.log.info("Still waiting on {} queries: {}", queries.size - 1)
           if (queries.size == 1) {
             ctx.log.info("Overall 1st nearest neighbors found: {}", sumOfExactNeighborFound + firstNearestNeighborFound)
             ctx.log.info("Overall correct neighbors found: {}", newSum)
