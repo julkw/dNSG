@@ -377,7 +377,6 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         val newToSend = testQueries.map(_._1).groupBy( query => nodeLocator.findResponsibleActor(query)).transform { (actor, queries) =>
           val queriesToAskForNow = queries.slice(0, maxQueriesToAskFor)
           val queriesToAskForLater = queries.slice(maxQueriesToAskFor, queries.length)
-          ctx.log.info("Need to be asked for more queries: {}", queriesToAskForLater.nonEmpty)
           actor ! FindNearestNeighborsStartingFrom(queriesToAskForNow, navigatingNodeIndex, neighborsExpectedPerQuery, ctx.self, queriesToAskForLater.nonEmpty)
           queriesToAskForLater
         }
@@ -403,7 +402,6 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                 sumOfNearestNeighbors: Int): Behavior[CoordinationEvent] =
       Behaviors.receiveMessagePartial{
         case GetMoreQueries(sender) =>
-          ctx.log.info("Sending more queries")
           val toSendTo = toSend(sender)
           val toSendNow = toSendTo.slice(0, maxQueriesToAskFor)
           val toSendLater = toSendTo.slice(maxQueriesToAskFor, toSend.size)

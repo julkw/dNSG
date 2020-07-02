@@ -278,7 +278,7 @@ class KnngWorker(data: CacheData[Float],
       val responsibleActor = nodeLocator.findResponsibleActor(removedNeighbor)
       toSend(responsibleActor).addMessage(RemoveReverseNeighbor(removedNeighbor, g_node))
       val position = currentNeighbors.indexWhere { oldNeighbor => oldNeighbor.distance > potentialNeighbor.distance}
-      val updatedNeighbors = (currentNeighbors.slice(0, position) :+ potentialNeighbor) ++ currentNeighbors.slice(position, currentNeighbors.length - 1)
+      val updatedNeighbors = (currentNeighbors.slice(0, position) :+ potentialNeighbor) ++ currentNeighbors.slice(position, settings.k - 1)
       graph + (g_node -> updatedNeighbors)
     } else {
       graph
