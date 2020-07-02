@@ -56,11 +56,12 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
     ctx.system.receptionist ! Receptionist.Register(nsgMergerServiceKey, ctx.self)
     ctx.system.receptionist ! Receptionist.Subscribe(nsgMergerServiceKey, listingAdapter)
 
-    val nsg = responsibility.map(index => index -> Seq.empty[Int]).toMap
+    val nsg = responsibility.map(index => index -> Set.empty[Int]).toMap
     waitForRegistrations(nsg, Set.empty)
   }
 
-  def waitForRegistrations(graph: Map[Int, Seq[Int]], mergers: Set[ActorRef[MergeNSGEvent]]): Behavior[MergeNSGEvent] =
+  // TODO: The graph is a set here because for some reason edges are added multiple times
+  def waitForRegistrations(graph: Map[Int, Set[Int]], mergers: Set[ActorRef[MergeNSGEvent]]): Behavior[MergeNSGEvent] =
     Behaviors.receiveMessagePartial {
       case ListingResponse(nsgMergerServiceKey.Listing(listings)) =>
         if (listings.size == nodesExpected) {
@@ -80,7 +81,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         waitForRegistrations(graph, mergers)
     }
 
-  def buildGraph(graph: Map[Int, Seq[Int]],
+  def buildGraph(graph: Map[Int, Set[Int]],
                  waitingOnNSGWorkers: Int,
                  waitingOnMergers: Int,
                  toSend: Map[ActorRef[MergeNSGEvent], (Seq[(Int, Int)], Boolean)],
@@ -130,11 +131,11 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       distributeGraph(graph)
   }
 
-  def distributeGraph(graph: Map[Int, Seq[Int]]): Behavior[MergeNSGEvent] = Behaviors.receiveMessagePartial {
+  def distributeGraph(graph: Map[Int, Set[Int]]): Behavior[MergeNSGEvent] = Behaviors.receiveMessagePartial {
     case GetPartialNSG(nodes, sender) =>
       val partialGraph = graph.filter { case(node, _) =>
         nodes.contains(node)
-      }
+      }.transform((_, neighbors) => neighbors.toSeq)
       // can be send as a whole because it is only send to other actors on the same node
       sender ! PartialNSG(partialGraph)
       distributeGraph(graph)
@@ -143,7 +144,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       Behaviors.empty
   }
 
-  def addEdgesToGraph(graph: Map[Int, Seq[Int]], edges: Seq[(Int, Int)]): Map[Int, Seq[Int]] = {
+  def addEdgesToGraph(graph: Map[Int, Set[Int]], edges: Seq[(Int, Int)]): Map[Int, Set[Int]] = {
     val updatedNeighbors = edges.groupBy(_._1).transform { (nodeIndex, newEdges) =>
       val newNeighbors = newEdges.map(_._2)
       graph(nodeIndex) ++ newNeighbors

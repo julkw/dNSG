@@ -377,6 +377,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         val newToSend = testQueries.map(_._1).groupBy( query => nodeLocator.findResponsibleActor(query)).transform { (actor, queries) =>
           val queriesToAskForNow = queries.slice(0, maxQueriesToAskFor)
           val queriesToAskForLater = queries.slice(maxQueriesToAskFor, queries.length)
+          // TODO do as parameter for candidate queue size instead? Was that how they effected precision?
           actor ! FindNearestNeighborsStartingFrom(queriesToAskForNow, navigatingNodeIndex, neighborsExpectedPerQuery, ctx.self, queriesToAskForLater.nonEmpty)
           queriesToAskForLater
         }
@@ -413,7 +414,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
           val correctNeighborIndices = queries(query)
           val newSum = sumOfNeighborsFound + correctNeighborIndices.intersect(neighbors).length
           val firstNearestNeighborFound = if (neighbors.head == correctNeighborIndices.head) { 1 } else { 0 }
-          ctx.log.info("Still waiting on {} queries: {}", queries.size - 1)
+          //ctx.log.info("Still waiting on {} queries: {}", queries.size - 1)
           if (queries.size == 1) {
             ctx.log.info("Overall 1st nearest neighbors found: {}", sumOfExactNeighborFound + firstNearestNeighborFound)
             ctx.log.info("Overall correct neighbors found: {}", newSum)

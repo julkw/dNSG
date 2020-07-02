@@ -153,21 +153,19 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         var lastQueryId = lastIdUsed
         val newQueries = queries.map { query =>
           val queryId = lastQueryId + 1
-          val queryInfo = if (data.isLocal(startingPoint)) {
+          lastQueryId = queryId
+          if (data.isLocal(startingPoint)) {
             val location = data.get(startingPoint)
             askForNeighbors(startingPoint, queryId, graph, nodeLocator, toSend)
-            toSend(nodeLocator.findResponsibleActor(startingPoint)).addMessage(GetNeighbors(startingPoint, queryId))
-            QueryInfo(query, k, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false)), 0)
+            (queryId, QueryInfo(query, k, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false)), 0))
           } else {
-            val qi = QueryInfo(query, k, Seq.empty, askForLocation(startingPoint, queryId, nodeLocator, toSend))
-            qi
+            askForLocation(startingPoint, queryId, nodeLocator, toSend)
+            (queryId, QueryInfo(query, k, Seq.empty, waitingOn = 1))
           }
-          lastQueryId = queryId
-          (queryId, queryInfo)
         }
         sendMessagesImmediately(toSend)
-        val newRespondTo = newQueries.map { case (queryId, _) => (queryId, asker) }
-        searchOnGraph(graph, data, nodeLocator, neighborQueries ++ newQueries, respondTo ++ newRespondTo, lastQueryId, toSend)
+        val newRespondTo = respondTo ++ newQueries.map { case (queryId, _) => (queryId, asker) }
+        searchOnGraph(graph, data, nodeLocator, neighborQueries ++ newQueries, newRespondTo, lastQueryId, toSend)
 
       case GetSearchOnGraphInfo(sender) =>
         if (toSend(sender).nonEmpty) {
@@ -188,7 +186,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           case Neighbors(queryId, processedIndex, neighbors) =>
             if (updatedNeighborQueries.contains(queryId)) {
               val queryInfo = updatedNeighborQueries(queryId)
-              updateCandidates(queryInfo, queryId, processedIndex, neighbors.diff(queryInfo.candidates), nodeLocator, data, toSend)
+              updateCandidates(queryInfo, queryId, processedIndex, neighbors, nodeLocator, data, toSend)
               // check if all candidates have been processed
               val nextCandidateToProcess = queryInfo.candidates.find(query => !query.processed)
               nextCandidateToProcess match {

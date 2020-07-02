@@ -52,7 +52,6 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
           }
         // candidates for which we don't have the location have to ask for it first
         remoteCandidates.foreach(remoteNeighbor => queryInfo.waitingOn += askForLocation(remoteNeighbor, queryId, nodeLocator, toSend))
-
         val updatedCandidates = (oldCandidates ++: newCandidates).sortBy(_.distance).slice(0, queryInfo.neighborsWanted)
         candidate.processed = true
         queryInfo.candidates = updatedCandidates

@@ -217,11 +217,13 @@ class KnngWorker(data: CacheData[Float],
             if (!updatedGraph(g_nodeIndex).exists(neighbor => neighbor.index == newNeighbor.index)) {
               joinNewNeighbor(updatedGraph(g_nodeIndex).map(n => Neighbor(n.index, n.iteration)), updatedReverseNeighbors(g_nodeIndex), newNeighbor, toSend, nodeLocator)
             }
+            val reverseNeighborsOfNode = updatedReverseNeighbors(g_nodeIndex) + newNeighbor
+            // TODO limit reverse neighbors and remove a random one if too big
+            // (in that case remove head before adding newNeighbor)
             // update reverse neighbors
             updatedReverseNeighbors += (g_nodeIndex -> (updatedReverseNeighbors(g_nodeIndex) + newNeighbor))
 
           case RemoveReverseNeighbor(g_nodeIndex, neighborIndex) =>
-            // TODO using find instead of just removing the neighbor from the set makes me sad
             updatedReverseNeighbors(g_nodeIndex).find(neighbor => neighbor.index == neighborIndex) match {
               case Some(neighborToRemove) =>
                 updatedReverseNeighbors += (g_nodeIndex -> (updatedReverseNeighbors(g_nodeIndex) - neighborToRemove))
