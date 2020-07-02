@@ -275,7 +275,6 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
                  replyTo: ActorRef[CoordinationEvent]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial {
       case GraphForFile(graph, sender, moreToSend) =>
-        ctx.log.info("Received {} nodes of graph to write into file", graph.length)
         writeGraphToFile(filename, graph)
         val updatedWaitingForNodes = waitingForGraphNodes - graph.length
         if (updatedWaitingForNodes == 0) {

@@ -410,6 +410,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
           testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, queries, updatedToSend, maxQueriesToAskFor, sumOfExactNeighborFound, sumOfNeighborsFound, sumOfNearestNeighbors)
 
         case KNearestNeighbors(query, neighbors) =>
+          ctx.log.info("Found nearest neighbors for query")
           val correctNeighborIndices = queries(query)
           val newSum = sumOfNeighborsFound + correctNeighborIndices.intersect(neighbors).length
           val firstNearestNeighborFound = if (neighbors.head == correctNeighborIndices.head) { 1 } else { 0 }
