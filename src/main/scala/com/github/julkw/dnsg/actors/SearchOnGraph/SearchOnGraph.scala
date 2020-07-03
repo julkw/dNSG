@@ -122,7 +122,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
                      queryId: Int,
                      nodeLocator: NodeLocator[SearchOnGraphEvent],
                      toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Int = {
-    // if this query has already asked for this location, it's waitingOn does not need to be increased
+    // if this query has already asked for this location, its waitingOn does not need to be increased
     if (!waitingOnLocation.alreadyIn(remoteIndex, queryId)) {
       val askForLocation = waitingOnLocation.insert(remoteIndex, queryId)
       if (askForLocation) {
@@ -182,8 +182,12 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
     }
   }
 
-  def randomNodes(nodesNeeded: Int, graphSize: Int): Seq[Int] = {
+  def randomNodes(nodesNeeded: Int, graphSize: Int): Set[Int] = {
     val r = scala.util.Random
-    (0 until nodesNeeded - 1).map(_ => r.nextInt(graphSize))
+    var nodes: Set[Int] = Set.empty
+    while (nodes.size < nodesNeeded) {
+      nodes += r.nextInt(graphSize)
+    }
+    nodes
   }
 }

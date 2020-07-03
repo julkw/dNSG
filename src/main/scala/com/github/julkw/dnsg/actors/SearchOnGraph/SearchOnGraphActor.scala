@@ -68,13 +68,14 @@ object SearchOnGraphActor {
   def apply(clusterCoordinator: ActorRef[CoordinationEvent],
             nodeLocatorHolder: ActorRef[NodeLocationEvent]): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
     val settings = Settings(ctx.system.settings.config)
-    new SearchOnGraphActor(clusterCoordinator, nodeLocatorHolder, new WaitingOnLocation, settings, ctx).setup()
+    new SearchOnGraphActor(clusterCoordinator, nodeLocatorHolder, new WaitingOnLocation, new WaitingOnLocation, settings, ctx).setup()
   }
 }
 
 class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                          nodeLocatorHolder: ActorRef[NodeLocationEvent],
                          waitingOnLocation: WaitingOnLocation[Int],
+                         waitingOnNeighbors: WaitingOnLocation[Int],
                          settings: Settings,
                          ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent])
   extends SearchOnGraph(waitingOnLocation, settings.maxMessageSize, settings.maxNeighborCandidates, ctx) {
@@ -84,7 +85,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
     Behaviors.receiveMessagePartial{
       case InitializeGraph(responsibility, graphSize, localData) =>
         val graph = responsibility.map { index =>
-          index -> randomNodes(settings.preNNDescentK, graphSize).toSet.toSeq
+          index -> randomNodes(settings.preNNDescentK, graphSize).toSeq
         }.toMap
         nodeLocatorHolder ! LocalSOGDistributionInfo(responsibility, ctx.self)
         waitForDistributionInfo(graph, CacheData(settings.cacheSize, localData))
@@ -128,7 +129,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           val queryId = lastQueryId + 1
           // initialize candidate pool with random nodes
           // ensure at least one of the initial candidates is local & since the node itself will probably end up in the solution return k + 1
-          val initialCandidates = (randomNodes(k, nodeLocator.graphSize) :+ graph.head._1).toSet
+          val initialCandidates = (randomNodes(k, nodeLocator.graphSize) + graph.head._1)
           val (localCandidates, remoteCandidates) = initialCandidates.partition(potentialCandidate => data.isLocal(potentialCandidate))
           val newCandidates = localCandidates.map { candidateIndex =>
             val location = data.get(candidateIndex)
