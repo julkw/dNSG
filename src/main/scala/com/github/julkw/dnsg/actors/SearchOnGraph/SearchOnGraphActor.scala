@@ -78,7 +78,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                          waitingOnNeighbors: WaitingOnLocation[Int],
                          settings: Settings,
                          ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent])
-  extends SearchOnGraph(waitingOnLocation, settings.maxMessageSize, settings.maxNeighborCandidates, ctx) {
+  extends SearchOnGraph(waitingOnLocation, waitingOnNeighbors, settings.maxMessageSize, settings.maxNeighborCandidates, ctx) {
   import SearchOnGraphActor._
 
   def setup(): Behavior[SearchOnGraphEvent] =
@@ -180,24 +180,26 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
       case SearchOnGraphInfo(info, sender) =>
         var updatedNeighborQueries = neighborQueries
         info.foreach {
-          case GetNeighbors(index, queryId) =>
-            toSend(sender).addMessage(Neighbors(queryId, index, graph(index)))
+          case GetNeighbors(index) =>
+            toSend(sender).addMessage(Neighbors(index, graph(index)))
 
-          case Neighbors(queryId, processedIndex, neighbors) =>
-            if (updatedNeighborQueries.contains(queryId)) {
-              val queryInfo = updatedNeighborQueries(queryId)
-              updateCandidates(queryInfo, queryId, processedIndex, neighbors, nodeLocator, data, toSend)
-              // check if all candidates have been processed
-              val nextCandidateToProcess = queryInfo.candidates.find(query => !query.processed)
-              nextCandidateToProcess match {
-                case Some(nextCandidate) =>
-                  // find the neighbors of the next candidate to be processed and update queries
-                  askForNeighbors(nextCandidate.index, queryId, graph, nodeLocator, toSend)
-                case None =>
-                  if (updatedNeighborQueries(queryId).waitingOn == 0) {
-                    sendKNNResults(queryInfo, respondTo(queryId))
-                    updatedNeighborQueries -= queryId
-                  }
+          case Neighbors(processedIndex, neighbors) =>
+            waitingOnNeighbors.received(processedIndex).foreach { queryId =>
+              if (updatedNeighborQueries.contains(queryId)) {
+                val queryInfo = updatedNeighborQueries(queryId)
+                updateCandidates(queryInfo, queryId, processedIndex, neighbors, nodeLocator, data, toSend)
+                // check if all candidates have been processed
+                val nextCandidateToProcess = queryInfo.candidates.find(query => !query.processed)
+                nextCandidateToProcess match {
+                  case Some(nextCandidate) =>
+                    // find the neighbors of the next candidate to be processed and update queries
+                    askForNeighbors(nextCandidate.index, queryId, graph, nodeLocator, toSend)
+                  case None =>
+                    if (updatedNeighborQueries(queryId).waitingOn == 0) {
+                      sendKNNResults(queryInfo, respondTo(queryId))
+                      updatedNeighborQueries -= queryId
+                    }
+                }
               }
             }
 
@@ -396,25 +398,27 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
       case SearchOnGraphInfo(info, sender) =>
         var updatedPathQueries = pathQueries
         info.foreach {
-          case GetNeighbors(index, query) =>
-            toSend(sender).addMessage(Neighbors(query, index, graph(index)))
+          case GetNeighbors(index) =>
+            toSend(sender).addMessage(Neighbors(index, graph(index)))
 
-          case Neighbors(queryId, processedIndex, neighbors) =>
-            val queryInfo = updatedPathQueries(queryId)
-            updatePathCandidates(queryInfo,  queryId, processedIndex, neighbors, responseLocations, nodeLocator, toSend)
-            // check if all candidates have been processed
-            val nextCandidateToProcess = queryInfo.candidates.find(query => !query.processed)
-            nextCandidateToProcess match {
-              case Some(nextCandidate) =>
-                // find the neighbors of the next candidate to be processed and update queries
-                askForNeighbors(nextCandidate.index, queryId, graph, nodeLocator, toSend)
-              case None =>
-                if (updatedPathQueries(queryId).waitingOn > 0) {
-                  // do nothing for now
-                } else {
-                  sendPathResults(queryId, queryInfo, responseLocations, respondTo(queryId))
-                  updatedPathQueries -= queryId
-                }
+          case Neighbors(processedIndex, neighbors) =>
+            waitingOnNeighbors.received(processedIndex).foreach { queryId =>
+              val queryInfo = updatedPathQueries(queryId)
+              updatePathCandidates(queryInfo,  queryId, processedIndex, neighbors, responseLocations, nodeLocator, toSend)
+              // check if all candidates have been processed
+              val nextCandidateToProcess = queryInfo.candidates.find(query => !query.processed)
+              nextCandidateToProcess match {
+                case Some(nextCandidate) =>
+                  // find the neighbors of the next candidate to be processed and update queries
+                  askForNeighbors(nextCandidate.index, queryId, graph, nodeLocator, toSend)
+                case None =>
+                  if (updatedPathQueries(queryId).waitingOn > 0) {
+                    // do nothing for now
+                  } else {
+                    sendPathResults(queryId, queryInfo, responseLocations, respondTo(queryId))
+                    updatedPathQueries -= queryId
+                  }
+              }
             }
 
           case GetLocation(index) =>

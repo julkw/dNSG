@@ -11,6 +11,7 @@ import com.github.julkw.dnsg.util.{Distance, NodeLocator, WaitingOnLocation}
 
 
 abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
+                             waitingOnNeighbors: WaitingOnLocation[Int],
                              maxMessageSize: Int,
                              maxNSGCandidates: Int,
                              ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends Distance {
@@ -111,10 +112,13 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
                       nodeLocator: NodeLocator[SearchOnGraphEvent],
                       toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Unit = {
     // in case of data replication the actor should check if it has the required information itself before asking the primary assignee
-    if (graph.contains(node)) {
-      toSend(ctx.self).addMessage(GetNeighbors(node, queryId))
-    } else {
-      toSend(nodeLocator.findResponsibleActor(node)).addMessage(GetNeighbors(node, queryId))
+    val askForNeighbors = waitingOnNeighbors.insert(node, queryId)
+    if (askForNeighbors) {
+      if (graph.contains(node)) {
+        toSend(ctx.self).addMessage(GetNeighbors(node))
+      } else {
+        toSend(nodeLocator.findResponsibleActor(node)).addMessage(GetNeighbors(node))
+      }
     }
   }
 

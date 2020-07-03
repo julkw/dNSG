@@ -4,9 +4,9 @@ import scala.collection.mutable
 object SOGInfo {
 
   trait SOGEvent
-  final case class GetNeighbors(index: Int, queryId: Int) extends SOGEvent
+  final case class GetNeighbors(index: Int) extends SOGEvent
 
-  final case class Neighbors(queryId: Int, index: Int, neighbors: Seq[Int]) extends SOGEvent
+  final case class Neighbors(index: Int, neighbors: Seq[Int]) extends SOGEvent
 
   final case class GetLocation(index: Int) extends SOGEvent
 
@@ -34,10 +34,10 @@ case class SOGInfo() {
     var currentMessageSize = 0
     val newMessage = messagesToSend.dequeueWhile {message =>
       val thisMessageSize = message match {
-        case GetNeighbors(_, _) =>
-          2
-        case Neighbors(_, _, neighbors) =>
-          neighbors.length + 2
+        case GetNeighbors(_) =>
+          1
+        case Neighbors(_, neighbors) =>
+          neighbors.length + 1
         case GetLocation(_) =>
           1
         case Location(_, location) =>
