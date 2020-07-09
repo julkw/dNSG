@@ -26,7 +26,7 @@ object GraphRedistributer {
 
   final case class GetLocationForRedistribution(index: Int, sender: ActorRef[RedistributionEvent]) extends RedistributionEvent
 
-  final case class LocationForRedistribution(index: Int, location: Seq[Float]) extends RedistributionEvent
+  final case class LocationForRedistribution(index: Int, location: Array[Float]) extends RedistributionEvent
 
   // assigning nodes to workers
   final case class GetNodeAssignments(sender: ActorRef[RedistributionEvent]) extends RedistributionEvent
@@ -219,7 +219,7 @@ class GraphRedistributer(data: LocalData[Float],
         sendPrimaryAssignmentsIfDone(distributionTree, nodeLocator, toSend)
     }
 
-  def chooseNodeToContinueSearch(nodesToChooseFrom: Map[Int, Seq[Float]],
+  def chooseNodeToContinueSearch(nodesToChooseFrom: Map[Int, Array[Float]],
                                  nodesExpected: Int,
                                  parentNode: Int,
                                  minNodes: Int,

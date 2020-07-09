@@ -18,7 +18,7 @@ object NSGWorker {
   // build NSG
   final case class GetMorePathQueries(sender: ActorRef[SearchOnGraphEvent]) extends BuildNSGEvent
 
-  final case class SortedCheckedNodes(queryIndex: Int, checkedNodes: Seq[(Int, Seq[Float])]) extends BuildNSGEvent
+  final case class SortedCheckedNodes(queryIndex: Int, checkedNodes: Seq[(Int, Array[Float])]) extends BuildNSGEvent
 
   def apply(data: LocalData[Float],
             navigatingNode: Int,
@@ -69,7 +69,7 @@ class NSGWorker(data: LocalData[Float],
       case SortedCheckedNodes(queryIndex, checkedNodes) =>
         // check neighbor candidates for conflicts
         var neighborIndices: Seq[Int] = Seq.empty
-        var neighborLocations: Seq[Seq[Float]] = Seq.empty
+        var neighborLocations: Seq[Array[Float]] = Seq.empty
         val query = data.get(queryIndex)
         // choose up to maxReverseNeighbors neighbors from checked nodes by checking for conflicts
         var nodeIndex = 0
@@ -87,7 +87,7 @@ class NSGWorker(data: LocalData[Float],
         buildNSG(toSend)
   }
 
-  def conflictFound(query: Seq[Float], nodeToTest: Seq[Float], neighborsSoFar: Seq[Seq[Float]]): Boolean = {
+  def conflictFound(query: Array[Float], nodeToTest: Array[Float], neighborsSoFar: Seq[Array[Float]]): Boolean = {
     var conflictFound = false
     val potentialEdgeDist = euclideanDist(query, nodeToTest)
     // check for conflicts (conflict exists if potential Edge is the longest edge in triangle of query, node and neighbor)

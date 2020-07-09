@@ -11,7 +11,7 @@ object NNDInfo {
 
   final case class SendLocation(g_node: Int) extends NNDescentEvent
 
-  final case class PotentialNeighborLocation(potentialNeighborIndex: Int, potentialNeighbor: Seq[Float]) extends NNDescentEvent
+  final case class PotentialNeighborLocation(potentialNeighborIndex: Int, potentialNeighbor: Array[Float]) extends NNDescentEvent
 
   final case class RemoveReverseNeighbor(g_nodeIndex: Int, neighborIndex: Int) extends NNDescentEvent
 

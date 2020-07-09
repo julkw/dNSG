@@ -76,7 +76,7 @@ class KnngWorker(data: LocalData[Float],
     buildInitialGraph(queries, NNDGraph(settings.k, myNodes, settings.maxReverseNeighborsNND), None)
   }
 
-  def buildInitialGraph(queries: Map[Seq[Float], Int], graph: NNDGraph, nodeLocator: Option[NodeLocator[BuildKNNGEvent]]): Behavior[BuildKNNGEvent] = Behaviors.receiveMessagePartial {
+  def buildInitialGraph(queries: Map[Array[Float], Int], graph: NNDGraph, nodeLocator: Option[NodeLocator[BuildKNNGEvent]]): Behavior[BuildKNNGEvent] = Behaviors.receiveMessagePartial {
     case WrappedCoordinationEvent(event) =>
       event match {
         case KNearestNeighborsWithDist(query, neighbors) =>
@@ -241,6 +241,25 @@ class KnngWorker(data: LocalData[Float],
     val isNeighbor = graph.insert(g_node, potentialNeighbor, distance, iteration, toSend, nodeLocator)
     if (isNeighbor) {
       joinNode(potentialNeighbor, graph.getNeighbors(g_node), graph.getReversedNeighbors(g_node), iteration, toSend, nodeLocator)
+//=======
+//                              nodeLocator: NodeLocator[BuildKNNGEvent]): Map[Int, Seq[NeighborWithDist]] = {
+//    val currentNeighbors = graph(g_node)
+//    val currentReverseNeighbors = reverseNeighbors(g_node)
+//    val currentMaxDist = currentNeighbors.last.distance
+//    val isNew: Boolean = !currentNeighbors.exists(neighbor => neighbor.index == potentialNeighbor.index)
+//    if (currentMaxDist > potentialNeighbor.distance && potentialNeighbor.index != g_node && isNew) {
+//      if (!currentReverseNeighbors.map(_.index).contains(potentialNeighbor.index)) {
+//        joinNewNeighbor(currentNeighbors.slice(0, settings.k-1).map(n => Neighbor(n.index, n.iteration)), currentReverseNeighbors, Neighbor(potentialNeighbor.index, potentialNeighbor.iteration), toSend, nodeLocator)
+//      }
+//      val removedNeighbor = currentNeighbors.last.index
+//      val responsibleActor = nodeLocator.findResponsibleActor(removedNeighbor)
+//      toSend(responsibleActor).addMessage(RemoveReverseNeighbor(removedNeighbor, g_node))
+//      val position = currentNeighbors.indexWhere { oldNeighbor => oldNeighbor.distance > potentialNeighbor.distance}
+//      val updatedNeighbors = (currentNeighbors.slice(0, position) :+ potentialNeighbor) ++ currentNeighbors.slice(position, settings.k - 1)
+//      graph + (g_node -> updatedNeighbors)
+//    } else {
+//      graph
+//>>>>>>> removeCache
     }
   }
 

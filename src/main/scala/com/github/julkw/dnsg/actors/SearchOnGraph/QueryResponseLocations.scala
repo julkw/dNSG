@@ -3,7 +3,7 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 import com.github.julkw.dnsg.util.Data.LocalData
 
 case class QueryResponseLocations[T](data: LocalData[T]) {
-  protected case class ResponseLocation(location: Seq[T], var usedBy: Int)
+  protected case class ResponseLocation(location: Array[T], var usedBy: Int)
   private var responseLocations: Map[Int, ResponseLocation] = Map.empty
 
   def hasLocation(index: Int): Boolean = {
@@ -14,7 +14,7 @@ case class QueryResponseLocations[T](data: LocalData[T]) {
     responseLocations.size
   }
 
-  def location(index: Int): Seq[T] = {
+  def location(index: Int): Array[T] = {
     if (data.isLocal(index)) {
       data.get(index)
     } else {
@@ -22,7 +22,7 @@ case class QueryResponseLocations[T](data: LocalData[T]) {
     }
   }
 
-  def addedToCandidateList(index: Int, location: Seq[T]): Unit = {
+  def addedToCandidateList(index: Int, location: Array[T]): Unit = {
     //data.add(index, location)
     if(responseLocations.contains(index)) {
       responseLocations(index).usedBy += 1

@@ -23,9 +23,9 @@ abstract class Joiner(maxIterations: Int, data: LocalData[Float]) extends Distan
   }
 
   def joinLocals(n1Index: Int,
-                 n1Location: Seq[Float],
+                 n1Location: Array[Float],
                  n2Index: Int,
-                 n2Location: Seq[Float],
+                 n2Location: Array[Float],
                  iteration: Int,
                  toSend: Map[ActorRef[BuildKNNGEvent], NNDInfo],
                  nodeLocator: NodeLocator[BuildKNNGEvent]): Unit = {
