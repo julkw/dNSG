@@ -18,11 +18,11 @@ case class Settings(config: Config) {
 
   val preNNDescentK: Int = config.getInt(s"$namespace.pre-nndescent-k")
 
-  val sampleRate: Double = config.getDouble(s"$namespace.sample-rate")
-
   val nnDescentIterations: Int = config.getInt(s"$namespace.max-nndescent-iterations")
 
   val maxReverseNeighborsNSG: Int= config.getInt(s"$namespace.max-reverse-neighbors-nsg")
+
+  val maxReverseNeighborsNND: Int= config.getInt(s"$namespace.max-reverse-neighbors-nndescent")
 
   val maxNeighborCandidates: Int= config.getInt(s"$namespace.max-neighbor-candidates")
 
@@ -52,7 +52,6 @@ case class Settings(config: Config) {
 
   def printSettings(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]): Unit = {
     ctx.log.info("k: {}", k)
-    ctx.log.info("sampleRate: {}", sampleRate)
     ctx.log.info("workers: {}", workers)
     ctx.log.info("nodes: {}", nodesExpected)
     ctx.log.info("maxReverseNeighbors: {}", maxReverseNeighborsNSG)
