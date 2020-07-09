@@ -44,23 +44,23 @@ object ClusterCoordinator {
   final case object ConnectorsCleanedUp extends CoordinationEvent
 
   // building the NSG
-  final case class AverageValue(average: Seq[Float]) extends CoordinationEvent
+  final case class AverageValue(average: Array[Float]) extends CoordinationEvent
 
   final case class GetMoreQueries(sender: ActorRef[SearchOnGraphEvent]) extends CoordinationEvent
 
-  final case class KNearestNeighbors(query: Seq[Float], neighbors: Seq[Int]) extends CoordinationEvent
+  final case class KNearestNeighbors(query: Array[Float], neighbors: Seq[Int]) extends CoordinationEvent
 
-  final case class KNearestNeighborsWithDist(query: Seq[Float], neighbors: Seq[(Int, Double)]) extends CoordinationEvent
+  final case class KNearestNeighborsWithDist(query: Array[Float], neighbors: Seq[(Int, Double)]) extends CoordinationEvent
 
   final case class InitialNSGDone(nsgMergers: ActorRef[MergeNSGEvent]) extends CoordinationEvent
 
-  final case class NSGonSOG(responsibilityMidPoint: Seq[Float], sender: ActorRef[SearchOnGraphEvent]) extends CoordinationEvent
+  final case class NSGonSOG(responsibilityMidPoint: Array[Float], sender: ActorRef[SearchOnGraphEvent]) extends CoordinationEvent
 
   // writing the graph to file
   final case object GraphWrittenToFile extends CoordinationEvent
 
   // testing the graph
-  final case class TestQueries(queries: Seq[(Seq[Float], Seq[Int])]) extends CoordinationEvent
+  final case class TestQueries(queries: Seq[(Array[Float], Seq[Int])]) extends CoordinationEvent
 
   def apply(): Behavior[CoordinationEvent] = Behaviors.setup { ctx =>
 
@@ -310,7 +310,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
     }
 
   def moveNSGToSog(navigatingNodeIndex: Int,
-                   actorMidPoints: Seq[(ActorRef[SearchOnGraphEvent], Seq[Float])],
+                   actorMidPoints: Seq[(ActorRef[SearchOnGraphEvent], Array[Float])],
                    nodeLocator: NodeLocator[SearchOnGraphEvent],
                    nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                    dataHolder: ActorRef[LoadDataEvent],
@@ -395,8 +395,8 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
     def testNSG(navigatingNodeIndex: Int,
                 nodeLocator: QueryNodeLocator[SearchOnGraphEvent],
                 nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
-                queries: Map[Seq[Float], Seq[Int]],
-                toSend: Map[ActorRef[SearchOnGraphEvent], Seq[Seq[Float]]],
+                queries: Map[Array[Float], Seq[Int]],
+                toSend: Map[ActorRef[SearchOnGraphEvent], Seq[Array[Float]]],
                 maxQueriesToAskFor: Int,
                 sumOfExactNeighborFound: Int,
                 sumOfNeighborsFound: Int,

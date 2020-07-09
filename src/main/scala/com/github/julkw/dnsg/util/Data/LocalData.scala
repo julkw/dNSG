@@ -1,27 +1,27 @@
 package com.github.julkw.dnsg.util.Data
 
 trait LocalData[T] {
-  def get(globalIndex: Int): Seq[T]
+  def get(globalIndex: Int): Array[T]
   def isLocal(globalIndex: Int): Boolean
   def localDataSize: Int
   def dimension: Int
   // TODO this returns the global indices for the local data. Maybe rename as this might get confusing
   def localIndices: Seq[Int]
-  def rawData: Array[Seq[T]]
+  def rawData: Seq[Array[T]]
 }
 
 
 // this class let's the local data pretend to be global, so the workers can continue working with global indices
-case class LocalSequentialData[T] (data: Array[Seq[T]], localOffset: Int) extends LocalData[T] {
+case class LocalSequentialData[T] (data: Array[Array[T]], localOffset: Int) extends LocalData[T] {
   protected val permanentDataSize: Int = data.length
 
-  def get(globalIndex: Int): Seq[T] = {
+  def get(globalIndex: Int): Array[T] = {
     // this assumes, that whoever called this method checked isLocal first
     val index = localIndex(globalIndex)
     data(index)
   }
 
-  def rawData: Array[Seq[T]] = {
+  def rawData: Seq[Array[T]] = {
     data
   }
 
@@ -47,16 +47,16 @@ case class LocalSequentialData[T] (data: Array[Seq[T]], localOffset: Int) extend
   }
 }
 
-case class LocalUnorderedData[T] (data: Map[Int, Seq[T]]) extends LocalData[T] {
+case class LocalUnorderedData[T] (data: Map[Int, Array[T]]) extends LocalData[T] {
   protected val permanentDataSize: Int = data.size
 
-  def get(globalIndex: Int): Seq[T] = {
+  def get(globalIndex: Int): Array[T] = {
     // this assumes, that whoever called this method checked isLocal first
     data(globalIndex)
   }
 
-  def rawData: Array[Seq[T]] = {
-    data.values.toArray
+  def rawData: Seq[Array[T]] = {
+    data.values.toSeq
   }
 
   def isLocal(globalIndex: Int): Boolean = {

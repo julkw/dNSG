@@ -10,7 +10,7 @@ object SOGInfo {
 
   final case class GetLocation(index: Int) extends SOGEvent
 
-  final case class Location(index: Int, location: Seq[Float]) extends SOGEvent
+  final case class Location(index: Int, location: Array[Float]) extends SOGEvent
 }
 // TODO add trait to reduce code duplication with NNDInfo
 case class SOGInfo() {

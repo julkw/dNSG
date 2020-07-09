@@ -41,9 +41,9 @@ object SearchOnGraphActor {
   final case class UpdatedLocalData(data: LocalData[Float]) extends  SearchOnGraphEvent
 
   // queries
-  final case class FindNearestNeighbors(queries: Seq[Seq[Float]], k: Int, asker: ActorRef[CoordinationEvent], sendWithDist: Boolean, moreQueries: Boolean) extends SearchOnGraphEvent
+  final case class FindNearestNeighbors(queries: Seq[Array[Float]], k: Int, asker: ActorRef[CoordinationEvent], sendWithDist: Boolean, moreQueries: Boolean) extends SearchOnGraphEvent
 
-  final case class FindNearestNeighborsStartingFrom(queries: Seq[Seq[Float]], startingPoint: Int,  k: Int, asker: ActorRef[CoordinationEvent], moreQueries: Boolean) extends SearchOnGraphEvent
+  final case class FindNearestNeighborsStartingFrom(queries: Seq[Array[Float]], startingPoint: Int,  k: Int, asker: ActorRef[CoordinationEvent], moreQueries: Boolean) extends SearchOnGraphEvent
 
   final case class CheckedNodesOnSearch(queries: Seq[Int], startingPoint: Int, k: Int, asker: ActorRef[BuildNSGEvent], moreQueries: Boolean) extends SearchOnGraphEvent
 
@@ -453,7 +453,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
     Behaviors.receiveMessagePartial{
       case PartialNSG(graph) =>
         val myResponsibility = nodeLocator.nodesOf(ctx.self)
-        val responsibilityMidPoint = (0 until data.dimension).map(dim => myResponsibility.map(index => data.get(index)).map(_(dim)).sum / myResponsibility.length)
+        val responsibilityMidPoint = (0 until data.dimension).map(dim => myResponsibility.map(index => data.get(index)).map(_(dim)).sum / myResponsibility.length).toArray
         clusterCoordinator ! NSGonSOG(responsibilityMidPoint, ctx.self)
         val toSend = nodeLocator.allActors.map(worker => worker -> new SOGInfo).toMap
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1, toSend)

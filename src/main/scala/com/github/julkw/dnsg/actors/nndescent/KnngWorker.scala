@@ -81,7 +81,7 @@ class KnngWorker(data: LocalData[Float],
     buildInitialGraph(queries, Map.empty, None)
   }
 
-  def buildInitialGraph(queries: Map[Seq[Float], Int], graph: Map[Int, Seq[NeighborWithDist]], nodeLocator: Option[NodeLocator[BuildKNNGEvent]]): Behavior[BuildKNNGEvent] = Behaviors.receiveMessagePartial {
+  def buildInitialGraph(queries: Map[Array[Float], Int], graph: Map[Int, Seq[NeighborWithDist]], nodeLocator: Option[NodeLocator[BuildKNNGEvent]]): Behavior[BuildKNNGEvent] = Behaviors.receiveMessagePartial {
     case WrappedCoordinationEvent(event) =>
       event match {
         case KNearestNeighborsWithDist(query, neighbors) =>

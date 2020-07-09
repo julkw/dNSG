@@ -22,7 +22,7 @@ object DataHolder {
   // share data
   final case class PrepareForData(dataSize: Int, offset: Int, allDataSize: Int, replyTo: ActorRef[LoadDataEvent], dataHolders: Set[ActorRef[LoadDataEvent]]) extends LoadDataEvent
 
-  final case class PartialData(partialData: Array[Seq[Float]], dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
+  final case class PartialData(partialData: Array[Array[Float]], dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
   final case class GetNext(alreadyReceived: Int, dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
@@ -32,7 +32,7 @@ object DataHolder {
 
   final case class GetRedistributedData(sender: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
-  final case class PartialRedistributedData(data: Map[Int, Seq[Float]], sender: ActorRef[LoadDataEvent]) extends LoadDataEvent
+  final case class PartialRedistributedData(data: Map[Int, Array[Float]], sender: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
   // other stuff
   final case class GetAverageValue(replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
@@ -78,7 +78,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
         receiveData(Array.empty, dataSize, offset, allDataSize, pointsReceived = 0, dataHolders)
     }
 
-  def startDistributingData(data: Array[Seq[Float]], dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] = {
+  def startDistributingData(data: Array[Array[Float]], dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] = {
     val partitionInfo = calculatePartitionInfo(data.length, dataHolders)
     partitionInfo.foreach { case (dataHolder, pInfo) =>
       if (dataHolder != ctx.self) {
@@ -90,7 +90,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
     shareData(data, partitionInfo, dataMessageSize, dataHolders)
   }
 
-  def shareData(data: Array[Seq[Float]],
+  def shareData(data: Array[Array[Float]],
                 partitionInfo: Map[ActorRef[LoadDataEvent], (Int, Int)],
                 dataMessageSize: Int,
                 dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
@@ -119,7 +119,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
         }
     }
 
-  def receiveData(data: Array[Seq[Float]],
+  def receiveData(data: Array[Array[Float]],
                   expectedDataSize: Int,
                   localOffset: Int,
                   allDataSize: Int,
@@ -127,7 +127,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
                   dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial{
       case PartialData(partialData, dataHolder) =>
-        val updatedData: Array[Seq[Float]] = data ++ partialData
+        val updatedData: Array[Array[Float]] = data ++ partialData
 
         val updatedPointsReceived = pointsReceived + partialData.length
         if (updatedPointsReceived == expectedDataSize) {
@@ -149,9 +149,9 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
             dataHolder ! GetLocalAverage(ctx.self)
           }
         }
-        val averageValue: Seq[Float] = (0 until data.dimension).map{ index =>
+        val averageValue: Array[Float] = (0 until data.dimension).map{ index =>
           data.rawData.map(value => value(index)).sum / data.localDataSize
-        }
+        }.toArray
         if (dataHolders.size > 1) {
           calculateAverages(data, dataHolders, averageValue, data.localDataSize, dataHolders.size - 1, replyTo)
         } else {
@@ -204,7 +204,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
     }
 
   def redistributeData(oldData: LocalData[Float],
-                       newData: Map[Int, Seq[Float]],
+                       newData: Map[Int, Array[Float]],
                        expectedNewData: Int,
                        toSend: Map[ActorRef[LoadDataEvent], Seq[Int]],
                        allDataSize: Int,
@@ -248,7 +248,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
 
   def calculateAverages(data: LocalData[Float],
                         dataHolders: Set[ActorRef[LoadDataEvent]],
-                        currentAverage: Seq[Float],
+                        currentAverage: Array[Float],
                         currentElements: Int,
                         awaitingAnswers: Int,
                         sendResultTo: ActorRef[CoordinationEvent]): Behavior[LoadDataEvent] =

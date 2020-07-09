@@ -18,7 +18,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
   // data type for more readable code
   protected case class QueryCandidate(index: Int, distance: Double, var processed: Boolean)
   // also refactor to remove vars?
-  protected case class QueryInfo(query: Seq[Float], neighborsWanted: Int, var candidates: Seq[QueryCandidate], var waitingOn: Int, sendWithDist: Boolean = false)
+  protected case class QueryInfo(query: Array[Float], neighborsWanted: Int, var candidates: Seq[QueryCandidate], var waitingOn: Int, sendWithDist: Boolean = false)
 
   def sendMessagesImmediately(toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Unit = {
     toSend.foreach { case (graphHolder, sogInfo) =>
@@ -141,7 +141,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
   def addCandidate(queryInfo: QueryInfo,
                    queryId: Int,
                    candidateId: Int,
-                   candidateLocation: Seq[Float],
+                   candidateLocation: Array[Float],
                    graph: Map[Int, Seq[Int]],
                    nodeLocator: NodeLocator[SearchOnGraphEvent],
                    toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Boolean = {

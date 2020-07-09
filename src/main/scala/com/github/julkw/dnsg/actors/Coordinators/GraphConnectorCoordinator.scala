@@ -19,7 +19,7 @@ object GraphConnectorCoordinator {
 
   final case object FinishedUpdatingConnectivity extends ConnectionCoordinationEvent
 
-  final case class UnconnectedNode(nodeIndex: Int, nodeData: Seq[Float]) extends ConnectionCoordinationEvent
+  final case class UnconnectedNode(nodeIndex: Int, nodeData: Array[Float]) extends ConnectionCoordinationEvent
 
   final case object ReceivedNewEdge extends ConnectionCoordinationEvent
 

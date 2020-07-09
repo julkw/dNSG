@@ -10,9 +10,9 @@ import com.github.julkw.dnsg.util.{Distance, NodeLocator}
 abstract class Joiner(sampleRate: Double, maxIterations: Int, data: LocalData[Float]) extends Distance {
 
   def joinLocals(n1Index: Int,
-                 n1Data: Seq[Float],
+                 n1Data: Array[Float],
                  n2Index: Int,
-                 n2Data: Seq[Float],
+                 n2Data: Array[Float],
                  iteration: Int,
                  toSend: Map[ActorRef[BuildKNNGEvent], NNDInfo],
                  nodeLocator: NodeLocator[BuildKNNGEvent]): Unit = {
