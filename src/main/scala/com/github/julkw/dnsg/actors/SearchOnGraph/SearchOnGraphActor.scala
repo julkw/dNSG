@@ -2,18 +2,18 @@ package com.github.julkw.dnsg.actors.SearchOnGraph
 
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, GetMoreQueries, KNearestNeighbors, KNearestNeighborsWithDist, NSGonSOG, UpdatedGraph}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, GetMoreQueries, NSGonSOG, UpdatedGraph}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{ConnectionCoordinationEvent, ReceivedNewEdge}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{DoneWithRedistribution, RedistributionCoordinationEvent}
 import com.github.julkw.dnsg.actors.DataHolder.{GraphForFile, LoadDataEvent}
 import com.github.julkw.dnsg.actors.GraphConnector
-import com.github.julkw.dnsg.actors.NodeLocatorHolder.{KnngWorkerGotGraphFrom, LocalSOGDistributionInfo, NodeLocationEvent}
+import com.github.julkw.dnsg.actors.NodeLocatorHolder.{LocalSOGDistributionInfo, NodeLocationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SOGInfo.{GetLocation, GetNeighbors, Location, Neighbors, SOGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.{GetPartialNSG, MergeNSGEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, GetMorePathQueries}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker.BuildKNNGEvent
-import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
+import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util._
 
 import scala.language.postfixOps
@@ -25,7 +25,7 @@ object SearchOnGraphActor {
   // setup
   final case class InitializeGraph(responsibility: Seq[Int], graphSize: Int, localData: LocalData[Float]) extends SearchOnGraphEvent
 
-  final case class GraphAndData(graph: Map[Int, Seq[Int]], cacheData: CacheData[Float], sender: ActorRef[BuildKNNGEvent]) extends SearchOnGraphEvent
+  final case class GraphAndData(graph: Map[Int, Seq[Int]], cacheData: LocalData[Float], sender: ActorRef[BuildKNNGEvent]) extends SearchOnGraphEvent
 
   final case class GraphReceived(graphHolder: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
@@ -88,13 +88,13 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           index -> randomNodes(settings.preNNDescentK, graphSize).toSeq
         }.toMap
         nodeLocatorHolder ! LocalSOGDistributionInfo(responsibility, ctx.self)
-        waitForDistributionInfo(graph, CacheData(settings.cacheSize, localData))
+        waitForDistributionInfo(graph, localData)
     }
 
-  def waitForDistributionInfo(graph: Map[Int, Seq[Int]], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
+  def waitForDistributionInfo(graph: Map[Int, Seq[Int]], data: LocalData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case GraphDistribution(nodeLocator) =>
-        ctx.spawn(KnngWorker(data.data, nodeLocator, ctx.self, clusterCoordinator, nodeLocatorHolder), name = "KnngWorker")
+        ctx.spawn(KnngWorker(data, nodeLocator, ctx.self, clusterCoordinator, nodeLocatorHolder), name = "KnngWorker")
         val toSend = nodeLocator.allActors.map(worker => worker -> new SOGInfo).toMap
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1, toSend)
 
@@ -112,7 +112,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
     }
 
   def searchOnGraph(graph: Map[Int, Seq[Int]],
-                    data: CacheData[Float],
+                    data: LocalData[Float],
                     nodeLocator: NodeLocator[SearchOnGraphEvent],
                     neighborQueries: Map[Int, QueryInfo],
                     respondTo: Map[Int, ActorRef[CoordinationEvent]],
@@ -207,7 +207,6 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
             toSend(sender).addMessage(Location(index, data.get(index)))
 
           case Location(index, location) =>
-            data.add(index, location)
             waitingOnLocation.received(index).foreach {queryId =>
               if (updatedNeighborQueries.contains(queryId)) {
                 val queryInfo = updatedNeighborQueries(queryId)
@@ -238,7 +237,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case ConnectGraph(graphConnectorSupervisor) =>
         val responsibility = graph.keys.filter(node => nodeLocator.findResponsibleActor(node) == ctx.self).toSeq
-        ctx.spawn(GraphConnector(data.data, graph, responsibility, graphConnectorSupervisor, nodeLocatorHolder, ctx.self), name="graphConnector")
+        ctx.spawn(GraphConnector(data, graph, responsibility, graphConnectorSupervisor, nodeLocatorHolder, ctx.self), name="graphConnector")
         searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed, toSend)
 
       case RedistributeGraph(primaryAssignments, secondaryAssignments, redistributionCoordinator) =>
@@ -275,7 +274,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                             graphMessageSize: Int,
                             sendTo: ActorRef[LoadDataEvent],
                             graph: Map[Int, Seq[Int]],
-                            data: CacheData[Float],
+                            data: LocalData[Float],
                             nodeLocator: NodeLocator[SearchOnGraphEvent],
                             neighborQueries: Map[Int, QueryInfo],
                             respondTo: Map[Int, ActorRef[CoordinationEvent]],
@@ -299,13 +298,12 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                         newGraph: Map[Int, Seq[Int]],
                         nodesExpected: Int,
                         graphMessageSize: Int,
-                        data: CacheData[Float],
+                        data: LocalData[Float],
                         dataUpdated: Boolean,
                         redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial {
       case UpdatedLocalData(newData) =>
-        val updatedData = CacheData(settings.cacheSize, newData)
-        checkIfRedistributionDone(toSend, oldGraph, nodeLocator, newGraph, nodesExpected, graphMessageSize, updatedData, dataUpdated = true, redistributionCoordinator)
+        checkIfRedistributionDone(toSend, oldGraph, nodeLocator, newGraph, nodesExpected, graphMessageSize, newData, dataUpdated = true, redistributionCoordinator)
 
       case PartialGraph(partialGraph, sender) =>
         val updatedGraph = newGraph ++ partialGraph
@@ -336,7 +334,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                                 newGraph: Map[Int, Seq[Int]],
                                 nodesExpected: Int,
                                 graphMessageSize: Int,
-                                data: CacheData[Float],
+                                data: LocalData[Float],
                                 dataUpdated: Boolean,
                                 redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]): Behavior[SearchOnGraphEvent] = {
     val everythingSent = !toSend.valuesIterator.exists(_.nonEmpty)
@@ -350,7 +348,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
   }
 
   def searchOnGraphForNSG(graph: Map[Int, Seq[Int]],
-                          data: CacheData[Float],
+                          data: LocalData[Float],
                           nodeLocator: NodeLocator[SearchOnGraphEvent],
                           pathQueries: Map[Int, QueryInfo],
                           respondTo: Map[Int, ActorRef[BuildNSGEvent]],
@@ -451,11 +449,11 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         waitForNSG(nodeLocator, data)
     }
 
-  def waitForNSG(nodeLocator: NodeLocator[SearchOnGraphEvent], data: CacheData[Float]): Behavior[SearchOnGraphEvent] =
+  def waitForNSG(nodeLocator: NodeLocator[SearchOnGraphEvent], data: LocalData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case PartialNSG(graph) =>
         val myResponsibility = nodeLocator.nodesOf(ctx.self)
-        val responsibilityMidPoint = (0 until data.data.dimension).map(dim => myResponsibility.map(index => data.get(index)).map(_(dim)).sum / myResponsibility.length)
+        val responsibilityMidPoint = (0 until data.dimension).map(dim => myResponsibility.map(index => data.get(index)).map(_(dim)).sum / myResponsibility.length)
         clusterCoordinator ! NSGonSOG(responsibilityMidPoint, ctx.self)
         val toSend = nodeLocator.allActors.map(worker => worker -> new SOGInfo).toMap
         searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1, toSend)

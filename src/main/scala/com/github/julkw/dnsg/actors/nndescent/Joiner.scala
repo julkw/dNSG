@@ -3,13 +3,12 @@ package com.github.julkw.dnsg.actors.nndescent
 import akka.actor.typed.ActorRef
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker.BuildKNNGEvent
 import com.github.julkw.dnsg.actors.nndescent.NNDInfo.{JoinNodes, PotentialNeighbor}
-import com.github.julkw.dnsg.util.Data.CacheData
+import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util.{Distance, NodeLocator}
 
 import scala.collection.IndexedSeqView
 
-
-abstract class Joiner(maxIterations: Int, data: CacheData[Float]) extends Distance {
+abstract class Joiner(maxIterations: Int, data: LocalData[Float]) extends Distance {
 
   def joinNodePair(n1Index: Int,
                    n2Index: Int,

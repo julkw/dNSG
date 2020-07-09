@@ -7,7 +7,7 @@ import java.nio.{ByteBuffer, ByteOrder}
 import scala.language.postfixOps
 
 trait FileInteractor {
-  def readDataFloat(filename: String, lines: Int): Seq[Seq[Float]] = {
+  def readDataFloat(filename: String, lines: Int): Array[Seq[Float]] = {
     // read dimensions for proper grouping
     val bis = new BufferedInputStream(new FileInputStream(filename))
     bis.mark(0)
@@ -24,7 +24,7 @@ trait FileInteractor {
         val vector = byteValues.slice(1, byteValues.length).map(value => byteArrayToLittleEndianFloat(value.toArray))
         currentLine += limitLines
         vector
-    }.toSeq
+    }.toArray
     data
   }
 
