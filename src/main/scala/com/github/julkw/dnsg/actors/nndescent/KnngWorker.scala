@@ -6,7 +6,7 @@ import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConfirmFini
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.{KnngWorkerGotGraphFrom, NodeLocationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, GraphAndData, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.nndescent.NNDInfo.{AddReverseNeighbor, JoinNodes, NNDescentEvent, PotentialNeighbor, PotentialNeighborLocation, RemoveReverseNeighbor, SendLocation}
-import com.github.julkw.dnsg.util.Data.{CacheData, LocalData}
+import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util.{NodeLocator, Settings, WaitingOnLocation, dNSGSerializable}
 
 import scala.language.postfixOps
@@ -55,13 +55,12 @@ object KnngWorker {
     val settings = Settings(ctx.system.settings.config)
     val coordinationEventAdapter: ActorRef[CoordinationEvent] =
       ctx.messageAdapter { event => WrappedCoordinationEvent(event)}
-    new KnngWorker(CacheData(settings.cacheSize, data),
-      new WaitingOnLocation, graphNodeLocator,
+    new KnngWorker(data, new WaitingOnLocation, graphNodeLocator,
       parent, settings, clusterCoordinator, localNodeLocatorHolder, coordinationEventAdapter, ctx).setup()
   }
 }
 
-class KnngWorker(data: CacheData[Float],
+class KnngWorker(data: LocalData[Float],
                  waitingOnLocation: WaitingOnLocation[KnngWorker.Neighbor],
                  graphNodeLocator: NodeLocator[SearchOnGraphEvent],
                  parent: ActorRef[SearchOnGraphEvent],
@@ -204,7 +203,6 @@ class KnngWorker(data: CacheData[Float],
             toSend(sender).addMessage(PotentialNeighborLocation(g_node, data.get(g_node)))
 
           case PotentialNeighborLocation(potentialNeighborIndex, potentialNeighbor) =>
-            data.add(potentialNeighborIndex, potentialNeighbor)
             waitingOnLocation.received(potentialNeighborIndex).foreach { g_node =>
               joinLocals(g_node.index, data.get(g_node.index), potentialNeighborIndex, potentialNeighbor, g_node.iteration, toSend, nodeLocator)
             }

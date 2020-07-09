@@ -1,13 +1,13 @@
 package com.github.julkw.dnsg.actors.nndescent
 
 import akka.actor.typed.ActorRef
-import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildKNNGEvent, NeighborWithDist, Neighbor}
+import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildKNNGEvent, Neighbor, NeighborWithDist}
 import com.github.julkw.dnsg.actors.nndescent.NNDInfo.{JoinNodes, PotentialNeighbor}
-import com.github.julkw.dnsg.util.Data.CacheData
+import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util.{Distance, NodeLocator}
 
 
-abstract class Joiner(sampleRate: Double, maxIterations: Int, data: CacheData[Float]) extends Distance {
+abstract class Joiner(sampleRate: Double, maxIterations: Int, data: LocalData[Float]) extends Distance {
 
   def joinLocals(n1Index: Int,
                  n1Data: Seq[Float],

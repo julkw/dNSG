@@ -22,7 +22,7 @@ object DataHolder {
   // share data
   final case class PrepareForData(dataSize: Int, offset: Int, allDataSize: Int, replyTo: ActorRef[LoadDataEvent], dataHolders: Set[ActorRef[LoadDataEvent]]) extends LoadDataEvent
 
-  final case class PartialData(partialData: Seq[Seq[Float]], dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
+  final case class PartialData(partialData: Array[Seq[Float]], dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
   final case class GetNext(alreadyReceived: Int, dataHolder: ActorRef[LoadDataEvent]) extends LoadDataEvent
 
@@ -75,10 +75,10 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
 
       case PrepareForData(dataSize, offset, allDataSize, replyTo, dataHolders) =>
         replyTo ! GetNext(0, ctx.self)
-        receiveData(Seq.empty, dataSize, offset, allDataSize, pointsReceived = 0, dataHolders)
+        receiveData(Array.empty, dataSize, offset, allDataSize, pointsReceived = 0, dataHolders)
     }
 
-  def startDistributingData(data: Seq[Seq[Float]], dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] = {
+  def startDistributingData(data: Array[Seq[Float]], dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] = {
     val partitionInfo = calculatePartitionInfo(data.length, dataHolders)
     partitionInfo.foreach { case (dataHolder, pInfo) =>
       if (dataHolder != ctx.self) {
@@ -90,7 +90,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
     shareData(data, partitionInfo, dataMessageSize, dataHolders)
   }
 
-  def shareData(data: Seq[Seq[Float]],
+  def shareData(data: Array[Seq[Float]],
                 partitionInfo: Map[ActorRef[LoadDataEvent], (Int, Int)],
                 dataMessageSize: Int,
                 dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
@@ -119,7 +119,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
         }
     }
 
-  def receiveData(data: Seq[Seq[Float]],
+  def receiveData(data: Array[Seq[Float]],
                   expectedDataSize: Int,
                   localOffset: Int,
                   allDataSize: Int,
@@ -127,7 +127,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
                   dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
     Behaviors.receiveMessagePartial{
       case PartialData(partialData, dataHolder) =>
-        val updatedData: Seq[Seq[Float]] = data ++ partialData
+        val updatedData: Array[Seq[Float]] = data ++ partialData
 
         val updatedPointsReceived = pointsReceived + partialData.length
         if (updatedPointsReceived == expectedDataSize) {

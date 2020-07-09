@@ -7,12 +7,12 @@ trait LocalData[T] {
   def dimension: Int
   // TODO this returns the global indices for the local data. Maybe rename as this might get confusing
   def localIndices: Seq[Int]
-  def rawData: Seq[Seq[T]]
+  def rawData: Array[Seq[T]]
 }
 
 
 // this class let's the local data pretend to be global, so the workers can continue working with global indices
-case class LocalSequentialData[T] (data: Seq[Seq[T]], localOffset: Int) extends LocalData[T] {
+case class LocalSequentialData[T] (data: Array[Seq[T]], localOffset: Int) extends LocalData[T] {
   protected val permanentDataSize: Int = data.length
 
   def get(globalIndex: Int): Seq[T] = {
@@ -21,7 +21,7 @@ case class LocalSequentialData[T] (data: Seq[Seq[T]], localOffset: Int) extends 
     data(index)
   }
 
-  def rawData: Seq[Seq[T]] = {
+  def rawData: Array[Seq[T]] = {
     data
   }
 
@@ -35,7 +35,7 @@ case class LocalSequentialData[T] (data: Seq[Seq[T]], localOffset: Int) extends 
   }
 
   def dimension: Int = {
-    data(0).length
+    data.head.length
   }
 
   def localIndices: Seq[Int] = {
@@ -55,8 +55,8 @@ case class LocalUnorderedData[T] (data: Map[Int, Seq[T]]) extends LocalData[T] {
     data(globalIndex)
   }
 
-  def rawData: Seq[Seq[T]] = {
-    data.values.toSeq
+  def rawData: Array[Seq[T]] = {
+    data.values.toArray
   }
 
   def isLocal(globalIndex: Int): Boolean = {

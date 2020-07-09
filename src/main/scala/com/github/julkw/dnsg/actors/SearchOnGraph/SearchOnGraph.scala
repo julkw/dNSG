@@ -6,7 +6,7 @@ import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{Coordinatio
 import com.github.julkw.dnsg.actors.SearchOnGraph.SOGInfo.{GetLocation, GetNeighbors}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{SearchOnGraphEvent, SearchOnGraphInfo}
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, SortedCheckedNodes}
-import com.github.julkw.dnsg.util.Data.CacheData
+import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, WaitingOnLocation}
 
 
@@ -35,7 +35,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
                        processedIndex: Int,
                        potentialNewCandidates: Seq[Int],
                        nodeLocator: NodeLocator[SearchOnGraphEvent],
-                       data: CacheData[Float],
+                       data: LocalData[Float],
                        toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Unit = {
     val oldCandidates = queryInfo.candidates
     val processedCandidate = oldCandidates.find(query => query.index == processedIndex)

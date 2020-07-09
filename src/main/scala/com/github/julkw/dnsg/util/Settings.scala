@@ -38,8 +38,6 @@ case class Settings(config: Config) {
 
   val dataReplication: String = config.getString(s"$namespace.data-replication")
 
-  val cacheSize: Int = config.getInt(s"$namespace.cache-size")
-
   // this is defined over the number of ints/floats that can be send in one message. It does not take into account any Boxing overhead though
   val maxMessageSize: Int = config.getInt(s"$namespace.max-message-size")
 
@@ -58,7 +56,6 @@ case class Settings(config: Config) {
     ctx.log.info("maxReverseNeighbors: {}", maxReverseNeighborsNSG)
     ctx.log.info("lines: {}", lines)
     ctx.log.info("maxMessageSize: {}", maxMessageSize)
-    ctx.log.info("cacheSize: {}", cacheSize)
     ctx.log.info("data redistribution option: {}", dataRedistribution)
     ctx.log.info("data replication strategy: {}", dataReplication)
   }
