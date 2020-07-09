@@ -191,6 +191,8 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
             updatedReplications = updatedReplicatedNodes * numWorkers
           }
           ctx.log.info("{} nodes replicated, overall {} replications", updatedReplicatedNodes, updatedReplications)
+          // TODO on cluster with onlyParentsRedistribution not all nodes got the new data and with AllSharedRedistribution they all got the data but did not continue working
+          // TODO figure our why
           nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! ShareRedistributionAssignments(replicationModel))
           waitForRedistribution(connectorCoordinator, finishedWorkers = 0)
         } else {

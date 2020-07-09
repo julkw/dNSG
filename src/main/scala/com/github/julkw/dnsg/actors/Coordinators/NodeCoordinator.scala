@@ -78,7 +78,8 @@ class NodeCoordinator(settings: Settings,
       assert(data.localDataSize > 0)
       ctx.log.info("Successfully loaded data of size: {}", data.localDataSize)
       // distribute data to SearchOnGraphActors
-      val responsibilities = data.localIndices.grouped(data.localDataSize / settings.workers)
+      // round up (+ 1 because division by int automatically rounds down)
+      val responsibilities = data.localIndices.grouped(1 + data.localDataSize / settings.workers)
       val localGraphHolders = responsibilities.zipWithIndex.map { case (responsibility, index) =>
         val sog = ctx.spawn(SearchOnGraphActor(clusterCoordinator, nodeLocatorHolder), name = "SearchOnGraphActor" + index.toString)
         sog ! InitializeGraph(responsibility, graphSize, data)

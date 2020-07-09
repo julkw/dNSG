@@ -22,6 +22,7 @@ object NNDInfo {
 
 case class NNDInfo() {
   import NNDInfo._
+  // TODO use arrays instead (preallocate memory) to hopefully increase efficiency?
   val messagesToSend: mutable.Queue[NNDescentEvent] = mutable.Queue.empty
   var sendImmediately: Boolean = false
 
