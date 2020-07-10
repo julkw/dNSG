@@ -171,13 +171,13 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
           isLocal(primaryAssignments.findResponsibleActor(nodeIndex)) ||
             secondaryAssignments.getOrElse(nodeIndex, Set.empty).exists(worker => isLocal(worker))
         }
-        val toSend = data.localIndices.groupBy(index => primaryAssignments.findResponsibleActor(index))
+        val workerAssignments = data.localIndices.groupBy(index => primaryAssignments.findResponsibleActor(index))
         val sendToDHs = dataHolders.map { dataHolder =>
-          val correspondingWorkers = toSend.keys.filter(actor => actor.path.root == dataHolder.path.root)
+          val correspondingWorkers = workerAssignments.keys.filter(actor => actor.path.root == dataHolder.path.root)
           val sendToDH = correspondingWorkers.flatMap { worker =>
-            toSend(worker) ++ secondaryAssignments.keys.filter ( index => data.isLocal(index) && secondaryAssignments(index).contains(worker))
+            workerAssignments(worker) ++ secondaryAssignments.keys.filter ( index => data.isLocal(index) && secondaryAssignments(index).contains(worker))
           }
-          dataHolder -> sendToDH.toSeq
+          dataHolder -> sendToDH.toSet.toSeq
         }.toMap
         sendToDHs.keys.foreach(dataHolder => dataHolder ! PrepareForRedistributedData(ctx.self))
         val dataMessageSize = maxMessageSize / data.dimension
@@ -230,7 +230,6 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
             redistributeData(oldData, newData, expectedNewData, toSend - sender, allDataSize, dataMessageSize, dataHolders)
           }
         } else {
-          sender ! PartialRedistributedData(Map.empty, ctx.self)
           redistributeData(oldData, newData, expectedNewData, toSend, allDataSize, dataMessageSize, dataHolders)
         }
 
