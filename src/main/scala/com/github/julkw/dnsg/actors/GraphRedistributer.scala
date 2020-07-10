@@ -270,7 +270,6 @@ class GraphRedistributer(data: LocalData[Float],
         toSend.valuesIterator.exists(_._1.nonEmpty)) {
       distributeUsingTree(distributionTree, nodeLocator, toSend, sendPrimaryAssignments = true)
     } else {
-      ctx.log.info("Done with primary assignments, prepare for finding secondary ones")
       nodeLocatorHolder ! LocalPrimaryNodeAssignments(distributionTree.transform((_, distInfo) => distInfo.assignedWorker.get))
       val toSendForParents = toSend.transform( (_, _) => (Seq.empty, true))
       findSecondaryAssignments(distributionTree, Map.empty, nodeLocator, toSendForParents)
@@ -308,7 +307,6 @@ class GraphRedistributer(data: LocalData[Float],
 
   def startDistribution(distributionTree: Map[Int, DistributionTreeInfo],
                         nodeLocator: NodeLocator[RedistributionEvent]): Behavior[RedistributionEvent] = {
-    ctx.log.info("Finished calculating SubtreeSizes for every node, start assigning workers")
     distributionTree.valuesIterator.foreach(nodeInfo => nodeInfo.stillToDistribute = nodeInfo.subTreeSize)
     val toSend: Map[ActorRef[RedistributionEvent], (Seq[(ActorRef[SearchOnGraphEvent], Int)], Boolean)] = nodeLocator.allActors.map(actor => actor -> (Seq.empty, true)).toMap
     distributeUsingTree(distributionTree, nodeLocator, toSend, sendPrimaryAssignments = false)

@@ -245,8 +245,10 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         ctx.log.info("Told to redistribute graph")
         val nodesExpected = primaryAssignments.numberOfNodes(ctx.self) +
           secondaryAssignments.valuesIterator.count(assignees => assignees.contains(ctx.self))
+        val localSecondaryAssignments = secondaryAssignments.keys.toSet.intersect(graph.keys.toSet)
+        ctx.log.info("{} of my nodes have secondary assignments", localSecondaryAssignments.size)
         val toSend = graph.keys.groupBy(index => primaryAssignments.findResponsibleActor(index)).transform { (worker, nodes) =>
-          val alsoSend = secondaryAssignments.keys.filter(node => graph.contains(node) && secondaryAssignments(node).contains(worker))
+          val alsoSend = localSecondaryAssignments.filter(node => secondaryAssignments(node).contains(worker))
           (nodes ++ alsoSend).toSeq
         }
         val graphMessageSize = settings.maxMessageSize / (settings.k + 1)
@@ -345,6 +347,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
     val everythingSent = !toSend.valuesIterator.exists(_.nonEmpty)
     if (newGraph.size == nodesExpected && dataUpdated && everythingSent) {
       redistributionCoordinator ! DoneWithRedistribution
+      ctx.log.info("Sent and received everything")
       val searchToSend = nodeLocator.allActors.map(worker => worker -> new SOGInfo).toMap
       searchOnGraph(newGraph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1, searchToSend)
     } else {
