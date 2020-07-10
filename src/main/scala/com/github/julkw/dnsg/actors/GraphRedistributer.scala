@@ -22,8 +22,7 @@ object GraphRedistributer {
 
   // Search for nodes to assign
   // TODO what if the waitingList grows too big? (Not likely but not impossible especially on big datasets)
-  // TODO workersLeft to List with workers on same node following each other to improve nodewide locality?
-  final case class FindNodesInRange(g_node: Int, minNodes: Int, maxNodes: Int, removeFromDescendants: Int, waitingList: Seq[WaitingListEntry], workersLeft: Set[ActorRef[SearchOnGraphEvent]], nodesLeft: Int) extends RedistributionEvent
+  final case class FindNodesInRange(g_node: Int, minNodes: Int, maxNodes: Int, removeFromDescendants: Int, waitingList: Seq[WaitingListEntry], workersLeft: Seq[ActorRef[SearchOnGraphEvent]], nodesLeft: Int) extends RedistributionEvent
 
   final case class GetLocationForRedistribution(index: Int, sender: ActorRef[RedistributionEvent]) extends RedistributionEvent
 
@@ -132,7 +131,8 @@ class GraphRedistributer(data: LocalData[Float],
         }
         if (rootNodeDone >= 0) {
           // all subtree sizes have been calculated, start assigning workers
-          startSearchForNextWorkersNodes(rootNodeDone, removeDescendants = 0, nodeLocator.graphSize, workers, nodeLocator)
+          val sortedWorkers = workers.groupBy(worker => worker.path.address.host).values.flatten.toSeq
+          startSearchForNextWorkersNodes(rootNodeDone, removeDescendants = 0, nodeLocator.graphSize, sortedWorkers, nodeLocator)
           startDistribution(distributionTree, nodeLocator)
         } else {
           sender ! GetChildSubtreeSizes(ctx.self)
@@ -178,7 +178,7 @@ class GraphRedistributer(data: LocalData[Float],
           val worker = workersLeft.head
           val updatedWaitingList = waitingList :+ myEntry
           val updatedToSend = assignNodesToWorker(updatedWaitingList, worker, nodeLocator, toSend)
-          startSearchForNextWorkersNodes(parent, treeNode.subTreeSize, nodesLeft - withMe, workersLeft - worker, nodeLocator)
+          startSearchForNextWorkersNodes(parent, treeNode.subTreeSize, nodesLeft - withMe, workersLeft.slice(1, workersLeft.length), nodeLocator)
           distributeUsingTree(distributionTree, nodeLocator, updatedToSend, sendPrimaryAssignments)
         } else if (optimalRedistribution && waitingList.nonEmpty) {
           // ask for locations of the potential next nodes to continue search so we can choose the closest one to the ones already in the waitingList
@@ -226,7 +226,7 @@ class GraphRedistributer(data: LocalData[Float],
                                  minNodes: Int,
                                  maxNodes: Int,
                                  waitingList: Seq[WaitingListEntry],
-                                 workersLeft: Set[ActorRef[SearchOnGraphEvent]],
+                                 workersLeft: Seq[ActorRef[SearchOnGraphEvent]],
                                  nodesLeft: Int,
                                  distributionTree: Map[Int, DistributionTreeInfo],
                                  nodeLocator: NodeLocator[RedistributionEvent],
@@ -327,7 +327,7 @@ class GraphRedistributer(data: LocalData[Float],
   def startSearchForNextWorkersNodes(nextNodeInSearch: Int,
                                      removeDescendants: Int,
                                      nodesToDistribute: Int,
-                                     workersLeft: Set[ActorRef[SearchOnGraphEvent]],
+                                     workersLeft: Seq[ActorRef[SearchOnGraphEvent]],
                                      nodeLocator: NodeLocator[RedistributionEvent]): Unit = {
     if (workersLeft.isEmpty) {
       ctx.log.info("All workers assigned their roots")
