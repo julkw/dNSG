@@ -22,6 +22,7 @@ object GraphRedistributer {
 
   // Search for nodes to assign
   // TODO what if the waitingList grows too big? (Not likely but not impossible especially on big datasets)
+  // TODO workersLeft to List with workers on same node following each other to improve nodewide locality?
   final case class FindNodesInRange(g_node: Int, minNodes: Int, maxNodes: Int, removeFromDescendants: Int, waitingList: Seq[WaitingListEntry], workersLeft: Set[ActorRef[SearchOnGraphEvent]], nodesLeft: Int) extends RedistributionEvent
 
   final case class GetLocationForRedistribution(index: Int, sender: ActorRef[RedistributionEvent]) extends RedistributionEvent

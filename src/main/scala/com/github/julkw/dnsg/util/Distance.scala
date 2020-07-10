@@ -8,8 +8,6 @@ trait Distance {
     pointX.indices.foreach { index =>
       sum += pow(pointX(index).toDouble - pointY(index).toDouble, 2)
     }
-    val result = sqrt(sum)
-    result
-    //sqrt((pointX zip pointY).map { case (x,y) => pow(y - x, 2) }.sum)
+    sqrt(sum)
   }
 }

@@ -170,33 +170,30 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
         if (waitingOn == 1) {
           ctx.log.info("Done with assigning parents, now collecting secondary assignments")
           redistributerLocator.allActors.foreach ( redistributer => redistributer ! SendSecondaryAssignments)
-          waitForSecondaryAssignments(connectorCoordinator, replicatedNodesSum = 0, replicationsSum = 0, numWorkers, nodeLocatorHolders.size)
+          waitForSecondaryAssignments(connectorCoordinator, numWorkers, nodeLocatorHolders.size)
         } else {
           waitForParentsToBeAssigned(connectorCoordinator, initialAssignmentsToSend, waitingOn - 1, numWorkers, redistributerLocator)
         }
     }
 
   def waitForSecondaryAssignments(connectorCoordinator: ActorRef[ConnectionCoordinationEvent],
-                                  replicatedNodesSum: Int,
-                                  replicationsSum: Int,
                                   numWorkers: Int,
                                   waitingOn: Int): Behavior[RedistributionCoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case SecondaryAssignmentsDone(replicatedNodes, replications) =>
-        val updatedReplicatedNodes = replicatedNodesSum + replicatedNodes
-        var updatedReplications = replicationsSum + replications
+        ctx.log.info("Node locator collected secondary assignments for {} nodes, still waiting on {} nls", replicatedNodes, waitingOn - 1)
         if (waitingOn == 1) {
           ctx.log.info("Calculated secondary redistribution assignments")
-          if (replicationModel == AllSharedReplication) {
-            updatedReplications = updatedReplicatedNodes * numWorkers
-          }
-          ctx.log.info("{} nodes replicated, overall {} replications", updatedReplicatedNodes, updatedReplications)
+          val updatedReplications = if (replicationModel == AllSharedReplication) {
+            replicatedNodes * numWorkers
+          } else { replications }
+          ctx.log.info("{} nodes replicated, overall {} replications", replicatedNodes, updatedReplications)
           // TODO on cluster with onlyParentsRedistribution not all nodes got the new data and with AllSharedRedistribution they all got the data but did not continue working
           // TODO figure our why
           nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! ShareRedistributionAssignments(replicationModel))
           waitForRedistribution(connectorCoordinator, finishedWorkers = 0)
         } else {
-          waitForSecondaryAssignments(connectorCoordinator, updatedReplicatedNodes, updatedReplications, numWorkers, waitingOn - 1)
+          waitForSecondaryAssignments(connectorCoordinator, numWorkers, waitingOn - 1)
         }
     }
 
