@@ -309,7 +309,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
     Behaviors.receiveMessagePartial {
       case UpdatedLocalData(newData) =>
         ctx.log.info("Received updated data")
-        checkIfRedistributionDone(toSend, oldGraph, nodeLocator, newGraph, nodesExpected, graphMessageSize, newData, dataUpdated = true, redistributionCoordinator)
+        checkIfRedistributionDone(toSend, oldGraph, nodeLocator, newGraph, nodesExpected, graphMessageSize, newData, true, redistributionCoordinator)
 
       case PartialGraph(partialGraph, sender, moreToSend) =>
         val updatedGraph = newGraph ++ partialGraph
@@ -346,8 +346,8 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                                 redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]): Behavior[SearchOnGraphEvent] = {
     val everythingSent = !toSend.valuesIterator.exists(_.nonEmpty)
     if (newGraph.size == nodesExpected && dataUpdated && everythingSent) {
-      redistributionCoordinator ! DoneWithRedistribution
       ctx.log.info("Sent and received everything")
+      redistributionCoordinator ! DoneWithRedistribution
       val searchToSend = nodeLocator.allActors.map(worker => worker -> new SOGInfo).toMap
       searchOnGraph(newGraph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1, searchToSend)
     } else {
