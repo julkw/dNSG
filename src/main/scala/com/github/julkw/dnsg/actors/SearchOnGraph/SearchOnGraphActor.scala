@@ -309,12 +309,10 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                         redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial {
       case UpdatedLocalData(newData) =>
-        ctx.log.info("Received updated data")
         checkIfRedistributionDone(toSend, oldGraph, nodeLocator, newGraph, nodesExpected, graphMessageSize, newData, true, redistributionCoordinator)
 
       case PartialGraph(partialGraph, sender, moreToSend) =>
         val updatedGraph = newGraph ++ partialGraph
-        ctx.log.info("Received {} nodes (more: {}), now have {} nodes of {}", partialGraph.size, moreToSend, updatedGraph.size, nodesExpected)
         if (moreToSend) {
           // else this was the last piece of graph from this actor
           sender ! SendPartialGraph(ctx.self)

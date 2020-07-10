@@ -181,15 +181,12 @@ class GraphRedistributionCoordinator(navigatingNodeIndex: Int,
                                   waitingOn: Int): Behavior[RedistributionCoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case SecondaryAssignmentsDone(replicatedNodes, replications) =>
-        ctx.log.info("Node locator collected secondary assignments for {} nodes, still waiting on {} nls", replicatedNodes, waitingOn - 1)
         if (waitingOn == 1) {
           ctx.log.info("Calculated secondary redistribution assignments")
           val updatedReplications = if (replicationModel == AllSharedReplication) {
             replicatedNodes * numWorkers
           } else { replications }
           ctx.log.info("{} nodes replicated, overall {} replications", replicatedNodes, updatedReplications)
-          // TODO on cluster with onlyParentsRedistribution not all nodes got the new data and with AllSharedRedistribution they all got the data but did not continue working
-          // TODO figure our why
           nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! ShareRedistributionAssignments(replicationModel))
           waitForRedistribution(connectorCoordinator, finishedWorkers = 0)
         } else {
