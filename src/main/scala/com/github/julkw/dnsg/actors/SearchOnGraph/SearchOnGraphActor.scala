@@ -242,7 +242,6 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case RedistributeGraph(primaryAssignments, secondaryAssignments, redistributionCoordinator) =>
         // if a worker is the primary assignee for a graph_node it should not appear with the secondary assignees
-        ctx.log.info("Told to redistribute graph")
         val nodesExpected = primaryAssignments.numberOfNodes(ctx.self) +
           secondaryAssignments.valuesIterator.count(assignees => assignees.contains(ctx.self))
         val localSecondaryAssignments = secondaryAssignments.keys.toSet.intersect(graph.keys.toSet)
@@ -309,11 +308,12 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                         redistributionCoordinator: ActorRef[RedistributionCoordinationEvent]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial {
       case UpdatedLocalData(newData) =>
+        ctx.log.info("Received updated data")
         checkIfRedistributionDone(toSend, oldGraph, nodeLocator, newGraph, nodesExpected, graphMessageSize, newData, dataUpdated = true, redistributionCoordinator)
 
       case PartialGraph(partialGraph, sender, moreToSend) =>
         val updatedGraph = newGraph ++ partialGraph
-        ctx.log.info("Received {} nodes of {}", updatedGraph.size, nodesExpected)
+        ctx.log.info("Received {} nodes (more: {}), now have {} nodes of {}", partialGraph.size, moreToSend, updatedGraph.size, nodesExpected)
         if (moreToSend) {
           // else this was the last piece of graph from this actor
           sender ! SendPartialGraph(ctx.self)
@@ -330,7 +330,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           checkIfRedistributionDone(updatedToSend, oldGraph, nodeLocator, newGraph, nodesExpected, graphMessageSize, data, dataUpdated, redistributionCoordinator)
         } else {
           // none of my nodes have been assigned to this specific actor
-          sender ! PartialGraph(Seq.empty, ctx.self, moreToSend = false)
+          //sender ! PartialGraph(Seq.empty, ctx.self, moreToSend = false)
           checkIfRedistributionDone(toSend, oldGraph, nodeLocator, newGraph, nodesExpected, graphMessageSize, data, dataUpdated, redistributionCoordinator)
         }
   }
