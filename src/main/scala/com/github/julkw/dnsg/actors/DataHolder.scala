@@ -3,8 +3,9 @@ package com.github.julkw.dnsg.actors
 import akka.actor.typed.ActorRef
 import akka.actor.typed.Behavior
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{AverageValue, CoordinationEvent, DataSize, GraphWrittenToFile, TestQueries}
+import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{AverageValue, CoordinationEvent, DataSize, GraphWrittenToFile}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{DataRef, NodeCoordinationEvent}
+import com.github.julkw.dnsg.actors.Coordinators.TestingCoordinator.{TestQueries, TestingEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{SearchOnGraphEvent, SendGraphForFile}
 import com.github.julkw.dnsg.util.Data.{LocalData, LocalSequentialData, LocalUnorderedData}
 import com.github.julkw.dnsg.util.{FileInteractor, LocalityCheck, NodeLocator, Settings, dNSGSerializable}
@@ -41,7 +42,7 @@ object DataHolder {
 
   final case class LocalAverage(value: Seq[Float], elementsUsed: Int) extends LoadDataEvent
 
-  final case class ReadTestQueries(queryFile: String, resultFile: String, replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
+  final case class ReadTestQueries(queryFile: String, resultFile: String, replyTo: ActorRef[TestingEvent]) extends LoadDataEvent
 
   final case class SaveGraphToFile(filename: String, graphHolders: Set[ActorRef[SearchOnGraphEvent]], graphSize: Int, navigatingNode: Option[Int], replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 

@@ -48,6 +48,10 @@ case class Settings(config: Config) {
 
   val lines: Int = config.getInt(s"$namespace.query-testing.lines")
 
+  val candidateQueueIncreaseBy: Int = config.getInt(s"$namespace.query-testing.candidate-queue-increase-by")
+
+  val candidateQueueIncreaseTimes: Int = config.getInt(s"$namespace.query-testing.candidate-queue-increases")
+
   def printSettings(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]): Unit = {
     ctx.log.info("k: {}", k)
     ctx.log.info("workers: {}", workers)
