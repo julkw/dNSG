@@ -68,44 +68,43 @@ class KnngWorker(data: LocalData[Float],
   def setup(): Behavior[BuildKNNGEvent] = {
     localNodeLocatorHolder ! KnngWorkerGotGraphFrom(parent, ctx.self)
     val myNodes = graphNodeLocator.nodesOf(parent)
-    val queries = myNodes.map(index => data.get(index) -> index).toMap
+    val queries = myNodes.map(index => (data.get(index), index))
     // ask for one neighbor too many in case the node itself ends up in the result set
     // send all requests at once since this is a local message and therefore not limited in size
     val sendWithDist = true
-    parent ! FindNearestNeighbors(queries.keys.toSeq, settings.preNNDescentK + 1, coordinationEventAdapter, sendWithDist, false)
-    buildInitialGraph(queries, NNDGraph(settings.k, myNodes, settings.maxReverseNeighborsNND), None)
+    parent ! FindNearestNeighbors(queries, settings.preNNDescentK + 1, coordinationEventAdapter, sendWithDist, false)
+    buildInitialGraph(myNodes.toSet, NNDGraph(settings.k, myNodes, settings.maxReverseNeighborsNND), None)
   }
 
-  def buildInitialGraph(queries: Map[Array[Float], Int], graph: NNDGraph, nodeLocator: Option[NodeLocator[BuildKNNGEvent]]): Behavior[BuildKNNGEvent] = Behaviors.receiveMessagePartial {
+  def buildInitialGraph(waitingOnNodes: Set[Int], graph: NNDGraph, nodeLocator: Option[NodeLocator[BuildKNNGEvent]]): Behavior[BuildKNNGEvent] = Behaviors.receiveMessagePartial {
     case WrappedCoordinationEvent(event) =>
       event match {
-        case KNearestNeighborsWithDist(query, neighbors) =>
-          val node = queries(query)
+        case KNearestNeighborsWithDist(node, neighbors) =>
           val selfIn = if (neighbors.head._1 == node) { 1 } else { 0 }
           graph.insertInitial(node, neighbors.slice(selfIn, settings.k + selfIn))
-          if (queries.size == 1 && nodeLocator.isDefined) {
+          if (waitingOnNodes.size == 1 && nodeLocator.isDefined) {
             clusterCoordinator ! FinishedApproximateGraph(ctx.self)
             waitForNNDescent(nodeLocator.get, graph)
           } else {
-            buildInitialGraph(queries - query, graph, nodeLocator)
+            buildInitialGraph(waitingOnNodes - node, graph, nodeLocator)
           }
       }
 
     case KnngWorkerNodeLocator(newNodeLocator) =>
-      if (queries.isEmpty) {
+      if (waitingOnNodes.isEmpty) {
         clusterCoordinator ! FinishedApproximateGraph(ctx.self)
         waitForNNDescent(newNodeLocator, graph)
       } else {
-        buildInitialGraph(queries, graph, Some(newNodeLocator))
+        buildInitialGraph(waitingOnNodes, graph, Some(newNodeLocator))
       }
 
     case StartNNDescent =>
       ctx.self ! StartNNDescent
-      buildInitialGraph(queries, graph, nodeLocator)
+      buildInitialGraph(waitingOnNodes, graph, nodeLocator)
 
     case GetNNDescentInfo(sender) =>
       ctx.self ! GetNNDescentInfo(sender)
-      buildInitialGraph(queries, graph, nodeLocator)
+      buildInitialGraph(waitingOnNodes, graph, nodeLocator)
   }
 
   def waitForNNDescent(nodeLocator: NodeLocator[BuildKNNGEvent],

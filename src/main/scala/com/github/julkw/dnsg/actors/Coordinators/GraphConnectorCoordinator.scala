@@ -89,12 +89,12 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
 
       case UnconnectedNode(nodeIndex, nodeData) =>
         graphNodeLocator.findResponsibleActor(nodeIndex) !
-          FindNearestNeighborsStartingFrom(Seq(nodeData), navigatingNodeIndex, candidateQueueSize, coordinationEventAdapter, false)
+          FindNearestNeighborsStartingFrom(Seq((nodeData, nodeIndex)), navigatingNodeIndex, candidateQueueSize, coordinationEventAdapter, false)
         connectGraph(connectorLocator, graphConnectors, waitOnNodeAck, nodeIndex, allConnected)
 
       case WrappedCoordinationEvent(event) =>
         event match {
-          case KNearestNeighbors(query, neighbors) =>
+          case KNearestNeighbors(queryId, neighbors) =>
             // the only query being asked for is to connect unconnected nodes
             assert(latestUnconnectedNodeIndex >= 0)
             assert(neighbors.head != latestUnconnectedNodeIndex)

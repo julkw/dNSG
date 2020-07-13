@@ -41,9 +41,9 @@ object SearchOnGraphActor {
   final case class UpdatedLocalData(data: LocalData[Float]) extends  SearchOnGraphEvent
 
   // queries
-  final case class FindNearestNeighbors(queries: Seq[Array[Float]], k: Int, asker: ActorRef[CoordinationEvent], sendWithDist: Boolean, moreQueries: Boolean) extends SearchOnGraphEvent
+  final case class FindNearestNeighbors(queries: Seq[(Array[Float], Int)], k: Int, asker: ActorRef[CoordinationEvent], sendWithDist: Boolean, moreQueries: Boolean) extends SearchOnGraphEvent
 
-  final case class FindNearestNeighborsStartingFrom(queries: Seq[Array[Float]], startingPoint: Int,  k: Int, asker: ActorRef[CoordinationEvent], moreQueries: Boolean) extends SearchOnGraphEvent
+  final case class FindNearestNeighborsStartingFrom(queries: Seq[(Array[Float], Int)], startingPoint: Int,  k: Int, asker: ActorRef[CoordinationEvent], moreQueries: Boolean) extends SearchOnGraphEvent
 
   final case class CheckedNodesOnSearch(queries: Seq[Int], startingPoint: Int, k: Int, asker: ActorRef[BuildNSGEvent], moreQueries: Boolean) extends SearchOnGraphEvent
 
@@ -115,7 +115,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                     data: LocalData[Float],
                     nodeLocator: NodeLocator[SearchOnGraphEvent],
                     neighborQueries: Map[Int, QueryInfo],
-                    respondTo: Map[Int, ActorRef[CoordinationEvent]],
+                    respondTo: Map[Int, (ActorRef[CoordinationEvent], Int)],
                     lastIdUsed: Int,
                     toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial {
@@ -125,7 +125,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         }
         var lastQueryId = lastIdUsed
         // choose node to start search from local nodes
-        val newQueries = queries.map { query =>
+        val newQueries = queries.map { case (query, _) =>
           val queryId = lastQueryId + 1
           // initialize candidate pool with random nodes
           // ensure at least one of the initial candidates is local & since the node itself will probably end up in the solution return k + 1
@@ -144,7 +144,9 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           (queryId, queryInfo)
         }
         sendMessagesImmediately(toSend)
-        val newRespondTo = newQueries.map { case (queryId, _) => (queryId, asker) }
+        val newRespondTo = newQueries.map(_._1).zip(queries.map(_._2)).map { case (localQueryId, senderQueryId) =>
+          localQueryId -> (asker, senderQueryId)
+        }
         searchOnGraph(graph, data, nodeLocator, neighborQueries ++ newQueries, respondTo ++ newRespondTo, lastQueryId, toSend)
 
       case FindNearestNeighborsStartingFrom(queries, startingPoint, k, asker, moreQueries) =>
@@ -152,7 +154,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           asker ! GetMoreQueries(ctx.self)
         }
         var lastQueryId = lastIdUsed
-        val newQueries = queries.map { query =>
+        val newQueries = queries.map { case (query, _) =>
           val queryId = lastQueryId + 1
           lastQueryId = queryId
           if (data.isLocal(startingPoint)) {
@@ -164,8 +166,10 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           }
         }
         sendMessagesImmediately(toSend)
-        val newRespondTo = respondTo ++ newQueries.map { case (queryId, _) => (queryId, asker) }
-        searchOnGraph(graph, data, nodeLocator, neighborQueries ++ newQueries, newRespondTo, lastQueryId, toSend)
+        val newRespondTo = newQueries.map(_._1).zip(queries.map(_._2)).map { case (localQueryId, senderQueryId) =>
+          localQueryId -> (asker, senderQueryId)
+        }
+        searchOnGraph(graph, data, nodeLocator, neighborQueries ++ newQueries, respondTo ++ newRespondTo, lastQueryId, toSend)
 
       case GetSearchOnGraphInfo(sender) =>
         if (toSend(sender).nonEmpty) {
@@ -283,7 +287,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                             data: LocalData[Float],
                             nodeLocator: NodeLocator[SearchOnGraphEvent],
                             neighborQueries: Map[Int, QueryInfo],
-                            respondTo: Map[Int, ActorRef[CoordinationEvent]],
+                            respondTo: Map[Int, (ActorRef[CoordinationEvent], Int)],
                             lastIdUsed: Int,
                             sogToSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial {

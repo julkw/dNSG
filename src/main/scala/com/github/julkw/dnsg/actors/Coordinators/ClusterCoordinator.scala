@@ -48,9 +48,9 @@ object ClusterCoordinator {
 
   final case class GetMoreQueries(sender: ActorRef[SearchOnGraphEvent]) extends CoordinationEvent
 
-  final case class KNearestNeighbors(query: Array[Float], neighbors: Seq[Int]) extends CoordinationEvent
+  final case class KNearestNeighbors(queryId: Int, neighbors: Seq[Int]) extends CoordinationEvent
 
-  final case class KNearestNeighborsWithDist(query: Array[Float], neighbors: Seq[(Int, Double)]) extends CoordinationEvent
+  final case class KNearestNeighborsWithDist(queryId: Int, neighbors: Seq[(Int, Double)]) extends CoordinationEvent
 
   final case class InitialNSGDone(nsgMergers: ActorRef[MergeNSGEvent]) extends CoordinationEvent
 
@@ -247,10 +247,10 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       case AverageValue(value) =>
         ctx.log.info("Received average value, now looking for Navigating Node")
         // find navigating Node, start from random
-        nodeLocator.allActors.head ! FindNearestNeighbors(Seq(value), settings.candidateQueueSizeKnng, ctx.self, false, false)
+        nodeLocator.allActors.head ! FindNearestNeighbors(Seq((value, 0)), settings.candidateQueueSizeKnng, ctx.self, false, false)
         findNavigatingNode(nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders)
 
-      case KNearestNeighbors(query, neighbors) =>
+      case KNearestNeighbors(queryId, neighbors) =>
         // Right now the only query being asked for is the NavigationNode, so that has been found
         val navigatingNode = neighbors.head
         ctx.log.info("The navigating node has the index: {}", navigatingNode)
@@ -373,18 +373,19 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       case TestQueries(testQueries) =>
         val neighborsExpectedPerQuery = testQueries.head._2.length
         ctx.log.info("Testing {} queries. Perfect answer would be {} correct nearest neighbors found.", testQueries.size, testQueries.size * neighborsExpectedPerQuery)
-        val maxQueriesToAskFor = settings.maxMessageSize / testQueries.head._1.length
-        val newToSend = testQueries.map(_._1).groupBy( query => nodeLocator.findResponsibleActor(query)).transform { (actor, queries) =>
+        val maxQueriesToAskFor = 1 + settings.maxMessageSize / testQueries.head._1.length
+        val newToSend = testQueries.map(_._1).zipWithIndex.groupBy( query => nodeLocator.findResponsibleActor(query._1)).transform { (actor, queries) =>
           val queriesToAskForNow = queries.slice(0, maxQueriesToAskFor)
           val queriesToAskForLater = queries.slice(maxQueriesToAskFor, queries.length)
           // TODO do as parameter for candidate queue size instead? Was that how they effected precision?
           actor ! FindNearestNeighborsStartingFrom(queriesToAskForNow, navigatingNodeIndex, neighborsExpectedPerQuery, ctx.self, queriesToAskForLater.nonEmpty)
           queriesToAskForLater
         }
+        val queryResults = testQueries.indices.zip(testQueries.map(_._2))
         testNSG(navigatingNodeIndex,
           nodeLocator,
           nodeCoordinators,
-          testQueries.toMap,
+          queryResults.toMap,
           newToSend,
           maxQueriesToAskFor,
           sumOfExactNeighborFound = 0,
@@ -395,8 +396,8 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
     def testNSG(navigatingNodeIndex: Int,
                 nodeLocator: QueryNodeLocator[SearchOnGraphEvent],
                 nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
-                queries: Map[Array[Float], Seq[Int]],
-                toSend: Map[ActorRef[SearchOnGraphEvent], Seq[Array[Float]]],
+                queries: Map[Int, Seq[Int]],
+                toSend: Map[ActorRef[SearchOnGraphEvent], Seq[(Array[Float], Int)]],
                 maxQueriesToAskFor: Int,
                 sumOfExactNeighborFound: Int,
                 sumOfNeighborsFound: Int,
@@ -410,9 +411,8 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
           val updatedToSend = toSend + (sender -> toSendLater)
           testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, queries, updatedToSend, maxQueriesToAskFor, sumOfExactNeighborFound, sumOfNeighborsFound, sumOfNearestNeighbors)
 
-        case KNearestNeighbors(query, neighbors) =>
-          ctx.log.info("Got results, still waiting on {}", queries.size - 1)
-          val correctNeighborIndices = queries(query)
+        case KNearestNeighbors(queryId, neighbors) =>
+          val correctNeighborIndices = queries(queryId)
           val newSum = sumOfNeighborsFound + correctNeighborIndices.intersect(neighbors).length
           val firstNearestNeighborFound = if (neighbors.head == correctNeighborIndices.head) { 1 } else { 0 }
           //ctx.log.info("Still waiting on {} queries: {}", queries.size - 1)
@@ -422,7 +422,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
             ctx.log.info("Precision: {}", newSum.toFloat / sumOfNearestNeighbors.toFloat)
             shutdown(nodeCoordinators)
           } else {
-            testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, queries - query, toSend, maxQueriesToAskFor, sumOfExactNeighborFound + firstNearestNeighborFound, newSum, sumOfNearestNeighbors)
+            testNSG(navigatingNodeIndex, nodeLocator, nodeCoordinators, queries - queryId, toSend, maxQueriesToAskFor, sumOfExactNeighborFound + firstNearestNeighborFound, newSum, sumOfNearestNeighbors)
           }
       }
 

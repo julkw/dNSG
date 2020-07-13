@@ -176,13 +176,13 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
     queryInfo.candidates.foreach(candidate => responseLocations.removedFromCandidateList(candidate.index))
   }
 
-  def sendKNNResults(queryInfo: QueryInfo, sendResults: ActorRef[CoordinationEvent]): Unit = {
+  def sendKNNResults(queryInfo: QueryInfo, sendResults: (ActorRef[CoordinationEvent], Int)): Unit = {
     if (queryInfo.sendWithDist) {
       val finalNeighbors = queryInfo.candidates.map(qi => (qi.index, qi.distance))
-      sendResults ! KNearestNeighborsWithDist(queryInfo.query, finalNeighbors)
+      sendResults._1 ! KNearestNeighborsWithDist(sendResults._2, finalNeighbors)
     } else {
       val finalNeighbors = queryInfo.candidates.map(_.index)
-      sendResults ! KNearestNeighbors(queryInfo.query, finalNeighbors)
+      sendResults._1 ! KNearestNeighbors(sendResults._2, finalNeighbors)
     }
   }
 
