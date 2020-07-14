@@ -289,7 +289,7 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
     }
 
   def calculatePartitionInfo(dataSize: Int, dataHolders: Set[ActorRef[LoadDataEvent]]): Map[ActorRef[LoadDataEvent], (Int, Int)] = {
-    val dataPerNode = math.ceil(dataSize / dataHolders.size).toInt
+    val dataPerNode = math.ceil(dataSize.toDouble / dataHolders.size.toDouble).toInt
     var index = 0
     val partitionInfo = dataHolders.map { dataHolder =>
       val offset = index * dataPerNode
