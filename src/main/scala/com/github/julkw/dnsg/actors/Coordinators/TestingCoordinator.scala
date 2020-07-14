@@ -88,7 +88,7 @@ class TestingCoordinator(settings: Settings,
             val toSendTo = toSend(sender)
             val toSendNow = toSendTo.slice(0, maxQueriesToAskFor)
             val toSendLater = toSendTo.slice(maxQueriesToAskFor, toSend.size)
-            sender !  FindNearestNeighborsStartingFrom(toSendNow, navigatingNodeIndex, toSend.head._2.length, coordinationAdapter, toSendLater.nonEmpty)
+            sender !  FindNearestNeighborsStartingFrom(toSendNow, navigatingNodeIndex, candidateQueueSizes.head, coordinationAdapter, toSendLater.nonEmpty)
             val updatedToSend = toSend + (sender -> toSendLater)
             testNSG(queries, queryResults, updatedToSend, maxQueriesToAskFor, sumOfExactNeighborFound, sumOfNeighborsFound, sumOfNearestNeighbors, candidateQueueSizes)
 
