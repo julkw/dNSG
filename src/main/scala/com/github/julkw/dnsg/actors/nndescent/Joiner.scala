@@ -31,7 +31,7 @@ abstract class Joiner(maxIterations: Int, data: LocalData[Float]) extends Distan
                  toSend: NNDescentMessageBuffer,
                  nodeLocator: NodeLocator[BuildKNNGEvent]): Unit = {
     val dist = euclideanDist(n1Location, n2Location)
-    if (joiningNode > 0) {
+    if (joiningNode >= 0) {
       toSend.addNodeMessage(PotentialNeighbor(n1Index, n2Index, dist, iteration), nodeLocator.findResponsibleActor(n1Index), joiningNode)
       toSend.addNodeMessage(PotentialNeighbor(n2Index, n1Index, dist, iteration), nodeLocator.findResponsibleActor(n2Index), joiningNode)
     } else {
