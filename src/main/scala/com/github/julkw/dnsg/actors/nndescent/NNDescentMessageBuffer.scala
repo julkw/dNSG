@@ -38,8 +38,6 @@ case class NNDescentMessageBuffer(localGraphNodes: Array[Int], workers: Set[Acto
     messageBuffers(receiver).perNodeMessages(responsibleNode) += message
   }
 
-  // Child classes can also implement a removeNodeMessage function
-
   def nonEmpty(worker: ActorRef[BuildKNNGEvent]): Boolean = {
     messageBuffers(worker).nodeIndependentMessages.nonEmpty || messageBuffers(worker).perNodeMessages.values.exists(_.nonEmpty)
   }
@@ -88,8 +86,8 @@ case class NNDescentMessageBuffer(localGraphNodes: Array[Int], workers: Set[Acto
       } else {
         Seq.empty
       }
-    }
-  }.toSeq
+    }.toSeq
+  }
 
   protected def messageSize(message: NNDescentEvent): Int = {
     message match {
