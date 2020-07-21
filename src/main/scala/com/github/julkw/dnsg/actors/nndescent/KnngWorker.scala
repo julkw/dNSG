@@ -5,7 +5,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConfirmFinishedNNDescent, CoordinationEvent, CorrectFinishedNNDescent, FinishedApproximateGraph, FinishedNNDescent, KNearestNeighborsWithDist}
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.{KnngWorkerGotGraphFrom, NodeLocationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, GraphAndData, SearchOnGraphEvent}
-import com.github.julkw.dnsg.actors.nndescent.NNDInfo.{AddReverseNeighbor, JoinNodes, NNDescentEvent, PotentialNeighbor, PotentialNeighborLocation, RemoveReverseNeighbor, SendLocation}
+import com.github.julkw.dnsg.actors.nndescent.NNDescentMessageBuffer.{AddReverseNeighbor, JoinNodes, NNDescentEvent, PotentialNeighbor, PotentialNeighborLocation, RemoveReverseNeighbor, SendLocation}
 import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util.{NodeLocator, Settings, WaitingOnLocation, dNSGSerializable}
 
@@ -31,8 +31,6 @@ object KnngWorker {
   final case class GetNNDescentInfo(sender: ActorRef[BuildKNNGEvent]) extends BuildKNNGEvent
 
   final case class NNDescentInfo(info: collection.Seq[NNDescentEvent], sender: ActorRef[BuildKNNGEvent]) extends BuildKNNGEvent
-
-  final case class NoNewInfo(sender: ActorRef[BuildKNNGEvent]) extends BuildKNNGEvent
 
   final case object GetNNDescentFinishedConfirmation extends BuildKNNGEvent
 
@@ -73,7 +71,7 @@ class KnngWorker(data: LocalData[Float],
     // send all requests at once since this is a local message and therefore not limited in size
     val sendWithDist = true
     parent ! FindNearestNeighbors(queries, settings.preNNDescentK + 1, coordinationEventAdapter, sendWithDist, false)
-    buildInitialGraph(myNodes.toSet, NNDGraph(settings.k, myNodes, settings.maxReverseNeighborsNND), None)
+    buildInitialGraph(myNodes.toSet, NNDGraph(settings.k, myNodes.toArray, settings.maxReverseNeighborsNND), None)
   }
 
   def buildInitialGraph(waitingOnNodes: Set[Int], graph: NNDGraph, nodeLocator: Option[NodeLocator[BuildKNNGEvent]]): Behavior[BuildKNNGEvent] = Behaviors.receiveMessagePartial {
@@ -112,8 +110,8 @@ class KnngWorker(data: LocalData[Float],
     case StartNNDescent =>
       startNNDescent(nodeLocator, graph)
 
-    case GetNNDescentInfo(sender) =>
-      ctx.self ! GetNNDescentInfo(sender)
+    case NNDescentInfo(info, sender) =>
+      ctx.self ! NNDescentInfo(info, sender)
       startNNDescent(nodeLocator, graph)
   }
 
@@ -124,13 +122,12 @@ class KnngWorker(data: LocalData[Float],
       // do the initial local joins through messages to self to prevent Heartbeat problems
       ctx.self ! CompleteLocalJoin(g_node)
     }
-    nodeLocator.allActors.foreach(worker => worker ! GetNNDescentInfo(ctx.self))
-    val toSend = nodeLocator.allActors.map(worker => worker -> new NNDInfo).toMap
+    val toSend = NNDescentMessageBuffer(graph.nodes, nodeLocator.allActors)
     // add reverse neighbors
     graph.nodes.foreach { g_node =>
       graph.getNeighbors(g_node).foreach { neighbor =>
         val responsibleNeighbor = nodeLocator.findResponsibleActor(neighbor)
-        toSend(responsibleNeighbor).addMessage(AddReverseNeighbor(neighbor, g_node, 0))
+        toSend.addNodeMessage(AddReverseNeighbor(neighbor, g_node, 0), responsibleNeighbor, g_node)
       }
     }
     nnDescent(nodeLocator, graph, toSend, Set.empty, saidImDone = false)
@@ -138,7 +135,7 @@ class KnngWorker(data: LocalData[Float],
 
   def nnDescent(nodeLocator: NodeLocator[BuildKNNGEvent],
                 graph: NNDGraph,
-                toSend: Map[ActorRef[BuildKNNGEvent], NNDInfo],
+                toSend: NNDescentMessageBuffer,
                 mightBeDone: Set[ActorRef[BuildKNNGEvent]],
                 saidImDone: Boolean): Behavior[BuildKNNGEvent] =
     Behaviors.receiveMessagePartial {
@@ -149,64 +146,62 @@ class KnngWorker(data: LocalData[Float],
       case CompleteLocalJoin(g_node) =>
         // prevent timeouts in the initial phase of graph nnDescent
         val neighbors = graph.getNeighbors(g_node)
-        joinNeighbors(neighbors, iteration = 1, toSend, nodeLocator)
+        joinNeighbors(neighbors, iteration = 1, g_node, toSend, nodeLocator)
+        sendChangesImmediately(toSend, nodeLocator)
         nnDescent(nodeLocator, graph, toSend, mightBeDone, saidImDone)
 
       case GetNNDescentInfo(sender) =>
-        val messagesToSend = toSend(sender).sendMessage(settings.maxMessageSize)
-        if (messagesToSend.nonEmpty) {
-          sender ! NNDescentInfo(messagesToSend, ctx.self)
-          nnDescent(nodeLocator, graph, toSend, mightBeDone, saidImDone)
-        } else {
-          sender ! NoNewInfo(ctx.self)
-          toSend(sender).sendImmediately = true
-          val probablyDone = checkIfDone(mightBeDone, nodeLocator, toSend, saidImDone)
-          nnDescent(nodeLocator, graph, toSend, mightBeDone, probablyDone)
-        }
-
-      case NoNewInfo(sender) =>
-        val mightBeDoneWorkers = mightBeDone + sender
-        val probablyDone = checkIfDone(mightBeDoneWorkers, nodeLocator, toSend, saidImDone)
-        nnDescent(nodeLocator, graph, toSend, mightBeDoneWorkers, probablyDone)
+        val messagesToSend = toSend.messageTo(sender, settings.maxMessageSize)
+        sender ! NNDescentInfo(messagesToSend, ctx.self)
+        val probablyDone = if (messagesToSend.isEmpty) {
+          checkIfDone(mightBeDone, nodeLocator, toSend, saidImDone)
+        } else { saidImDone }
+        nnDescent(nodeLocator, graph, toSend, mightBeDone, probablyDone)
 
       case NNDescentInfo(info, sender) =>
-        if (saidImDone) {
-          clusterCoordinator ! CorrectFinishedNNDescent(ctx.self)
+        if (info.isEmpty) {
+          val mightBeDoneWorkers = mightBeDone + sender
+          val probablyDone = checkIfDone(mightBeDoneWorkers, nodeLocator, toSend, saidImDone)
+          nnDescent(nodeLocator, graph, toSend, mightBeDoneWorkers, probablyDone)
+        } else {
+          if (saidImDone) {
+            clusterCoordinator ! CorrectFinishedNNDescent(ctx.self)
+          }
+          info.foreach {
+            case JoinNodes(g_node, potentialNeighbor, iteration) =>
+              if (data.isLocal(potentialNeighbor)) {
+                val neighborData = data.get(potentialNeighbor)
+                joinLocals(g_node, data.get(g_node), potentialNeighbor, neighborData, iteration, joiningNode = -1, toSend, nodeLocator)
+              }
+              else {
+                sendForLocation(nodeLocator, potentialNeighbor, (g_node, iteration), toSend)
+              }
+
+            case SendLocation(g_node) =>
+              toSend.addNodeIndependentMessage(PotentialNeighborLocation(g_node, data.get(g_node)), sender)
+
+            case PotentialNeighborLocation(potentialNeighborIndex, location) =>
+              waitingOnLocation.received(potentialNeighborIndex).foreach { case (g_node, iteration) =>
+                joinLocals(g_node, data.get(g_node), potentialNeighborIndex, location, iteration, joiningNode = -1, toSend, nodeLocator)
+              }
+
+            case PotentialNeighbor(g_node, potentialNeighbor, distance, iteration) =>
+              handlePotentialNeighbor(g_node, potentialNeighbor, distance, iteration, graph, toSend, nodeLocator)
+
+            case AddReverseNeighbor(g_node, newNeighbor, iteration) =>
+              // if new and not already a neighbor, introduce to all current neighbors
+              graph.addReverseNeighbor(g_node, newNeighbor)
+              if (!graph.getNeighbors(g_node).contains(newNeighbor)) {
+                joinNode(newNeighbor, graph.getNeighbors(g_node), graph.getReversedNeighbors(g_node), iteration, g_node, toSend, nodeLocator)
+              }
+
+            case RemoveReverseNeighbor(g_nodeIndex, neighborIndex) =>
+              graph.removeReverseNeighbor(g_nodeIndex, neighborIndex, toSend)
+          }
+          sender ! GetNNDescentInfo(ctx.self)
+          sendChangesImmediately(toSend, nodeLocator)
+          nnDescent(nodeLocator, graph, toSend, mightBeDone - sender, saidImDone = false)
         }
-        info.foreach {
-          case JoinNodes(g_node, potentialNeighbor, iteration) =>
-            if (data.isLocal(potentialNeighbor)) {
-              val neighborData = data.get(potentialNeighbor)
-              joinLocals(g_node, data.get(g_node), potentialNeighbor, neighborData, iteration, toSend, nodeLocator)
-            }
-            else {
-              sendForLocation(nodeLocator, potentialNeighbor, (g_node, iteration), toSend)
-            }
-
-          case SendLocation(g_node) =>
-            toSend(sender).addMessage(PotentialNeighborLocation(g_node, data.get(g_node)))
-
-          case PotentialNeighborLocation(potentialNeighborIndex, location) =>
-            waitingOnLocation.received(potentialNeighborIndex).foreach { case (g_node, iteration) =>
-              joinLocals(g_node, data.get(g_node), potentialNeighborIndex, location, iteration, toSend, nodeLocator)
-            }
-
-          case PotentialNeighbor(g_node, potentialNeighbor, distance, iteration) =>
-            handlePotentialNeighbor(g_node, potentialNeighbor, distance, iteration, graph, toSend, nodeLocator)
-
-          case AddReverseNeighbor(g_nodeIndex, newNeighbor, iteration) =>
-            // if new and not already a neighbor, introduce to all current neighbors
-            graph.addReverseNeighbor(g_nodeIndex, newNeighbor)
-            if (!graph.getNeighbors(g_nodeIndex).contains(newNeighbor)) {
-              joinNode(newNeighbor, graph.getNeighbors(g_nodeIndex), graph.getReversedNeighbors(g_nodeIndex), iteration, toSend, nodeLocator)
-            }
-
-          case RemoveReverseNeighbor(g_nodeIndex, neighborIndex) =>
-            graph.removeReverseNeighbor(g_nodeIndex, neighborIndex)
-        }
-        sender ! GetNNDescentInfo(ctx.self)
-        sendChangesImmediately(toSend)
-        nnDescent(nodeLocator, graph, toSend, mightBeDone - sender, saidImDone = false)
 
       case GetNNDescentFinishedConfirmation =>
         if (saidImDone) {
@@ -235,58 +230,38 @@ class KnngWorker(data: LocalData[Float],
                               distance: Double,
                               iteration: Int,
                               graph: NNDGraph,
-                              toSend: Map[ActorRef[BuildKNNGEvent], NNDInfo],
+                              toSend: NNDescentMessageBuffer,
                               nodeLocator: NodeLocator[BuildKNNGEvent]): Unit = {
     val isNeighbor = graph.insert(g_node, potentialNeighbor, distance, iteration, toSend, nodeLocator)
     if (isNeighbor) {
-      joinNode(potentialNeighbor, graph.getNeighbors(g_node), graph.getReversedNeighbors(g_node), iteration, toSend, nodeLocator)
-//=======
-//                              nodeLocator: NodeLocator[BuildKNNGEvent]): Map[Int, Seq[NeighborWithDist]] = {
-//    val currentNeighbors = graph(g_node)
-//    val currentReverseNeighbors = reverseNeighbors(g_node)
-//    val currentMaxDist = currentNeighbors.last.distance
-//    val isNew: Boolean = !currentNeighbors.exists(neighbor => neighbor.index == potentialNeighbor.index)
-//    if (currentMaxDist > potentialNeighbor.distance && potentialNeighbor.index != g_node && isNew) {
-//      if (!currentReverseNeighbors.map(_.index).contains(potentialNeighbor.index)) {
-//        joinNewNeighbor(currentNeighbors.slice(0, settings.k-1).map(n => Neighbor(n.index, n.iteration)), currentReverseNeighbors, Neighbor(potentialNeighbor.index, potentialNeighbor.iteration), toSend, nodeLocator)
-//      }
-//      val removedNeighbor = currentNeighbors.last.index
-//      val responsibleActor = nodeLocator.findResponsibleActor(removedNeighbor)
-//      toSend(responsibleActor).addMessage(RemoveReverseNeighbor(removedNeighbor, g_node))
-//      val position = currentNeighbors.indexWhere { oldNeighbor => oldNeighbor.distance > potentialNeighbor.distance}
-//      val updatedNeighbors = (currentNeighbors.slice(0, position) :+ potentialNeighbor) ++ currentNeighbors.slice(position, settings.k - 1)
-//      graph + (g_node -> updatedNeighbors)
-//    } else {
-//      graph
-//>>>>>>> removeCache
+      joinNode(potentialNeighbor, graph.getNeighbors(g_node), graph.getReversedNeighbors(g_node), iteration, g_node, toSend, nodeLocator)
     }
   }
 
-  def sendForLocation(nodeLocator: NodeLocator[BuildKNNGEvent], remoteIndex: Int, waitingNode: (Int, Int), toSend: Map[ActorRef[BuildKNNGEvent], NNDInfo]): Unit = {
+  def sendForLocation(nodeLocator: NodeLocator[BuildKNNGEvent], remoteIndex: Int, waitingNode: (Int, Int), toSend: NNDescentMessageBuffer): Unit = {
     val sendForLocation = waitingOnLocation.insert(remoteIndex, waitingNode)
     if (sendForLocation) {
-      toSend(nodeLocator.findResponsibleActor(remoteIndex)).addMessage(SendLocation(remoteIndex))
+      toSend.addNodeIndependentMessage(SendLocation(remoteIndex), nodeLocator.findResponsibleActor(remoteIndex))
     }
   }
 
-  def sendChangesImmediately(toSend: Map[ActorRef[BuildKNNGEvent], NNDInfo]): Unit = {
-    toSend.foreach { case (worker, nndInfo) =>
-      if (nndInfo.sendImmediately && nndInfo.nonEmpty) {
-        val messageToSend = nndInfo.sendMessage(settings.maxMessageSize)
+  def sendChangesImmediately(toSend: NNDescentMessageBuffer, nodeLocator: NodeLocator[BuildKNNGEvent]): Unit = {
+    nodeLocator.allActors.foreach { worker =>
+      if (toSend.sendImmediately(worker) && toSend.nonEmpty(worker)) {
+        val messageToSend = toSend.messageTo(worker, settings.maxMessageSize)
         worker ! NNDescentInfo(messageToSend, ctx.self)
-        nndInfo.sendImmediately = false
       }
     }
   }
 
   def checkIfDone(mightBeDoneWorkers: Set[ActorRef[BuildKNNGEvent]],
                   nodeLocator: NodeLocator[BuildKNNGEvent],
-                  toSend: Map[ActorRef[BuildKNNGEvent], NNDInfo],
+                  toSend: NNDescentMessageBuffer,
                   alreadySaidImDone: Boolean): Boolean = {
     if (alreadySaidImDone) {
       true
     } else {
-      val probablyDone = nodeLocator.allActors.size == mightBeDoneWorkers.size && toSend.forall(toSendTo => toSendTo._2.isEmpty)
+      val probablyDone = nodeLocator.allActors.size == mightBeDoneWorkers.size && toSend.nothingToSend
       if (probablyDone) {
         clusterCoordinator ! FinishedNNDescent(ctx.self)
       }

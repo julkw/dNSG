@@ -1,13 +1,12 @@
 package com.github.julkw.dnsg.actors.nndescent
 
-import akka.actor.typed.ActorRef
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker.BuildKNNGEvent
-import com.github.julkw.dnsg.actors.nndescent.NNDInfo.{AddReverseNeighbor, RemoveReverseNeighbor}
+import com.github.julkw.dnsg.actors.nndescent.NNDescentMessageBuffer.{AddReverseNeighbor, RemoveReverseNeighbor}
 import com.github.julkw.dnsg.util.{Distance, NodeLocator}
 
 import scala.collection.{IndexedSeqView, mutable}
 
-case class NNDGraph(k: Int, nodes: Seq[Int], maxReverseNeighbors: Int) extends Distance {
+case class NNDGraph(k: Int, nodes: Array[Int], maxReverseNeighbors: Int) extends Distance {
   case class GraphNode(neighbors: Array[Int], var numberOfNeighbors: Int, distances: mutable.PriorityQueue[(Double, Int)], var reverseNeighbors: Set[Int])
 
   val graph: Map[Int, GraphNode] = nodes.map {index =>
@@ -27,7 +26,7 @@ case class NNDGraph(k: Int, nodes: Seq[Int], maxReverseNeighbors: Int) extends D
              neighbor: Int,
              distance: Double,
              iteration: Int,
-             toSend: Map[ActorRef[BuildKNNGEvent], NNDInfo],
+             toSend: NNDescentMessageBuffer,
              nodeLocator: NodeLocator[BuildKNNGEvent]): Boolean = {
     val node = graph(graphNode)
     if (node.distances.head._1 <= distance || node.neighbors.contains(neighbor)) {
@@ -36,7 +35,8 @@ case class NNDGraph(k: Int, nodes: Seq[Int], maxReverseNeighbors: Int) extends D
       if (node.numberOfNeighbors >= k) {
         val neighborIndex = node.distances.dequeue()._2
         val replacedNeighbor = node.neighbors(neighborIndex)
-        toSend(nodeLocator.findResponsibleActor(replacedNeighbor)).addMessage(RemoveReverseNeighbor(replacedNeighbor, graphNode))
+        toSend.addNodeMessage(RemoveReverseNeighbor(replacedNeighbor, graphNode), nodeLocator.findResponsibleActor(replacedNeighbor), graphNode)
+        toSend.removeNodeMessages(graphNode, replacedNeighbor)
         node.neighbors(neighborIndex) = neighbor
         node.distances.addOne((distance, neighborIndex))
       } else {
@@ -44,7 +44,7 @@ case class NNDGraph(k: Int, nodes: Seq[Int], maxReverseNeighbors: Int) extends D
         node.distances.addOne((distance, node.numberOfNeighbors))
         node.numberOfNeighbors += 1
       }
-      toSend(nodeLocator.findResponsibleActor(neighbor)).addMessage(AddReverseNeighbor(neighbor, graphNode, iteration))
+      toSend.addNodeMessage(AddReverseNeighbor(neighbor, graphNode, iteration), nodeLocator.findResponsibleActor(neighbor), graphNode)
       true
     }
   }
@@ -58,7 +58,10 @@ case class NNDGraph(k: Int, nodes: Seq[Int], maxReverseNeighbors: Int) extends D
     }
   }
 
-  def removeReverseNeighbor(node: Int, neighbor: Int): Unit = {
+  def removeReverseNeighbor(node: Int, neighbor: Int, toSend: NNDescentMessageBuffer): Unit = {
+    if (graph(node).reverseNeighbors.contains(neighbor)) {
+      toSend.removeNodeMessages(node, neighbor)
+    }
     graph(node).reverseNeighbors -= neighbor
   }
 
