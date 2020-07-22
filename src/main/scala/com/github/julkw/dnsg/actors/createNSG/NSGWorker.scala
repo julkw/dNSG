@@ -22,15 +22,11 @@ object NSGWorker {
 
   def apply(data: LocalData[Float],
             navigatingNode: Int,
-            candidateQueueSize: Int,
-            maxReverseNeighbors: Int,
             nodeLocator: NodeLocator[SearchOnGraphEvent],
             nsgMerger: ActorRef[MergeNSGEvent]): Behavior[BuildNSGEvent] = Behaviors.setup { ctx =>
-    Behaviors.setup { ctx =>
       val settings = Settings(ctx.system.settings.config)
       new NSGWorker(data, navigatingNode, settings, nodeLocator, nsgMerger, ctx).setup()
     }
-  }
 }
 
 class NSGWorker(data: LocalData[Float],

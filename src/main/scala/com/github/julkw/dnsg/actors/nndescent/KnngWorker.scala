@@ -164,6 +164,7 @@ class KnngWorker(data: LocalData[Float],
           val probablyDone = checkIfDone(mightBeDoneWorkers, nodeLocator, toSend, saidImDone)
           nnDescent(nodeLocator, graph, toSend, mightBeDoneWorkers, probablyDone)
         } else {
+          ctx.log.info("got nnDescent info")
           if (saidImDone) {
             clusterCoordinator ! CorrectFinishedNNDescent(ctx.self)
           }
