@@ -16,7 +16,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
                              maxNSGCandidates: Int,
                              ctx: ActorContext[SearchOnGraphActor.SearchOnGraphEvent]) extends Distance {
   // data type for more readable code
-  protected case class QueryCandidate(index: Int, distance: Double, var processed: Boolean)
+  protected case class QueryCandidate(index: Int, distance: Double, var processed: Boolean, var currentlyProcessing: Boolean)
   // also refactor to remove vars?
   protected case class QueryInfo(query: Array[Float], neighborsWanted: Int, var candidates: Seq[QueryCandidate], var waitingOn: Int, sendWithDist: Boolean = false)
 
@@ -49,7 +49,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
         val (localCandidates, remoteCandidates) = potentialNewCandidates.diff(currentCandidateIndices).partition(potentialCandidate => data.isLocal(potentialCandidate))
         val newCandidates = localCandidates.map { candidateIndex =>
             val location = data.get(candidateIndex)
-            QueryCandidate(candidateIndex, euclideanDist(queryInfo.query, location), processed = false)
+            QueryCandidate(candidateIndex, euclideanDist(queryInfo.query, location), processed = false, currentlyProcessing = false)
           }
         // candidates for which we don't have the location have to ask for it first
         remoteCandidates.foreach(remoteNeighbor => queryInfo.waitingOn += askForLocation(remoteNeighbor, queryId, nodeLocator, toSend))
@@ -84,7 +84,7 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
         val newCandidates = localCandidates.map { candidateIndex =>
             val location = responseLocations.location(candidateIndex)
             responseLocations.addedToCandidateList(candidateIndex, location)
-            QueryCandidate(candidateIndex, euclideanDist(queryInfo.query, location), processed = false)
+            QueryCandidate(candidateIndex, euclideanDist(queryInfo.query, location), processed = false, currentlyProcessing = false)
           }
         // candidates for which we don't have the location have to ask for it first
         remoteCandidates.foreach(remoteCandidate => queryInfo.waitingOn += askForLocation(remoteCandidate, queryId, nodeLocator, toSend))
@@ -112,8 +112,8 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
                       nodeLocator: NodeLocator[SearchOnGraphEvent],
                       toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Unit = {
     // in case of data replication the actor should check if it has the required information itself before asking the primary assignee
-    val askForNeighbors = waitingOnNeighbors.insert(node, queryId)
-    if (askForNeighbors) {
+    val haveToAsk = waitingOnNeighbors.insert(node, queryId)
+    if (haveToAsk) {
       if (graph.contains(node)) {
         toSend(ctx.self).addMessage(GetNeighbors(node))
       } else {
@@ -147,7 +147,6 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
                    toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Boolean = {
     // return if this means the query is finished
     val currentCandidates = queryInfo.candidates
-    val allProcessed = !currentCandidates.exists(_.processed == false)
     val dist = euclideanDist(queryInfo.query, candidateLocation)
     val closeEnough =
       if (currentCandidates.length >= queryInfo.neighborsWanted) {
@@ -157,15 +156,12 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
     val usableCandidate = closeEnough && !currentCandidates.exists(candidate => candidate.index == candidateId)
     if (usableCandidate) {
       // update candidates
-      val updatedCandidates = (currentCandidates :+ QueryCandidate(candidateId, dist, processed=false)).sortBy(candidate => candidate.distance)
+      // TODO instead of sorting find correct place to insert into the list
+      val updatedCandidates = (currentCandidates :+ QueryCandidate(candidateId, dist, processed=false, currentlyProcessing = false)).sortBy(candidate => candidate.distance)
       queryInfo.candidates = updatedCandidates
-      // If all other candidates have already been processed, the new now needs to be processed
-      if (allProcessed) {
-        askForNeighbors(candidateId, queryId, graph, nodeLocator, toSend)
-      }
     }
     // return if the query is finished
-    allProcessed && queryInfo.waitingOn == 0 && !usableCandidate
+    queryInfo.candidates.forall(_.processed == true) && queryInfo.waitingOn == 0
   }
 
   def sendPathResults(queryId: Int, queryInfo: QueryInfo, responseLocations: QueryResponseLocations[Float], respondTo: ActorRef[BuildNSGEvent]): Unit = {
