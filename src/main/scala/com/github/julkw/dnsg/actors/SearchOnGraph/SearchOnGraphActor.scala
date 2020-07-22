@@ -376,11 +376,11 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         val newQueries = endPoints.map { endPoint =>
           val query = data.get(endPoint)
           val queryId = endPoint
+          ctx.self ! ProcessNextCandidate(queryId)
           // starting point is navigating node, so as of yet not always local
           val pathQueryInfo = if (responseLocations.hasLocation(startingPoint)) {
             val location = responseLocations.location(startingPoint)
             responseLocations.addedToCandidateList(startingPoint, location)
-            ctx.self ! ProcessNextCandidate(queryId)
             QueryInfo(query, neighborsWanted, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false, currentlyProcessing = false)), 0)
           } else {
             val queryInfo = QueryInfo(query, neighborsWanted, Seq.empty, askForLocation(startingPoint, queryId, nodeLocator, toSend))
