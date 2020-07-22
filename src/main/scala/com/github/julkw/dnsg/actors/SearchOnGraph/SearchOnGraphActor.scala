@@ -48,6 +48,8 @@ object SearchOnGraphActor {
   final case class CheckedNodesOnSearch(queries: Seq[Int], startingPoint: Int, k: Int, asker: ActorRef[BuildNSGEvent], moreQueries: Boolean) extends SearchOnGraphEvent
 
   // search
+  final case class ProcessNextCandidate(queryId: Int) extends SearchOnGraphEvent
+
   final case class GetSearchOnGraphInfo(sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
 
   final case class SearchOnGraphInfo(info: collection.Seq[SOGEvent], sender: ActorRef[SearchOnGraphEvent]) extends SearchOnGraphEvent
@@ -133,13 +135,13 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           val (localCandidates, remoteCandidates) = initialCandidates.partition(potentialCandidate => data.isLocal(potentialCandidate))
           val newCandidates = localCandidates.map { candidateIndex =>
             val location = data.get(candidateIndex)
-            QueryCandidate(candidateIndex, euclideanDist(query, location), processed = false)
+            QueryCandidate(candidateIndex, euclideanDist(query, location), processed = false, currentlyProcessing = false)
           }.toSeq.sortBy(_.distance)
           // candidates for which we don't have the location have to ask for it first
           var waitingOn = 0
           remoteCandidates.foreach(remoteNeighbor => waitingOn += askForLocation(remoteNeighbor, queryId, nodeLocator, toSend))
           val queryInfo = QueryInfo(query, k, newCandidates, waitingOn, sendWithDist)
-          askForNeighbors(newCandidates.head.index, queryId, graph, nodeLocator, toSend)
+          ctx.self ! ProcessNextCandidate(queryId)
           lastQueryId = queryId
           (queryId, queryInfo)
         }
@@ -157,10 +159,10 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         val newQueries = queries.map { case (query, _) =>
           val queryId = lastQueryId + 1
           lastQueryId = queryId
+          ctx.self ! ProcessNextCandidate(queryId)
           if (data.isLocal(startingPoint)) {
             val location = data.get(startingPoint)
-            askForNeighbors(startingPoint, queryId, graph, nodeLocator, toSend)
-            (queryId, QueryInfo(query, k, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false)), 0))
+            (queryId, QueryInfo(query, k, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false, currentlyProcessing = false)), 0))
           } else {
             (queryId, QueryInfo(query, k, Seq.empty, askForLocation(startingPoint, queryId, nodeLocator, toSend)))
           }
@@ -181,6 +183,18 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         }
         searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed, toSend)
 
+      case ProcessNextCandidate(queryId) =>
+        if (neighborQueries.contains(queryId)) {
+          val nextToProcess = neighborQueries(queryId).candidates.find(query => !query.processed && !query.currentlyProcessing)
+          if (nextToProcess.isDefined) {
+            nextToProcess.get.currentlyProcessing = true
+            askForNeighbors(nextToProcess.get.index, queryId, graph, nodeLocator, toSend)
+            sendMessagesImmediately(toSend)
+          }
+          ctx.self ! ProcessNextCandidate(queryId)
+        }
+        searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed, toSend)
+
       case SearchOnGraphInfo(info, sender) =>
         sender ! GetSearchOnGraphInfo(ctx.self)
         var updatedNeighborQueries = neighborQueries
@@ -194,16 +208,10 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                 val queryInfo = updatedNeighborQueries(queryId)
                 updateCandidates(queryInfo, queryId, processedIndex, neighbors, nodeLocator, data, toSend)
                 // check if all candidates have been processed
-                val nextCandidateToProcess = queryInfo.candidates.find(query => !query.processed)
-                nextCandidateToProcess match {
-                  case Some(nextCandidate) =>
-                    // find the neighbors of the next candidate to be processed and update queries
-                    askForNeighbors(nextCandidate.index, queryId, graph, nodeLocator, toSend)
-                  case None =>
-                    if (updatedNeighborQueries(queryId).waitingOn == 0) {
-                      sendKNNResults(queryInfo, respondTo(queryId))
-                      updatedNeighborQueries -= queryId
-                    }
+                val allProcessed = queryInfo.candidates.forall(query => query.processed)
+                if (allProcessed && updatedNeighborQueries(queryId).waitingOn == 0) {
+                  sendKNNResults(queryInfo, respondTo(queryId))
+                  updatedNeighborQueries -= queryId
                 }
               }
             }
@@ -368,12 +376,12 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         val newQueries = endPoints.map { endPoint =>
           val query = data.get(endPoint)
           val queryId = endPoint
+          ctx.self ! ProcessNextCandidate(queryId)
           // starting point is navigating node, so as of yet not always local
           val pathQueryInfo = if (responseLocations.hasLocation(startingPoint)) {
             val location = responseLocations.location(startingPoint)
             responseLocations.addedToCandidateList(startingPoint, location)
-            askForNeighbors(startingPoint, queryId, graph, nodeLocator, toSend)
-            QueryInfo(query, neighborsWanted, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false)), 0)
+            QueryInfo(query, neighborsWanted, Seq(QueryCandidate(startingPoint, euclideanDist(location, query), processed = false, currentlyProcessing = false)), 0)
           } else {
             val queryInfo = QueryInfo(query, neighborsWanted, Seq.empty, askForLocation(startingPoint, queryId, nodeLocator, toSend))
             queryInfo
@@ -388,6 +396,18 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
           responseLocations,
           toSend)
 
+      case ProcessNextCandidate(queryId) =>
+        if (pathQueries.contains(queryId)) {
+          val nextToProcess = pathQueries(queryId).candidates.find(query => !query.processed && !query.currentlyProcessing)
+          if (nextToProcess.isDefined) {
+            nextToProcess.get.currentlyProcessing = true
+            askForNeighbors(nextToProcess.get.index, queryId, graph, nodeLocator, toSend)
+            sendMessagesImmediately(toSend)
+          }
+          ctx.self ! ProcessNextCandidate(queryId)
+        }
+        searchOnGraphForNSG(graph, data, nodeLocator, pathQueries, respondTo, responseLocations, toSend)
+
       case GetSearchOnGraphInfo(sender) =>
         if (toSend(sender).nonEmpty) {
           val messagesToSend = toSend(sender).sendMessage(settings.maxMessageSize)
@@ -399,6 +419,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         searchOnGraphForNSG(graph, data, nodeLocator, pathQueries, respondTo, responseLocations, toSend)
 
       case SearchOnGraphInfo(info, sender) =>
+        sender ! GetSearchOnGraphInfo(ctx.self)
         var updatedPathQueries = pathQueries
         info.foreach {
           case GetNeighbors(index) =>
@@ -406,21 +427,15 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
           case Neighbors(processedIndex, neighbors) =>
             waitingOnNeighbors.received(processedIndex).foreach { queryId =>
-              val queryInfo = updatedPathQueries(queryId)
-              updatePathCandidates(queryInfo,  queryId, processedIndex, neighbors, responseLocations, nodeLocator, toSend)
-              // check if all candidates have been processed
-              val nextCandidateToProcess = queryInfo.candidates.find(query => !query.processed)
-              nextCandidateToProcess match {
-                case Some(nextCandidate) =>
-                  // find the neighbors of the next candidate to be processed and update queries
-                  askForNeighbors(nextCandidate.index, queryId, graph, nodeLocator, toSend)
-                case None =>
-                  if (updatedPathQueries(queryId).waitingOn > 0) {
-                    // do nothing for now
-                  } else {
-                    sendPathResults(queryId, queryInfo, responseLocations, respondTo(queryId))
-                    updatedPathQueries -= queryId
-                  }
+              if (updatedPathQueries.contains(queryId)) {
+                val queryInfo = updatedPathQueries(queryId)
+                updatePathCandidates(queryInfo,  queryId, processedIndex, neighbors, responseLocations, nodeLocator, toSend)
+                // check if all candidates have been processed
+                val allProcessed = queryInfo.candidates.forall(query => query.processed)
+                if (allProcessed && queryInfo.waitingOn == 0) {
+                  sendPathResults(queryId, queryInfo, responseLocations, respondTo(queryId))
+                  updatedPathQueries -= queryId
+                }
               }
             }
 
@@ -444,7 +459,6 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
               }
             }
         }
-        sender ! GetSearchOnGraphInfo(ctx.self)
         sendMessagesImmediately(toSend)
         val queriesToRemove = pathQueries.keys.toSet.diff(updatedPathQueries.keys.toSet)
         searchOnGraphForNSG(graph, data, nodeLocator, updatedPathQueries, respondTo -- queriesToRemove, responseLocations, toSend)
