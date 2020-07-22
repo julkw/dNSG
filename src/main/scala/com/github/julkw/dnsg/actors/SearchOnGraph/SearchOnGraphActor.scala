@@ -419,6 +419,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         searchOnGraphForNSG(graph, data, nodeLocator, pathQueries, respondTo, responseLocations, toSend)
 
       case SearchOnGraphInfo(info, sender) =>
+        sender ! GetSearchOnGraphInfo(ctx.self)
         var updatedPathQueries = pathQueries
         info.foreach {
           case GetNeighbors(index) =>
@@ -458,7 +459,6 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
               }
             }
         }
-        sender ! GetSearchOnGraphInfo(ctx.self)
         sendMessagesImmediately(toSend)
         val queriesToRemove = pathQueries.keys.toSet.diff(updatedPathQueries.keys.toSet)
         searchOnGraphForNSG(graph, data, nodeLocator, updatedPathQueries, respondTo -- queriesToRemove, responseLocations, toSend)
