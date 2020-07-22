@@ -165,6 +165,7 @@ class KnngWorker(data: LocalData[Float],
           nnDescent(nodeLocator, graph, toSend, mightBeDoneWorkers, probablyDone)
         } else {
           ctx.log.info("got nnDescent info")
+          sender ! GetNNDescentInfo(ctx.self)
           if (saidImDone) {
             clusterCoordinator ! CorrectFinishedNNDescent(ctx.self)
           }
@@ -199,7 +200,6 @@ class KnngWorker(data: LocalData[Float],
             case RemoveReverseNeighbor(g_nodeIndex, neighborIndex) =>
               graph.removeReverseNeighbor(g_nodeIndex, neighborIndex, toSend)
           }
-          sender ! GetNNDescentInfo(ctx.self)
           sendChangesImmediately(toSend, nodeLocator)
           nnDescent(nodeLocator, graph, toSend, mightBeDone - sender, saidImDone = false)
         }
