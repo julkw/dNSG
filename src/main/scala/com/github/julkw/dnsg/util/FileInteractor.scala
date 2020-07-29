@@ -58,7 +58,7 @@ trait FileInteractor {
     data.foreach { number =>
       if (currentIndex == neighborsStart - 1) {
         neighborsEnd = neighborsStart + number - 1
-        graph += (currentNode -> data.slice(neighborsStart, neighborsEnd).toSeq)
+        graph += (currentNode -> data.slice(neighborsStart, neighborsEnd))
       } else if (currentIndex > neighborsEnd) {
         currentNode = number
         neighborsStart = currentIndex + 2

@@ -18,8 +18,6 @@ case class Settings(config: Config) {
 
   val preNNDescentK: Int = config.getInt(s"$namespace.pre-nndescent-k")
 
-  val nnDescentIterations: Int = config.getInt(s"$namespace.max-nndescent-iterations")
-
   val maxReverseNeighborsNSG: Int= config.getInt(s"$namespace.max-reverse-neighbors-nsg")
 
   val maxReverseNeighborsNND: Int= config.getInt(s"$namespace.max-reverse-neighbors-nndescent")

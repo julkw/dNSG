@@ -25,7 +25,6 @@ case class NNDGraph(k: Int, nodes: Array[Int], maxReverseNeighbors: Int) extends
   def insert(graphNode: Int,
              neighbor: Int,
              distance: Double,
-             iteration: Int,
              toSend: NNDescentMessageBuffer,
              nodeLocator: NodeLocator[BuildKNNGEvent]): Boolean = {
     val node = graph(graphNode)
@@ -44,7 +43,7 @@ case class NNDGraph(k: Int, nodes: Array[Int], maxReverseNeighbors: Int) extends
         node.distances.addOne((distance, node.numberOfNeighbors))
         node.numberOfNeighbors += 1
       }
-      toSend.addNodeMessage(AddReverseNeighbor(neighbor, graphNode, iteration), nodeLocator.findResponsibleActor(neighbor), graphNode)
+      toSend.addNodeMessage(AddReverseNeighbor(neighbor, graphNode), nodeLocator.findResponsibleActor(neighbor), graphNode)
       true
     }
   }

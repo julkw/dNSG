@@ -7,9 +7,9 @@ import scala.collection.mutable
 
 object NNDescentMessageBuffer {
   trait NNDescentEvent
-  final case class PotentialNeighbor(g_node: Int, potentialNeighbor: Int, distance: Double, iteration: Int) extends NNDescentEvent
+  final case class PotentialNeighbor(g_node: Int, potentialNeighbor: Int, distance: Double) extends NNDescentEvent
 
-  final case class JoinNodes(g_node: Int, potentialNeighbor: Int, iteration: Int) extends NNDescentEvent
+  final case class JoinNodes(g_node: Int, potentialNeighbor: Int) extends NNDescentEvent
 
   final case class SendLocation(g_node: Int) extends NNDescentEvent
 
@@ -17,9 +17,8 @@ object NNDescentMessageBuffer {
 
   final case class RemoveReverseNeighbor(g_node: Int, neighborIndex: Int) extends NNDescentEvent
 
-  final case class AddReverseNeighbor(g_node: Int, newNeighbor: Int, iteration: Int) extends NNDescentEvent
+  final case class AddReverseNeighbor(g_node: Int, newNeighbor: Int) extends NNDescentEvent
 }
-
 
 case class NNDescentMessageBuffer(localGraphNodes: Array[Int], workers: Set[ActorRef[BuildKNNGEvent]]) {
   import NNDescentMessageBuffer._
@@ -91,12 +90,12 @@ case class NNDescentMessageBuffer(localGraphNodes: Array[Int], workers: Set[Acto
 
   protected def messageSize(message: NNDescentEvent): Int = {
     message match {
-      case PotentialNeighbor(_, _, _, _) =>
+      case PotentialNeighbor(_, _, _) =>
         4
-      case JoinNodes(_, _, _) =>
-        3
-      case AddReverseNeighbor(_, _, _) =>
-        3
+      case JoinNodes(_, _) =>
+        2
+      case AddReverseNeighbor(_, _) =>
+        2
       case RemoveReverseNeighbor(_, _) =>
         2
       case SendLocation(_) =>
@@ -114,11 +113,11 @@ case class NNDescentMessageBuffer(localGraphNodes: Array[Int], workers: Set[Acto
 
   protected def canBeRemoved(message: NNDescentEvent, removedNeighbor: Int): Boolean = {
     message match {
-      case PotentialNeighbor(g_node, potentialNeighbor, _, _) if (g_node == removedNeighbor || potentialNeighbor == removedNeighbor) =>
+      case PotentialNeighbor(g_node, potentialNeighbor, _) if (g_node == removedNeighbor || potentialNeighbor == removedNeighbor) =>
         true
-      case JoinNodes(g_node, potentialNeighbor, _) if (g_node == removedNeighbor || potentialNeighbor == removedNeighbor) =>
+      case JoinNodes(g_node, potentialNeighbor) if (g_node == removedNeighbor || potentialNeighbor == removedNeighbor) =>
         true
-      case AddReverseNeighbor(g_node, newNeighbor, _) if (g_node == removedNeighbor || newNeighbor == removedNeighbor) =>
+      case AddReverseNeighbor(g_node, newNeighbor) if (g_node == removedNeighbor || newNeighbor == removedNeighbor) =>
         true
       case _ =>
         false
