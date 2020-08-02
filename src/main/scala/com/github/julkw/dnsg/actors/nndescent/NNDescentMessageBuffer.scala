@@ -30,11 +30,15 @@ case class NNDescentMessageBuffer(localGraphNodes: Array[Int], workers: Set[Acto
     worker -> ActorSpecificBuffer(mutable.Queue.empty, localGraphNodes.map(index => index -> mutable.Queue.empty[NNDescentEvent]).toMap, 0, true)
   }.toMap
 
+  var numMessages: Long = 0
+
   def addNodeIndependentMessage(message: NNDescentEvent, receiver: ActorRef[BuildKNNGEvent]): Unit = {
+    numMessages += 1
     messageBuffers(receiver).nodeIndependentMessages += message
   }
 
   def addNodeMessage(message: NNDescentEvent, receiver: ActorRef[BuildKNNGEvent], responsibleNode: Int): Unit = {
+    numMessages += 1
     messageBuffers(receiver).perNodeMessages(responsibleNode) += message
   }
 
@@ -47,7 +51,7 @@ case class NNDescentMessageBuffer(localGraphNodes: Array[Int], workers: Set[Acto
   }
 
   def nothingToSend: Boolean = {
-    messageBuffers.keysIterator.forall(actor => isEmpty(actor))
+    numMessages == 0
   }
 
   def sendImmediately(worker: ActorRef[BuildKNNGEvent]): Boolean = {
@@ -56,25 +60,12 @@ case class NNDescentMessageBuffer(localGraphNodes: Array[Int], workers: Set[Acto
 
   def messageTo(sendTo: ActorRef[BuildKNNGEvent], maxMessageSize: Int): collection.Seq[NNDescentEvent] = {
     val (locationMessages, messageSize) = getMessagesUpTo(maxMessageSize, messageBuffers(sendTo).nodeIndependentMessages)
-    val message = locationMessages  ++ nodeMessage(maxMessageSize - messageSize, messageBuffers(sendTo))
-    messageBuffers(sendTo).sendImmediately = message.isEmpty
-    message
+    val messages = locationMessages ++ nodeMessages(maxMessageSize - messageSize, messageBuffers(sendTo))
+    messageBuffers(sendTo).sendImmediately = messages.isEmpty
+    messages
   }
 
-  protected def getMessagesUpTo(maxMessageSize: Int, messages: mutable.Queue[NNDescentEvent]): (collection.Seq[NNDescentEvent], Int) = {
-    var currentMessageSize = 0
-    val messagesToSend = messages.dequeueWhile { message =>
-      if (currentMessageSize + messageSize(message) > maxMessageSize) {
-        false
-      } else {
-        currentMessageSize += messageSize(message)
-        true
-      }
-    }
-    (messagesToSend, currentMessageSize)
-  }
-
-  protected def nodeMessage(maxMessageSize: Int, actorBuffer: ActorSpecificBuffer): collection.Seq[NNDescentEvent] = {
+  protected def nodeMessages(maxMessageSize: Int, actorBuffer: ActorSpecificBuffer): collection.Seq[NNDescentEvent] = {
     var leftoverMessageSize = maxMessageSize
     val neighborOrder = localGraphNodes.view.slice(actorBuffer.lastNodeSent, localGraphNodes.length) ++ localGraphNodes.view.slice(0, actorBuffer.lastNodeSent)
     neighborOrder.flatMap { index =>
@@ -89,10 +80,24 @@ case class NNDescentMessageBuffer(localGraphNodes: Array[Int], workers: Set[Acto
     }.toSeq
   }
 
+  protected def getMessagesUpTo(maxMessageSize: Int, messages: mutable.Queue[NNDescentEvent]): (collection.Seq[NNDescentEvent], Int) = {
+    var currentMessageSize = 0
+    val messagesToSend = messages.dequeueWhile { message =>
+      if (currentMessageSize + messageSize(message) > maxMessageSize) {
+        false
+      } else {
+        numMessages -= 1
+        currentMessageSize += messageSize(message)
+        true
+      }
+    }
+    (messagesToSend, currentMessageSize)
+  }
+
   protected def messageSize(message: NNDescentEvent): Int = {
     message match {
       case PotentialNeighbor(_, _, _, _) =>
-        4
+        5 // because a double is twice a as big as an int/float
       case JoinNodes(_, _, _) =>
         3
       case AddReverseNeighbor(_, _, _) =>
@@ -108,17 +113,20 @@ case class NNDescentMessageBuffer(localGraphNodes: Array[Int], workers: Set[Acto
 
   def removeNodeMessages(responsibleNode: Int, removedNeighbor: Int): Unit = {
     messageBuffers.valuesIterator.foreach { actorBuffer =>
-      actorBuffer.perNodeMessages(responsibleNode).dequeueAll(message => canBeRemoved(message, removedNeighbor))
+      actorBuffer.perNodeMessages(responsibleNode).dequeueAll(message => canBeRemoved(message, removedNeighbor)).length
     }
   }
 
   protected def canBeRemoved(message: NNDescentEvent, removedNeighbor: Int): Boolean = {
     message match {
       case PotentialNeighbor(g_node, potentialNeighbor, _, _) if (g_node == removedNeighbor || potentialNeighbor == removedNeighbor) =>
+        numMessages -= 1
         true
       case JoinNodes(g_node, potentialNeighbor, _) if (g_node == removedNeighbor || potentialNeighbor == removedNeighbor) =>
+        numMessages -= 1
         true
       case AddReverseNeighbor(g_node, newNeighbor, _) if (g_node == removedNeighbor || newNeighbor == removedNeighbor) =>
+        numMessages -= 1
         true
       case _ =>
         false

@@ -41,7 +41,7 @@ object NodeCoordinator {
 
   protected case object LogMemoryConsumption extends NodeCoordinationEvent
 
-  val timeout = 1.second
+  val timeout = 0.1.second
 
   def apply(): Behavior[NodeCoordinationEvent] = Behaviors.setup { ctx =>
     Behaviors.withTimers { timers =>

@@ -123,6 +123,7 @@ class KnngWorker(data: LocalData[Float],
       ctx.self ! CompleteLocalJoin(g_node)
     }
     val toSend = NNDescentMessageBuffer(graph.nodes, nodeLocator.allActors)
+    logToSendSize(toSend)
     // add reverse neighbors
     graph.nodes.foreach { g_node =>
       graph.getNeighbors(g_node).foreach { neighbor =>
@@ -148,11 +149,13 @@ class KnngWorker(data: LocalData[Float],
         val neighbors = graph.getNeighbors(g_node)
         joinNeighbors(neighbors, iteration = 1, g_node, toSend, nodeLocator)
         sendChangesImmediately(toSend, nodeLocator)
+        logToSendSize(toSend)
         nnDescent(nodeLocator, graph, toSend, mightBeDone, saidImDone)
 
       case GetNNDescentInfo(sender) =>
         val messagesToSend = toSend.messageTo(sender, settings.maxMessageSize)
         sender ! NNDescentInfo(messagesToSend, ctx.self)
+        logToSendSize(toSend)
         val probablyDone = if (messagesToSend.isEmpty) {
           checkIfDone(mightBeDone, nodeLocator, toSend, saidImDone)
         } else { saidImDone }
@@ -165,6 +168,7 @@ class KnngWorker(data: LocalData[Float],
           nnDescent(nodeLocator, graph, toSend, mightBeDoneWorkers, probablyDone)
         } else {
           sender ! GetNNDescentInfo(ctx.self)
+          logToSendSize(toSend)
           if (saidImDone) {
             clusterCoordinator ! CorrectFinishedNNDescent(ctx.self)
           }
@@ -199,6 +203,7 @@ class KnngWorker(data: LocalData[Float],
             case RemoveReverseNeighbor(g_nodeIndex, neighborIndex) =>
               graph.removeReverseNeighbor(g_nodeIndex, neighborIndex, toSend)
           }
+          logToSendSize(toSend)
           sendChangesImmediately(toSend, nodeLocator)
           nnDescent(nodeLocator, graph, toSend, mightBeDone - sender, saidImDone = false)
         }
@@ -252,6 +257,7 @@ class KnngWorker(data: LocalData[Float],
         worker ! NNDescentInfo(messageToSend, ctx.self)
       }
     }
+    logToSendSize(toSend)
   }
 
   def checkIfDone(mightBeDoneWorkers: Set[ActorRef[BuildKNNGEvent]],
@@ -267,6 +273,10 @@ class KnngWorker(data: LocalData[Float],
       }
       probablyDone
     }
+  }
+
+  def logToSendSize(toSend: NNDescentMessageBuffer): Unit = {
+    ctx.log.info("Currently holding {} messages to send later", toSend.numMessages)
   }
 }
 
