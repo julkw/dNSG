@@ -2,7 +2,7 @@ package com.github.julkw.dnsg.actors.createNSG
 
 import akka.actor.typed.receptionist.{Receptionist, ServiceKey}
 import akka.actor.typed.{ActorRef, Behavior}
-import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
+import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, InitialNSGDone}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{PartialNSG, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
@@ -36,10 +36,7 @@ object NSGMerger {
             maxMessageSize: Int,
             nodeLocator: NodeLocator[SearchOnGraphEvent]): Behavior[MergeNSGEvent] = Behaviors.setup { ctx =>
     val listingResponseAdapter = ctx.messageAdapter[Receptionist.Listing](ListingResponse)
-    Behaviors.setup { ctx =>
-      Behaviors.withTimers {timers =>
-        new NSGMerger(supervisor, nodesExpected, maxMessageSize, nodeLocator, timers, ctx).setup(responsibility, listingResponseAdapter)}
-    }
+    new NSGMerger(supervisor, nodesExpected, maxMessageSize, nodeLocator, ctx).setup(responsibility, listingResponseAdapter)
   }
 }
 
@@ -47,7 +44,6 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
                 nodesExpected: Int,
                 maxMessageSize: Int,
                 nodeLocator: NodeLocator[SearchOnGraphEvent],
-                timers: TimerScheduler[MergeNSGEvent],
                 ctx: ActorContext[MergeNSGEvent]) {
   import NSGMerger._
 
