@@ -48,7 +48,7 @@ object NodeLocatorHolder {
 
   final case class ShareRedistributionAssignments(replicationModel: DataReplicationModel) extends NodeLocationEvent
 
-  final case class SendNodeLocatorToNodeCoordinator(navigatingNode: Int) extends NodeLocationEvent
+  final case class SendNodeLocatorToNodeCoordinator(navigatingNode: Int, numberOfNodes: Int) extends NodeLocationEvent
 
   def apply (clusterCoordinator: ActorRef[CoordinationEvent],
              nodeCoordinator: ActorRef[NodeCoordinationEvent],
@@ -163,8 +163,8 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
       case BuildConnectorNodeLocator(connectorCoordinator) =>
         gatherConnectorDistInfo(otherNodeLocatorHolders, nodeLocator, Map.empty, connectorCoordinator)
 
-      case SendNodeLocatorToNodeCoordinator(navigatingNode) =>
-        nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator)
+      case SendNodeLocatorToNodeCoordinator(navigatingNode, numberofNodes) =>
+        nodeCoordinator ! StartBuildingNSG(navigatingNode, nodeLocator, numberofNodes)
         holdSOGNodeLocator(otherNodeLocatorHolders, nodeLocator)
 
       case SendNodeLocatorToClusterCoordinator =>

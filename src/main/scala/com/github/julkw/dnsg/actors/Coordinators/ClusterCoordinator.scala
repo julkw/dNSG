@@ -286,7 +286,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
                dataHolder: ActorRef[LoadDataEvent],
                nodeLocatorHolders: Set[ActorRef[NodeLocationEvent]]): Behavior[CoordinationEvent] = {
     ctx.log.info("Start with NSG")
-    nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! SendNodeLocatorToNodeCoordinator(navigatingNode))
+    nodeLocatorHolders.foreach(nodeLocatorHolder => nodeLocatorHolder ! SendNodeLocatorToNodeCoordinator(navigatingNode, nodeCoordinators.size))
     waitOnNSG(Set.empty, navigatingNode, nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders)
   }
 

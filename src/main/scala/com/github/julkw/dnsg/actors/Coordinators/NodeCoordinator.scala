@@ -29,7 +29,7 @@ object NodeCoordinator {
 
   final case object StartSearchOnGraph extends NodeCoordinationEvent
 
-  final case class StartBuildingNSG(navigatingNode: Int, nodeLocator: NodeLocator[SearchOnGraphEvent]) extends NodeCoordinationEvent
+  final case class StartBuildingNSG(navigatingNode: Int, nodeLocator: NodeLocator[SearchOnGraphEvent], numberOfNodes: Int) extends NodeCoordinationEvent
 
   final case class LocalKnngWorker(worker: ActorRef[BuildKNNGEvent]) extends NodeCoordinationEvent
 
@@ -96,17 +96,18 @@ class NodeCoordinator(settings: Settings,
         localGraphHolders.foreach(graphHolder => graphHolder ! UpdatedLocalData(newData))
         waitForNavigatingNode(newData, localGraphHolders)
 
-      case StartBuildingNSG(navigatingNode, nodeLocator) =>
-        startBuildingNSG(data, localGraphHolders, nodeLocator, navigatingNode)
+      case StartBuildingNSG(navigatingNode, nodeLocator, numberOfNodes) =>
+        startBuildingNSG(data, localGraphHolders, nodeLocator, numberOfNodes, navigatingNode)
     }
 
   def startBuildingNSG(data: LocalData[Float],
                        localGraphHolders: Set[ActorRef[SearchOnGraphEvent]],
                        nodeLocator: NodeLocator[SearchOnGraphEvent],
+                       numberOfNodes: Int,
                        navigatingNode: Int): Behavior[NodeCoordinationEvent] = {
     val responsibilityPerGraphHolder = nodeLocator.actorsResponsibilities()
     val mergerResponsibility = localGraphHolders.flatMap(graphHolder => responsibilityPerGraphHolder(graphHolder))
-    val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, mergerResponsibility.toSeq, settings.nodesExpected, settings.maxMessageSize, nodeLocator), name = "NSGMerger")
+    val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, mergerResponsibility.toSeq, numberOfNodes, settings.maxMessageSize, nodeLocator), name = "NSGMerger")
     var index = 0
     localGraphHolders.foreach { graphHolder =>
       val nsgWorker = ctx.spawn(NSGWorker(data, navigatingNode, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)
