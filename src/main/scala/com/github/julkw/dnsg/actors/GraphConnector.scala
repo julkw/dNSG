@@ -1,7 +1,6 @@
 package com.github.julkw.dnsg.actors
 
-import scala.concurrent.duration._
-import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
+import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{AllConnected, ConnectionCoordinationEvent, ConnectorShutdown, FinishedUpdatingConnectivity, UnconnectedNode}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.RedistributionCoordinationEvent
@@ -32,13 +31,6 @@ object GraphConnector {
 
   final case class StartGraphRedistributers(redistributionCoordinator: ActorRef[RedistributionCoordinationEvent], graphNodeLocator: NodeLocator[SearchOnGraphEvent]) extends ConnectGraphEvent
 
-  // ensure message delivery
-  protected case class ConnectivityInfoTimerKey(receiver: ActorRef[ConnectGraphEvent])
-
-  protected case class ResendConnectivityInfo(infoToResend: ConnectivityInformation, sendTo: ActorRef[ConnectGraphEvent]) extends ConnectGraphEvent
-
-  val timeout = 3.second
-
   // data structures for more readable code
   case class CTreeNode(parent: Int, children: mutable.Set[Int], awaitingAnswer: mutable.Set[Int])
 
@@ -60,7 +52,7 @@ object GraphConnector {
     // three seqs with each element containing two Ints -> limit each seq's size by maxMessageSize/6
     val messageSize = Settings(ctx.system.settings.config).maxMessageSize / 6
     Behaviors.withTimers(timers =>
-      new GraphConnector(data, graph, responsibility, messageSize, timers, supervisor, nodeLocatorHolder, parent, ctx).setup()
+      new GraphConnector(data, graph, responsibility, messageSize, supervisor, nodeLocatorHolder, parent, ctx).setup()
     )
   }
 }
@@ -69,7 +61,6 @@ class GraphConnector(data: LocalData[Float],
                      graph: Map[Int, Seq[Int]],
                      responsibility: Seq[Int],
                      messageSize: Int,
-                     timers: TimerScheduler[GraphConnector.ConnectGraphEvent],
                      supervisor: ActorRef[ConnectionCoordinationEvent],
                      nodeLocatorHolder: ActorRef[NodeLocationEvent],
                      parent: ActorRef[SearchOnGraphEvent],
@@ -122,7 +113,6 @@ class GraphConnector(data: LocalData[Float],
 
       case GetConnectivityInfo(sender) =>
         // the sender only asks for new information if they have received the last one
-        timers.cancel(ConnectivityInfoTimerKey(sender))
         val connectivityInfo = toSend(sender).connectivityInformation
         if (connectivityInfo.nothingToSend()) {
           // send as soon as there is something to send
@@ -247,7 +237,6 @@ class GraphConnector(data: LocalData[Float],
       connectivityInfo.doneChildren.slice(messageSize, connectivityInfo.doneChildren.length)
     )
     sendTo ! ConnectivityInfo(conInfoToSend, ctx.self)
-    timers.startSingleTimer(ConnectivityInfoTimerKey(sendTo), ResendConnectivityInfo(conInfoToSend, sendTo), timeout)
     SendInformation(conInfoRest, sendImmediately = false)
   }
 

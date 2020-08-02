@@ -1,9 +1,11 @@
 package com.github.julkw.dnsg.actors.Coordinators
 
-import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
+import scala.concurrent.duration._
+import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import akka.actor.typed.{ActorRef, Behavior, SupervisorStrategy}
 import akka.cluster.typed.{ClusterSingleton, SingletonActor}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, NodeIntroduction}
+import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.NodeCoordinationEvent
 import com.github.julkw.dnsg.actors.{DataHolder, NodeLocatorHolder}
 import com.github.julkw.dnsg.actors.DataHolder.{LoadDataEvent, LoadDataFromFile}
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.NodeLocationEvent
@@ -12,8 +14,7 @@ import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetNSGFrom
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
 import com.github.julkw.dnsg.actors.createNSG.NSGWorker.Responsibility
-import com.github.julkw.dnsg.actors.nndescent.KnngWorker
-import com.github.julkw.dnsg.actors.nndescent.KnngWorker.{BuildKNNGEvent, MoveGraph}
+import com.github.julkw.dnsg.actors.nndescent.KnngWorker.BuildKNNGEvent
 import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, Settings, dNSGSerializable}
 
@@ -35,22 +36,31 @@ object NodeCoordinator {
 
   final case object AllDone extends NodeCoordinationEvent
 
+  // ensure message delivery
+  protected case object LogMemoryConsumptionKey
+
+  protected case object LogMemoryConsumption extends NodeCoordinationEvent
+
+  val timeout = 1.second
+
   def apply(): Behavior[NodeCoordinationEvent] = Behaviors.setup { ctx =>
-    val settings = Settings(ctx.system.settings.config)
+    Behaviors.withTimers { timers =>
+      val settings = Settings(ctx.system.settings.config)
 
-    // get access to cluster coordinator
-    val singletonManager = ClusterSingleton(ctx.system)
-    val clusterCoordinator: ActorRef[ClusterCoordinator.CoordinationEvent] = singletonManager.init(
-      SingletonActor(Behaviors.supervise(ClusterCoordinator()).onFailure[Exception](SupervisorStrategy.restart), "ClusterCoordinator"))
+      // get access to cluster coordinator
+      val singletonManager = ClusterSingleton(ctx.system)
+      val clusterCoordinator: ActorRef[ClusterCoordinator.CoordinationEvent] = singletonManager.init(
+        SingletonActor(Behaviors.supervise(ClusterCoordinator()).onFailure[Exception](SupervisorStrategy.restart), "ClusterCoordinator"))
 
-    val dh = ctx.spawn(DataHolder(ctx.self), name = "DataHolder")
-    val nl = ctx.spawn(NodeLocatorHolder(clusterCoordinator, ctx.self, dh, settings.maxMessageSize), name = "NodeLocatorHolder")
-    clusterCoordinator ! NodeIntroduction(ctx.self, dh, nl)
-    if (settings.filename.nonEmpty) {
-      ctx.log.info("Load data from {}", settings.filename)
-      new NodeCoordinator(settings, dh, nl, clusterCoordinator, ctx).setUp(settings.filename)
-    } else {
-      new NodeCoordinator(settings, dh, nl, clusterCoordinator, ctx).waitForData()
+      val dh = ctx.spawn(DataHolder(ctx.self), name = "DataHolder")
+      val nl = ctx.spawn(NodeLocatorHolder(clusterCoordinator, ctx.self, dh, settings.maxMessageSize), name = "NodeLocatorHolder")
+      clusterCoordinator ! NodeIntroduction(ctx.self, dh, nl)
+      if (settings.filename.nonEmpty) {
+        ctx.log.info("Load data from {}", settings.filename)
+        new NodeCoordinator(settings, dh, nl, clusterCoordinator, timers, ctx).setUp(settings.filename)
+      } else {
+        new NodeCoordinator(settings, dh, nl, clusterCoordinator, timers, ctx).waitForData()
+      }
     }
   }
 }
@@ -59,6 +69,7 @@ class NodeCoordinator(settings: Settings,
                       dataHolder: ActorRef[LoadDataEvent],
                       nodeLocatorHolder: ActorRef[NodeLocationEvent],
                       clusterCoordinator: ActorRef[CoordinationEvent],
+                      timers: TimerScheduler[NodeCoordinationEvent],
                       ctx: ActorContext[NodeCoordinator.NodeCoordinationEvent]) extends Distance {
   import NodeCoordinator._
 
@@ -85,11 +96,18 @@ class NodeCoordinator(settings: Settings,
         sog ! InitializeGraph(responsibility, graphSize, data)
         sog
       }.toSet
+      timers.startTimerAtFixedRate(LogMemoryConsumptionKey, LogMemoryConsumption, timeout)
       waitForNavigatingNode(data, localGraphHolders)
   }
 
   def waitForNavigatingNode(data: LocalData[Float], localGraphHolders: Set[ActorRef[SearchOnGraphEvent]]): Behavior[NodeCoordinationEvent] =
     Behaviors.receiveMessagePartial {
+      case LogMemoryConsumption =>
+        val rt = Runtime.getRuntime
+        val usedMB = (rt.totalMemory - rt.freeMemory) / 1024 / 1024
+        ctx.log.info("Current memory consumption of node in mb: {}", usedMB)
+        waitForNavigatingNode(data, localGraphHolders)
+
       // In case of data redistribution
       case DataRef(newData, _) =>
         ctx.log.info("Received new data, forwarding to graphHolders")
@@ -97,6 +115,7 @@ class NodeCoordinator(settings: Settings,
         waitForNavigatingNode(newData, localGraphHolders)
 
       case StartBuildingNSG(navigatingNode, nodeLocator, numberOfNodes) =>
+        timers.cancel(LogMemoryConsumptionKey)
         startBuildingNSG(data, localGraphHolders, nodeLocator, numberOfNodes, navigatingNode)
     }
 
