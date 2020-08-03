@@ -113,7 +113,8 @@ case class NNDescentMessageBuffer(localGraphNodes: Array[Int], workers: Set[Acto
 
   def removeNodeMessages(responsibleNode: Int, removedNeighbor: Int): Unit = {
     messageBuffers.valuesIterator.foreach { actorBuffer =>
-      actorBuffer.perNodeMessages(responsibleNode).dequeueAll(message => canBeRemoved(message, removedNeighbor)).length
+      val messagesToRemove = actorBuffer.perNodeMessages(responsibleNode).dequeueAll(message => canBeRemoved(message, removedNeighbor))
+      messagesToRemove.empty
     }
   }
 
