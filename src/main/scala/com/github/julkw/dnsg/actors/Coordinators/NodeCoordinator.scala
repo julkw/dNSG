@@ -115,6 +115,10 @@ class NodeCoordinator(settings: Settings,
         waitForNavigatingNode(newData, localGraphHolders)
 
       case StartBuildingNSG(navigatingNode, nodeLocator, numberOfNodes) =>
+        System.gc()
+        val rt = Runtime.getRuntime
+        val usedMB = (rt.totalMemory - rt.freeMemory) / 1024 / 1024
+        ctx.log.info("Current memory consumption of node in mb: {}", usedMB)
         timers.cancel(LogMemoryConsumptionKey)
         startBuildingNSG(data, localGraphHolders, nodeLocator, numberOfNodes, navigatingNode)
     }

@@ -188,7 +188,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         ctx.log.info("Done with NNDescent")
         //nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraph)
         knngWorkers.foreach( knngWorker => knngWorker ! MoveGraph)
-        waitOnSearchOnGraphUpdated(nodeLocator, knngWorkers, nodeCoordinators, dataHolder, nodeLocatorHolders, knngWorkers.size)
+        waitOnSearchOnGraphUpdated(nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders, knngWorkers.size)
       } else {
         confirmNNDescent(nodeLocator, knngWorkers, updatedConfirmedWorkers, nodeCoordinators, dataHolder, nodeLocatorHolders)
       }
@@ -204,7 +204,6 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
   }
 
   def waitOnSearchOnGraphUpdated(nodeLocator: NodeLocator[SearchOnGraphEvent],
-                                 oldWorkers: Set[ActorRef[BuildKNNGEvent]],
                                  nodeCoordinators: Set[ActorRef[NodeCoordinationEvent]],
                                  dataHolder: ActorRef[LoadDataEvent],
                                  nodeLocatorHolders: Set[ActorRef[NodeLocationEvent]],
@@ -213,7 +212,6 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       case UpdatedGraph =>
         if (waitingOnGraphUpdates == 1) {
           ctx.log.info("All SearchOnGraph actors now updated to new AKNNG")
-          oldWorkers.foreach(worker => worker ! AllKnngWorkersDone)
           val aknngFilename = settings.aknngFilePath
           if (aknngFilename.nonEmpty) {
             dataHolder ! SaveGraphToFile(aknngFilename, nodeLocator.allActors, nodeLocator.graphSize, None, ctx.self)
@@ -223,7 +221,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
             findNavigatingNode(nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders)
           }
         } else {
-          waitOnSearchOnGraphUpdated(nodeLocator, oldWorkers, nodeCoordinators, dataHolder, nodeLocatorHolders, waitingOnGraphUpdates - 1)
+          waitOnSearchOnGraphUpdated(nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders, waitingOnGraphUpdates - 1)
         }
     }
 

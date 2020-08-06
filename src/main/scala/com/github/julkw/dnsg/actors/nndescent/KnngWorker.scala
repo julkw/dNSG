@@ -34,10 +34,7 @@ object KnngWorker {
 
   final case object GetNNDescentFinishedConfirmation extends BuildKNNGEvent
 
-  // after NNDescent
   final case object MoveGraph extends BuildKNNGEvent
-
-  final case object AllKnngWorkersDone extends BuildKNNGEvent
 
   def apply(data: LocalData[Float],
             graphNodeLocator: NodeLocator[SearchOnGraphEvent],
@@ -218,17 +215,8 @@ class KnngWorker(data: LocalData[Float],
         // move graph to SearchOnGraphActor
         // ctx.log.info("Average distance in graph after nndescent: {}", averageGraphDist(graph))
         parent ! GraphAndData(graph.cleanedGraph(), data, ctx.self)
-        waitForShutdown()
-
-      case AllKnngWorkersDone =>
-        ctx.log.info("Got the message to shutdown before moving my graph")
         Behaviors.stopped
     }
-
-  def waitForShutdown(): Behavior[BuildKNNGEvent] = Behaviors.receiveMessagePartial {
-    case AllKnngWorkersDone =>
-      Behaviors.stopped
-  }
 
   def handlePotentialNeighbor(g_node: Int,
                               potentialNeighbor: Int,
