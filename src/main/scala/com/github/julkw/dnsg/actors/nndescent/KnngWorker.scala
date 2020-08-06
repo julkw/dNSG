@@ -264,7 +264,9 @@ class KnngWorker(data: LocalData[Float],
   }
 
   def logToSendSize(toSend: NNDescentMessageBuffer): Unit = {
-    ctx.log.info("Currently holding {} messages to send later", toSend.numMessages)
+    if (settings.logMemoryConsumption) {
+      ctx.log.info("Currently holding {} messages to send later", toSend.numMessages)
+    }
   }
 }
 

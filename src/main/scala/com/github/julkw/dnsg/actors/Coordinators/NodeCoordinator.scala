@@ -103,9 +103,7 @@ class NodeCoordinator(settings: Settings,
   def waitForNavigatingNode(data: LocalData[Float], localGraphHolders: Set[ActorRef[SearchOnGraphEvent]]): Behavior[NodeCoordinationEvent] =
     Behaviors.receiveMessagePartial {
       case LogMemoryConsumption =>
-        val rt = Runtime.getRuntime
-        val usedMB = (rt.totalMemory - rt.freeMemory) / 1024 / 1024
-        ctx.log.info("Current memory consumption of node in mb: {}", usedMB)
+        logMemory()
         waitForNavigatingNode(data, localGraphHolders)
 
       // In case of data redistribution
@@ -115,11 +113,9 @@ class NodeCoordinator(settings: Settings,
         waitForNavigatingNode(newData, localGraphHolders)
 
       case StartBuildingNSG(navigatingNode, nodeLocator, numberOfNodes) =>
-        System.gc()
-        val rt = Runtime.getRuntime
-        val usedMB = (rt.totalMemory - rt.freeMemory) / 1024 / 1024
-        ctx.log.info("Current memory consumption of node in mb: {}", usedMB)
         timers.cancel(LogMemoryConsumptionKey)
+        System.gc()
+        logMemory()
         startBuildingNSG(data, localGraphHolders, nodeLocator, numberOfNodes, navigatingNode)
     }
 
@@ -157,5 +153,13 @@ class NodeCoordinator(settings: Settings,
         ctx.system.terminate()
         Behaviors.stopped
     }
+
+  def logMemory(): Unit = {
+    if (settings.logMemoryConsumption) {
+      val rt = Runtime.getRuntime
+      val usedMB = (rt.totalMemory - rt.freeMemory) / 1024 / 1024
+      ctx.log.info("Current memory consumption of node in mb: {}", usedMB)
+    }
+  }
 
 }

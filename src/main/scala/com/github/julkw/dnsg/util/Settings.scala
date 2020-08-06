@@ -52,6 +52,8 @@ case class Settings(config: Config) {
 
   val candidateQueueIncreaseTimes: Int = config.getInt(s"$namespace.query-testing.candidate-queue-increases")
 
+  val logMemoryConsumption: Boolean = config.getBoolean(s"$namespace.log-memory-consumption")
+
   def printSettings(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]): Unit = {
     ctx.log.info("k: {}", k)
     ctx.log.info("workers: {}", workers)
