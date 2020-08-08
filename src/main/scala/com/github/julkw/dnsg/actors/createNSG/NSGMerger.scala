@@ -108,9 +108,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
     case AddNeighbors(edges, moreToSend, sender) =>
       val updatedGraph = addEdgesToGraph(graph, edges)
       if (moreToSend) {
-        if (edges.nonEmpty) {
-          sender ! GetNeighbors(ctx.self)
-        }
+        sender ! GetNeighbors(ctx.self)
         buildGraph(updatedGraph, waitingOnReverseNeighbors, waitingOnMergers, toSend, mergers)
       } else {
         if (waitingOnMergers == 1 && waitingOnReverseNeighbors == 0) {

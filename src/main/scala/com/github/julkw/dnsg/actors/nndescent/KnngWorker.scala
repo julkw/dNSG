@@ -1,7 +1,8 @@
 package com.github.julkw.dnsg.actors.nndescent
 
+import scala.concurrent.duration._
 import akka.actor.typed.{ActorRef, Behavior}
-import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
+import akka.actor.typed.scaladsl.{ActorContext, Behaviors, TimerScheduler}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{ConfirmFinishedNNDescent, CoordinationEvent, CorrectFinishedNNDescent, FinishedApproximateGraph, FinishedNNDescent, KNearestNeighborsWithDist}
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.{KnngWorkerGotGraphFrom, NodeLocationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, GraphAndData, SearchOnGraphEvent}
@@ -36,6 +37,13 @@ object KnngWorker {
 
   final case object MoveGraph extends BuildKNNGEvent
 
+  // log memory consumption through messages
+  protected case object LogMessagesKey
+
+  protected case object LogMessages extends BuildKNNGEvent
+
+  val timeout = 1.second
+
   def apply(data: LocalData[Float],
             graphNodeLocator: NodeLocator[SearchOnGraphEvent],
             parent: ActorRef[SearchOnGraphEvent],
@@ -44,8 +52,10 @@ object KnngWorker {
     val settings = Settings(ctx.system.settings.config)
     val coordinationEventAdapter: ActorRef[CoordinationEvent] =
       ctx.messageAdapter { event => WrappedCoordinationEvent(event)}
-    new KnngWorker(data, new WaitingOnLocation, graphNodeLocator,
-      parent, settings, clusterCoordinator, localNodeLocatorHolder, coordinationEventAdapter, ctx).setup()
+    Behaviors.withTimers { timers =>
+      new KnngWorker(data, new WaitingOnLocation, graphNodeLocator,
+        parent, settings, clusterCoordinator, localNodeLocatorHolder, coordinationEventAdapter, timers, ctx).setup()
+    }
   }
 }
 
@@ -57,6 +67,7 @@ class KnngWorker(data: LocalData[Float],
                  clusterCoordinator: ActorRef[CoordinationEvent],
                  localNodeLocatorHolder: ActorRef[NodeLocationEvent],
                  coordinationEventAdapter: ActorRef[CoordinationEvent],
+                 timers: TimerScheduler[KnngWorker.BuildKNNGEvent],
                  ctx: ActorContext[KnngWorker.BuildKNNGEvent]) extends Joiner(settings.nnDescentIterations, data) {
   import KnngWorker._
 
@@ -120,7 +131,10 @@ class KnngWorker(data: LocalData[Float],
       ctx.self ! CompleteLocalJoin(g_node)
     }
     val toSend = NNDescentMessageBuffer(graph.nodes, nodeLocator.allActors)
-    logToSendSize(toSend)
+    if (settings.logMemoryConsumption) {
+      logToSendSize(toSend)
+      timers.startTimerAtFixedRate(LogMessagesKey, LogMessages, timeout)
+    }
     // add reverse neighbors
     graph.nodes.foreach { g_node =>
       graph.getNeighbors(g_node).foreach { neighbor =>
@@ -141,18 +155,20 @@ class KnngWorker(data: LocalData[Float],
         // already done, so do nothing
         nnDescent(nodeLocator, graph, toSend, mightBeDone, saidImDone)
 
+      case LogMessages =>
+        logToSendSize(toSend)
+        nnDescent(nodeLocator, graph, toSend, mightBeDone, saidImDone)
+
       case CompleteLocalJoin(g_node) =>
         // prevent timeouts in the initial phase of graph nnDescent
         val neighbors = graph.getNeighbors(g_node)
         joinNeighbors(neighbors, iteration = 1, g_node, toSend, nodeLocator)
         sendChangesImmediately(toSend, nodeLocator)
-        logToSendSize(toSend)
         nnDescent(nodeLocator, graph, toSend, mightBeDone, saidImDone)
 
       case GetNNDescentInfo(sender) =>
         val messagesToSend = toSend.messageTo(sender, settings.maxMessageSize)
         sender ! NNDescentInfo(messagesToSend, ctx.self)
-        logToSendSize(toSend)
         val probablyDone = if (messagesToSend.isEmpty) {
           checkIfDone(mightBeDone, nodeLocator, toSend, saidImDone)
         } else { saidImDone }
@@ -165,7 +181,6 @@ class KnngWorker(data: LocalData[Float],
           nnDescent(nodeLocator, graph, toSend, mightBeDoneWorkers, probablyDone)
         } else {
           sender ! GetNNDescentInfo(ctx.self)
-          logToSendSize(toSend)
           if (saidImDone) {
             clusterCoordinator ! CorrectFinishedNNDescent(ctx.self)
           }
@@ -200,7 +215,6 @@ class KnngWorker(data: LocalData[Float],
             case RemoveReverseNeighbor(g_nodeIndex, neighborIndex) =>
               graph.removeReverseNeighbor(g_nodeIndex, neighborIndex, toSend)
           }
-          logToSendSize(toSend)
           sendChangesImmediately(toSend, nodeLocator)
           nnDescent(nodeLocator, graph, toSend, mightBeDone - sender, saidImDone = false)
         }
@@ -215,6 +229,7 @@ class KnngWorker(data: LocalData[Float],
         // move graph to SearchOnGraphActor
         // ctx.log.info("Average distance in graph after nndescent: {}", averageGraphDist(graph))
         parent ! GraphAndData(graph.cleanedGraph(), data, ctx.self)
+        timers.cancel(LogMessagesKey)
         Behaviors.stopped
     }
 
@@ -245,7 +260,6 @@ class KnngWorker(data: LocalData[Float],
         worker ! NNDescentInfo(messageToSend, ctx.self)
       }
     }
-    logToSendSize(toSend)
   }
 
   def checkIfDone(mightBeDoneWorkers: Set[ActorRef[BuildKNNGEvent]],

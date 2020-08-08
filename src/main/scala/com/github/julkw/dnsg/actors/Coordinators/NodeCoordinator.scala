@@ -36,7 +36,6 @@ object NodeCoordinator {
 
   final case object AllDone extends NodeCoordinationEvent
 
-  // ensure message delivery
   protected case object LogMemoryConsumptionKey
 
   protected case object LogMemoryConsumption extends NodeCoordinationEvent
