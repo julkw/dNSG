@@ -154,10 +154,14 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
 
   def sendNeighbors(messagesToSend: Seq[(Int, Int)], receivedAllLocalMessages: Boolean, sendTo: ActorRef[MergeNSGEvent]): (Seq[(Int, Int)], Boolean) = {
     val sendNow = messagesToSend.slice(0, maxMessageSize)
-    val lastMessage = receivedAllLocalMessages && sendNow.length == messagesToSend.length
-    sendTo ! AddNeighbors(sendNow, !lastMessage, ctx.self)
-    val sendLater = messagesToSend.slice(maxMessageSize, messagesToSend.length)
-    (sendLater, sendNow.isEmpty)
+    if (sendNow.nonEmpty) {
+      val lastMessage = receivedAllLocalMessages && sendNow.length == messagesToSend.length
+      sendTo ! AddNeighbors(sendNow, !lastMessage, ctx.self)
+      val sendLater = messagesToSend.slice(maxMessageSize, messagesToSend.length)
+      (sendLater, false)
+    } else {
+      (messagesToSend, true) 
+    }
   }
 
   def sendImmediately(toSend: Map[ActorRef[MergeNSGEvent], (Seq[(Int, Int)], Boolean)], receivedAllLocalMessages: Boolean): Map[ActorRef[MergeNSGEvent], (Seq[(Int, Int)], Boolean)] = {
