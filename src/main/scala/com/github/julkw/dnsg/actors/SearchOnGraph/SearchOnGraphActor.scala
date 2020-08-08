@@ -104,8 +104,8 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
         ctx.self ! FindNearestNeighbors(queries, k, asker, sendWithDist, moreQueries)
         waitForDistributionInfo(graph, data)
 
-      case GetSearchOnGraphInfo(sender) =>
-        ctx.self ! GetSearchOnGraphInfo(sender)
+      case SearchOnGraphInfo(info, sender) =>
+        ctx.self ! SearchOnGraphInfo(info, sender)
         waitForDistributionInfo(graph, data)
 
       case SendGraphForFile(sender) =>

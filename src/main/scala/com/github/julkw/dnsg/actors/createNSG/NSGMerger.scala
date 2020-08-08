@@ -96,7 +96,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       }
       val updatedToSend = toSend ++ updatedMessages
       sendImmediately(updatedToSend, waitingOnReverseNeighbors <= 1)
-      if (waitingOnMergers == 0 && waitingOnReverseNeighbors <= 1) {
+      if (waitingOnMergers == 0 && waitingOnReverseNeighbors == 1) {
         supervisor ! InitialNSGDone(ctx.self)
       }
       buildGraph(graph, waitingOnReverseNeighbors - 1, waitingOnMergers, updatedToSend, mergers)
@@ -113,7 +113,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         }
         buildGraph(updatedGraph, waitingOnReverseNeighbors, waitingOnMergers, toSend, mergers)
       } else {
-        if (waitingOnMergers <= 1 && waitingOnReverseNeighbors == 0) {
+        if (waitingOnMergers == 1 && waitingOnReverseNeighbors == 0) {
           //ctx.log.info("Local NSGMerger is done after receiving last message from other Merger")
           supervisor ! InitialNSGDone(ctx.self)
         }
