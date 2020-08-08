@@ -71,8 +71,8 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         ctx.self ! ReverseNeighbors(nodeIndex, reverseNeighbors)
         waitForRegistrations(graph, mergers)
 
-      case GetNeighbors(sender) =>
-        ctx.self ! GetNeighbors(sender)
+      case AddNeighbors(edges, moreToSend, sender) =>
+        ctx.self ! AddNeighbors(edges, moreToSend, sender)
         waitForRegistrations(graph, mergers)
     }
 
@@ -133,6 +133,11 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       }.transform((_, neighbors) => neighbors.toSeq)
       // can be send as a whole because it is only send to other actors on the same node
       sender ! PartialNSG(partialGraph)
+      distributeGraph(graph)
+
+    case GetNeighbors(sender) =>
+      // this can happen if I told another Merger that I had more to send them, because I had not yet gotten results for all my local nodes
+      // if those nodes didn't have anything for this Merger, however, I switched states without telling them there was nothing to get, so they kept asking
       distributeGraph(graph)
 
     case NSGDistributed =>
