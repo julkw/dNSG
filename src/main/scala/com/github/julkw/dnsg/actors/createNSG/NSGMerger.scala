@@ -36,7 +36,7 @@ object NSGMerger {
             maxMessageSize: Int,
             nodeLocator: NodeLocator[SearchOnGraphEvent]): Behavior[MergeNSGEvent] = Behaviors.setup { ctx =>
     val listingResponseAdapter = ctx.messageAdapter[Receptionist.Listing](ListingResponse)
-    new NSGMerger(supervisor, nodesExpected, maxMessageSize, nodeLocator, ctx).setup(responsibility, listingResponseAdapter)
+    new NSGMerger(supervisor, nodesExpected, maxMessageSize / 2, nodeLocator, ctx).setup(responsibility, listingResponseAdapter)
   }
 }
 
