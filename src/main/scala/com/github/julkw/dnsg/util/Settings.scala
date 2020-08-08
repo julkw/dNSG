@@ -55,11 +55,12 @@ case class Settings(config: Config) {
   val logMemoryConsumption: Boolean = config.getBoolean(s"$namespace.log-memory-consumption")
 
   def printSettings(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]): Unit = {
+    ctx.log.info("dataset: {}", filename)
     ctx.log.info("k: {}", k)
     ctx.log.info("workers: {}", workers)
     ctx.log.info("nodes: {}", nodesExpected)
+    ctx.log.info("Candidate queue size during building of NSG: {}", candidateQueueSizeNSG)
     ctx.log.info("maxReverseNeighbors: {}", maxReverseNeighborsNSG)
-    ctx.log.info("lines: {}", lines)
     ctx.log.info("maxMessageSize: {}", maxMessageSize)
     ctx.log.info("data redistribution option: {}", dataRedistribution)
     ctx.log.info("data replication strategy: {}", dataReplication)
