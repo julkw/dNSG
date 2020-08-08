@@ -41,7 +41,7 @@ object NodeCoordinator {
 
   protected case object LogMemoryConsumption extends NodeCoordinationEvent
 
-  val timeout = 0.1.second
+  val timeout = 1.second
 
   def apply(): Behavior[NodeCoordinationEvent] = Behaviors.setup { ctx =>
     Behaviors.withTimers { timers =>
@@ -96,7 +96,9 @@ class NodeCoordinator(settings: Settings,
         sog ! InitializeGraph(responsibility, graphSize, data)
         sog
       }.toSet
-      timers.startTimerAtFixedRate(LogMemoryConsumptionKey, LogMemoryConsumption, timeout)
+      if (settings.logMemoryConsumption) {
+        timers.startTimerAtFixedRate(LogMemoryConsumptionKey, LogMemoryConsumption, timeout)
+      }
       waitForNavigatingNode(data, localGraphHolders)
   }
 
@@ -113,9 +115,11 @@ class NodeCoordinator(settings: Settings,
         waitForNavigatingNode(newData, localGraphHolders)
 
       case StartBuildingNSG(navigatingNode, nodeLocator, numberOfNodes) =>
-        timers.cancel(LogMemoryConsumptionKey)
-        System.gc()
-        logMemory()
+        if (settings.logMemoryConsumption) {
+          timers.cancel(LogMemoryConsumptionKey)
+          System.gc()
+          logMemory()
+        }
         startBuildingNSG(data, localGraphHolders, nodeLocator, numberOfNodes, navigatingNode)
     }
 
@@ -155,11 +159,9 @@ class NodeCoordinator(settings: Settings,
     }
 
   def logMemory(): Unit = {
-    if (settings.logMemoryConsumption) {
-      val rt = Runtime.getRuntime
-      val usedMB = (rt.totalMemory - rt.freeMemory) / 1024 / 1024
-      ctx.log.info("Current memory consumption of node in mb: {}", usedMB)
-    }
+    val rt = Runtime.getRuntime
+    val usedMB = (rt.totalMemory - rt.freeMemory) / 1024 / 1024
+    ctx.log.info("Current memory consumption of node in mb: {}", usedMB)
   }
 
 }
