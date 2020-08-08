@@ -61,8 +61,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
     Behaviors.receiveMessagePartial {
       case ListingResponse(nsgMergerServiceKey.Listing(listings)) =>
         if (listings.size == nodesExpected) {
-          val toSend = listings.map(merger => merger -> (Seq.empty, false)).toMap
-          listings.foreach(merger => merger ! GetNeighbors(ctx.self))
+          val toSend = listings.map(merger => merger -> (Seq.empty, true)).toMap
           buildGraph(graph, graph.size, nodesExpected, toSend, listings)
         } else {
           waitForRegistrations(graph, listings)
@@ -78,13 +77,13 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
     }
 
   def buildGraph(graph: Map[Int, Set[Int]],
-                 waitingOnNSGWorkers: Int,
+                 waitingOnReverseNeighbors: Int,
                  waitingOnMergers: Int,
                  toSend: Map[ActorRef[MergeNSGEvent], (Seq[(Int, Int)], Boolean)],
                  mergers: Set[ActorRef[MergeNSGEvent]]): Behavior[MergeNSGEvent] = Behaviors.receiveMessagePartial {
     case ListingResponse(nsgMergerServiceKey.Listing(listings)) =>
       // this shouldn't happen here
-      buildGraph(graph, waitingOnNSGWorkers, waitingOnMergers, toSend, listings)
+      buildGraph(graph, waitingOnReverseNeighbors, waitingOnMergers, toSend, listings)
 
     case ReverseNeighbors(nodeIndex, reverseNeighbors) =>
       // ctx.log.info("Still waiting for the reverse neighbors for {} nodes", waitingOnNSGWorkers - 1)
@@ -96,15 +95,15 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         (toSend(responsibleMerger)._1 ++ newEdges, toSend(responsibleMerger)._2)
       }
       val updatedToSend = toSend ++ updatedMessages
-      sendImmediately(updatedToSend, waitingOnNSGWorkers <= 1)
-      if (waitingOnMergers == 0 && waitingOnNSGWorkers <= 1) {
+      sendImmediately(updatedToSend, waitingOnReverseNeighbors <= 1)
+      if (waitingOnMergers == 0 && waitingOnReverseNeighbors <= 1) {
         supervisor ! InitialNSGDone(ctx.self)
       }
-      buildGraph(graph, waitingOnNSGWorkers - 1, waitingOnMergers, updatedToSend, mergers)
+      buildGraph(graph, waitingOnReverseNeighbors - 1, waitingOnMergers, updatedToSend, mergers)
 
     case GetNeighbors(sender) =>
-      val newSendInfo = sendNeighbors(toSend(sender)._1, waitingOnNSGWorkers == 0, sender)
-      buildGraph(graph, waitingOnNSGWorkers, waitingOnMergers, toSend + (sender -> newSendInfo), mergers)
+      val newSendInfo = sendNeighbors(toSend(sender)._1, waitingOnReverseNeighbors == 0, sender)
+      buildGraph(graph, waitingOnReverseNeighbors, waitingOnMergers, toSend + (sender -> newSendInfo), mergers)
 
     case AddNeighbors(edges, moreToSend, sender) =>
       val updatedGraph = addEdgesToGraph(graph, edges)
@@ -112,13 +111,13 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         if (edges.nonEmpty) {
           sender ! GetNeighbors(ctx.self)
         }
-        buildGraph(updatedGraph, waitingOnNSGWorkers, waitingOnMergers, toSend, mergers)
+        buildGraph(updatedGraph, waitingOnReverseNeighbors, waitingOnMergers, toSend, mergers)
       } else {
-        if (waitingOnMergers <= 1 && waitingOnNSGWorkers == 0) {
+        if (waitingOnMergers <= 1 && waitingOnReverseNeighbors == 0) {
           //ctx.log.info("Local NSGMerger is done after receiving last message from other Merger")
           supervisor ! InitialNSGDone(ctx.self)
         }
-        buildGraph(updatedGraph, waitingOnNSGWorkers, waitingOnMergers - 1, toSend, mergers)
+        buildGraph(updatedGraph, waitingOnReverseNeighbors, waitingOnMergers - 1, toSend, mergers)
       }
 
     case GetPartialNSG(nodes, sender) =>
@@ -165,7 +164,6 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       }
     }
   }
-
 }
 
 
