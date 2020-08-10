@@ -4,7 +4,7 @@ import akka.actor.typed.ActorRef
 
 case class NodeLocatorBuilder[T](dataLength: Int) {
   protected val nodeMap: Array[Int] = Array.fill(dataLength){-1}
-  protected var actors: Seq[ActorRef[T]] = Seq.empty
+  protected var actors: Array[ActorRef[T]] = Array.empty
 
   def addLocation(indices: Seq[Int], location: ActorRef[T]): Option[NodeLocator[T]] = {
     var actorIndex = actors.indexOf(location)
@@ -27,7 +27,7 @@ case class NodeLocatorBuilder[T](dataLength: Int) {
   }
 }
 
-case class NodeLocator[T](locationData: Array[Int], actors: Seq[ActorRef[T]]) {
+case class NodeLocator[T](locationData: Array[Int], actors: Array[ActorRef[T]]) {
   val graphSize: Int = locationData.length
 
   def allActors: Set[ActorRef[T]] = {
