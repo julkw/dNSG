@@ -160,7 +160,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       val lastMessage = receivedAllLocalMessages && sendNow.length == messagesToSend.length
       sendTo ! AddNeighbors(sendNow, !lastMessage, ctx.self)
       val sendLater = messagesToSend.slice(maxMessageSize, messagesToSend.length)
-      (sendLater, sendNow.isEmpty && !receivedAllLocalMessages)
+      (sendLater, !lastMessage && sendNow.isEmpty)
     } else {
       (messagesToSend, true)
     }
