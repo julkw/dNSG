@@ -162,7 +162,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       val sendLater = messagesToSend.slice(maxMessageSize, messagesToSend.length)
       (sendLater, !lastMessage && sendNow.isEmpty)
     } else {
-      (messagesToSend, true)
+      (messagesToSend, false)
     }
   }
 
