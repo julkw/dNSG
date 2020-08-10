@@ -18,6 +18,7 @@ object NSGMerger {
 
   final case class GetNeighbors(sender: ActorRef[MergeNSGEvent]) extends MergeNSGEvent
 
+  // TODO on big graphs this somehow leads to sendqueue overflow. Figure out why
   final case class AddNeighbors(edges: Seq[(Int, Int)], moreToSend: Boolean, sender: ActorRef[MergeNSGEvent]) extends MergeNSGEvent
 
   final case object LocalNSGDone extends MergeNSGEvent
@@ -87,6 +88,9 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
 
     case ReverseNeighbors(nodeIndex, reverseNeighbors) =>
       // ctx.log.info("Still waiting for the reverse neighbors for {} nodes", waitingOnNSGWorkers - 1)
+      if (waitingOnReverseNeighbors == 0) {
+        ctx.log.info("Somehow getting too many reverse neighbors")
+      }
       val updatedMessages = reverseNeighbors.groupBy { neighborIndex =>
         val node = nodeLocator.findResponsibleActor(neighborIndex).path.parent
         mergers.find(merger => merger.path.parent == node).get
@@ -156,7 +160,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       val lastMessage = receivedAllLocalMessages && sendNow.length == messagesToSend.length
       sendTo ! AddNeighbors(sendNow, !lastMessage, ctx.self)
       val sendLater = messagesToSend.slice(maxMessageSize, messagesToSend.length)
-      (sendLater, sendNow.isEmpty)
+      (sendLater, sendNow.isEmpty && !receivedAllLocalMessages)
     } else {
       (messagesToSend, true)
     }
