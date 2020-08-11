@@ -93,6 +93,12 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       } else if (waitingOnReverseNeighbors == 1) {
         ctx.log.info("Received all local reverse neighbors, still waiting on {} mergers", waitingOnMergers)
       }
+      // while I still have more to send, I do not have any more to receive and am therefore done myself
+      if (waitingOnMergers == 1 && waitingOnReverseNeighbors == 0) {
+        ctx.log.info("Local NSGMerger has received everything")
+        supervisor ! InitialNSGDone(ctx.self)
+      }
+
       val updatedMessages = reverseNeighbors.groupBy { neighborIndex =>
         val node = nodeLocator.findResponsibleActor(neighborIndex).path.parent
         mergers.find(merger => merger.path.parent == node).get
@@ -100,8 +106,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         val newEdges = neighbors.map(neighborIndex => (neighborIndex, nodeIndex))
         (toSend(responsibleMerger)._1 ++ newEdges, toSend(responsibleMerger)._2)
       }
-      val updatedToSend = toSend ++ updatedMessages
-      sendImmediately(updatedToSend, waitingOnReverseNeighbors == 1)
+      val updatedToSend = sendImmediately(toSend ++ updatedMessages, waitingOnReverseNeighbors == 1)
       buildGraph(graph, waitingOnReverseNeighbors - 1, waitingOnMergers, updatedToSend, mergers)
 
     case GetNeighbors(sender) =>
