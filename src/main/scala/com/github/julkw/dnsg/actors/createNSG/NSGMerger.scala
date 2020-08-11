@@ -18,7 +18,6 @@ object NSGMerger {
 
   final case class GetNeighbors(sender: ActorRef[MergeNSGEvent]) extends MergeNSGEvent
 
-  // TODO on big graphs this somehow leads to sendqueue overflow. Figure out why
   final case class AddNeighbors(edges: Seq[(Int, Int)], moreToSend: Boolean, sender: ActorRef[MergeNSGEvent]) extends MergeNSGEvent
 
   final case object LocalNSGDone extends MergeNSGEvent
@@ -140,7 +139,6 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
   def addEdgesToGraph(graph: Map[Int, Seq[Int]], edges: Seq[(Int, Int)]): Map[Int, Seq[Int]] = {
     val updatedNeighbors = edges.groupBy(_._1).transform { (nodeIndex, newEdges) =>
       val newNeighbors = newEdges.map(_._2)
-      assert(graph(nodeIndex).intersect(newNeighbors).isEmpty)
       graph(nodeIndex) ++ newNeighbors
     }
     graph ++ updatedNeighbors
