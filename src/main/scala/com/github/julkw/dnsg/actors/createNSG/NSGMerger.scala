@@ -53,12 +53,11 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
     ctx.system.receptionist ! Receptionist.Register(nsgMergerServiceKey, ctx.self)
     ctx.system.receptionist ! Receptionist.Subscribe(nsgMergerServiceKey, listingAdapter)
 
-    val nsg = responsibility.map(index => index -> Set.empty[Int]).toMap
+    val nsg = responsibility.map(index => index -> Seq.empty[Int]).toMap
     waitForRegistrations(nsg, Set.empty)
   }
 
-  // TODO: The graph is a set here because for some reason edges are added multiple times
-  def waitForRegistrations(graph: Map[Int, Set[Int]], mergers: Set[ActorRef[MergeNSGEvent]]): Behavior[MergeNSGEvent] =
+  def waitForRegistrations(graph: Map[Int, Seq[Int]], mergers: Set[ActorRef[MergeNSGEvent]]): Behavior[MergeNSGEvent] =
     Behaviors.receiveMessagePartial {
       case ListingResponse(nsgMergerServiceKey.Listing(listings)) =>
         if (listings.size == nodesExpected) {
@@ -77,7 +76,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         waitForRegistrations(graph, mergers)
     }
 
-  def buildGraph(graph: Map[Int, Set[Int]],
+  def buildGraph(graph: Map[Int, Seq[Int]],
                  waitingOnReverseNeighbors: Int,
                  waitingOnMergers: Int,
                  toSend: Map[ActorRef[MergeNSGEvent], (Seq[(Int, Int)], Boolean)],
@@ -87,18 +86,11 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       buildGraph(graph, waitingOnReverseNeighbors, waitingOnMergers, toSend, listings)
 
     case ReverseNeighbors(nodeIndex, reverseNeighbors) =>
-      // ctx.log.info("Still waiting for the reverse neighbors for {} nodes", waitingOnNSGWorkers - 1)
-      if (waitingOnReverseNeighbors == 0) {
-        ctx.log.info("Somehow getting too many reverse neighbors")
-      } else if (waitingOnReverseNeighbors == 1) {
-        ctx.log.info("Received all local reverse neighbors, still waiting on {} mergers", waitingOnMergers)
-      }
-      // while I still have more to send, I do not have any more to receive and am therefore done myself
       if (waitingOnMergers == 1 && waitingOnReverseNeighbors == 0) {
+        // while I still have more to send, I do not have any more to receive and am therefore done myself
         ctx.log.info("Local NSGMerger has received everything")
         supervisor ! InitialNSGDone(ctx.self)
       }
-
       val updatedMessages = reverseNeighbors.groupBy { neighborIndex =>
         val node = nodeLocator.findResponsibleActor(neighborIndex).path.parent
         mergers.find(merger => merger.path.parent == node).get
@@ -113,16 +105,14 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       val newSendInfo = sendNeighbors(toSend(sender)._1, waitingOnReverseNeighbors == 0, sender)
       buildGraph(graph, waitingOnReverseNeighbors, waitingOnMergers, toSend + (sender -> newSendInfo), mergers)
 
-      // TODO on the cluster this currently doesn't finish after I tried to fix too many AddNeighbors messages being sent
     case AddNeighbors(edges, moreToSend, sender) =>
       val updatedGraph = addEdgesToGraph(graph, edges)
       if (moreToSend) {
         sender ! GetNeighbors(ctx.self)
         buildGraph(updatedGraph, waitingOnReverseNeighbors, waitingOnMergers, toSend, mergers)
       } else {
-        ctx.log.info("Still waiting on {} Mergers to send me everything", waitingOnMergers - 1)
         if (waitingOnMergers == 1 && waitingOnReverseNeighbors == 0) {
-          ctx.log.info("Local NSGMerger is done after receiving last message from other Merger")
+          ctx.log.info("Local NSGMerger has received everything")
           supervisor ! InitialNSGDone(ctx.self)
         }
         buildGraph(updatedGraph, waitingOnReverseNeighbors, waitingOnMergers - 1, toSend, mergers)
@@ -134,11 +124,11 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       distributeGraph(graph)
   }
 
-  def distributeGraph(graph: Map[Int, Set[Int]]): Behavior[MergeNSGEvent] = Behaviors.receiveMessagePartial {
+  def distributeGraph(graph: Map[Int, Seq[Int]]): Behavior[MergeNSGEvent] = Behaviors.receiveMessagePartial {
     case GetPartialNSG(nodes, sender) =>
       val partialGraph = graph.filter { case(node, _) =>
         nodes.contains(node)
-      }.transform((_, neighbors) => neighbors.toSeq)
+      }.transform((_, neighbors) => neighbors)
       // can be send as a whole because it is only send to other actors on the same node
       sender ! PartialNSG(partialGraph)
       distributeGraph(graph)
@@ -147,9 +137,10 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       Behaviors.empty
   }
 
-  def addEdgesToGraph(graph: Map[Int, Set[Int]], edges: Seq[(Int, Int)]): Map[Int, Set[Int]] = {
+  def addEdgesToGraph(graph: Map[Int, Seq[Int]], edges: Seq[(Int, Int)]): Map[Int, Seq[Int]] = {
     val updatedNeighbors = edges.groupBy(_._1).transform { (nodeIndex, newEdges) =>
       val newNeighbors = newEdges.map(_._2)
+      assert(graph(nodeIndex).intersect(newNeighbors).isEmpty)
       graph(nodeIndex) ++ newNeighbors
     }
     graph ++ updatedNeighbors
