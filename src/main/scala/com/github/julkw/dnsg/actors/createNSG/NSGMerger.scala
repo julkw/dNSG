@@ -90,6 +90,8 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       // ctx.log.info("Still waiting for the reverse neighbors for {} nodes", waitingOnNSGWorkers - 1)
       if (waitingOnReverseNeighbors == 0) {
         ctx.log.info("Somehow getting too many reverse neighbors")
+      } else if (waitingOnReverseNeighbors == 1) {
+        ctx.log.info("Received all local reverse neighbors, still waiting on {} mergers", waitingOnMergers)
       }
       val updatedMessages = reverseNeighbors.groupBy { neighborIndex =>
         val node = nodeLocator.findResponsibleActor(neighborIndex).path.parent
@@ -99,24 +101,23 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         (toSend(responsibleMerger)._1 ++ newEdges, toSend(responsibleMerger)._2)
       }
       val updatedToSend = toSend ++ updatedMessages
-      sendImmediately(updatedToSend, waitingOnReverseNeighbors <= 1)
-      if (waitingOnMergers == 0 && waitingOnReverseNeighbors == 1) {
-        supervisor ! InitialNSGDone(ctx.self)
-      }
+      sendImmediately(updatedToSend, waitingOnReverseNeighbors == 1)
       buildGraph(graph, waitingOnReverseNeighbors - 1, waitingOnMergers, updatedToSend, mergers)
 
     case GetNeighbors(sender) =>
       val newSendInfo = sendNeighbors(toSend(sender)._1, waitingOnReverseNeighbors == 0, sender)
       buildGraph(graph, waitingOnReverseNeighbors, waitingOnMergers, toSend + (sender -> newSendInfo), mergers)
 
+      // TODO on the cluster this currently doesn't finish after I tried to fix too many AddNeighbors messages being sent
     case AddNeighbors(edges, moreToSend, sender) =>
       val updatedGraph = addEdgesToGraph(graph, edges)
       if (moreToSend) {
         sender ! GetNeighbors(ctx.self)
         buildGraph(updatedGraph, waitingOnReverseNeighbors, waitingOnMergers, toSend, mergers)
       } else {
+        ctx.log.info("Still waiting on {} Mergers to send me everything", waitingOnMergers - 1)
         if (waitingOnMergers == 1 && waitingOnReverseNeighbors == 0) {
-          //ctx.log.info("Local NSGMerger is done after receiving last message from other Merger")
+          ctx.log.info("Local NSGMerger is done after receiving last message from other Merger")
           supervisor ! InitialNSGDone(ctx.self)
         }
         buildGraph(updatedGraph, waitingOnReverseNeighbors, waitingOnMergers - 1, toSend, mergers)
@@ -135,11 +136,6 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       }.transform((_, neighbors) => neighbors.toSeq)
       // can be send as a whole because it is only send to other actors on the same node
       sender ! PartialNSG(partialGraph)
-      distributeGraph(graph)
-
-    case GetNeighbors(sender) =>
-      // this can happen if I told another Merger that I had more to send them, because I had not yet gotten results for all my local nodes
-      // if those nodes didn't have anything for this Merger, however, I switched states without telling them there was nothing to get, so they kept asking
       distributeGraph(graph)
 
     case NSGDistributed =>
@@ -162,6 +158,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       val sendLater = messagesToSend.slice(maxMessageSize, messagesToSend.length)
       (sendLater, false)
     } else {
+      // don't currently have anything to send, but as soon as I get more it'll be send to this merger
       (messagesToSend, true)
     }
   }
@@ -171,6 +168,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       if (sendInfo._2) {
         sendNeighbors(sendInfo._1, receivedAllLocalMessages, merger)
       } else {
+        // waiting on the other merger to ask me for more messages
         sendInfo
       }
     }
