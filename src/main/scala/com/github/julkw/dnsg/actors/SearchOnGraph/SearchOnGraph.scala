@@ -139,12 +139,8 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
   }
 
   def addCandidate(queryInfo: QueryInfo,
-                   queryId: Int,
                    candidateId: Int,
-                   candidateLocation: Array[Float],
-                   graph: Map[Int, Seq[Int]],
-                   nodeLocator: NodeLocator[SearchOnGraphEvent],
-                   toSend: Map[ActorRef[SearchOnGraphEvent], SOGInfo]): Boolean = {
+                   candidateLocation: Array[Float]): Boolean = {
     // return if this means the query is finished
     val currentCandidates = queryInfo.candidates
     val dist = euclideanDist(queryInfo.query, candidateLocation)

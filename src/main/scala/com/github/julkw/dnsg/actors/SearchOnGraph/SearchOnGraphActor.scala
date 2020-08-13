@@ -224,7 +224,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
               if (updatedNeighborQueries.contains(queryId)) {
                 val queryInfo = updatedNeighborQueries(queryId)
                 queryInfo.waitingOn -= 1
-                val queryFinished = addCandidate(queryInfo, queryId, index, location, graph, nodeLocator, toSend)
+                val queryFinished = addCandidate(queryInfo, index, location)
                 if (queryFinished) {
                   sendKNNResults(queryInfo, respondTo(queryId))
                   updatedNeighborQueries -= queryId
@@ -448,7 +448,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
                 val queryInfo = updatedPathQueries(queryId)
                 queryInfo.waitingOn -= 1
                 val oldNumberOfCandidates = queryInfo.candidates.length
-                val queryFinished = addCandidate(queryInfo, queryId, index, location, graph, nodeLocator, toSend)
+                val queryFinished = addCandidate(queryInfo, index, location)
                 if (queryInfo.candidates.length > oldNumberOfCandidates) { // the candidate has been added
                   responseLocations.addedToCandidateList(index, location)
                 }
