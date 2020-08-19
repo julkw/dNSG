@@ -1,0 +1,27 @@
+include classpath("application")
+
+com.github.julkw.dnsg {
+
+  aknng-file = ""
+
+  nsg-file = ""
+
+  workers = 4
+
+  nodes-expected = 1
+
+  query-testing.lines = 1000
+
+} 
+com.github.julkw.dnsg {
+  input-file = "data/siftsmall/siftsmall_base.fvecs"
+} 
+
+dnsg.network {
+  host = "127.0.0.1"
+  port = 7878
+
+  // remote address of leader node
+  leader-host = "127.0.0.1"
+  leader-port = 7878
+}

@@ -1,12 +1,10 @@
 include classpath("application")
 
 com.github.julkw.dnsg {
-  
-  k = 200
+
+  k = 100
 
   pre-nndescent-k = 10 
-
-  sample-rate = 1.0
 
   max-nndescent-iterations = 10 
 
@@ -16,25 +14,16 @@ com.github.julkw.dnsg {
 
   candidate-queue-size-knng = 200
 
-  candidate-queue-size-nsg = 40 
+  candidate-queue-size-nsg = 100 
 
-  workers = 16
+  workers = 20
 
-  nodes-expected = 8
+  nodes-expected = 6
 
-  data-redistribution = "noRedistribution"
+  data-redistribution = "optimalRedistribution"
  
   data-replication = "noReplication"
 
-  cache-size = 0
-
   max-message-size = 10000
-
-}
-
-dnsg.network {
-
-  leader-host = "odin01"
-  leader-port = 7878
 
 }

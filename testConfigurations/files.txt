@@ -1,0 +1,14 @@
+com.github.julkw.dnsg {
+
+  input-file = "data/sift100k/sift100k_base.fvecs"
+
+  query-testing {
+    lines = 0
+
+    query-file = "data/sift/sift_query.fvecs"
+
+    query-result-file = "data/sift/sift_groundtruth.ivecs"
+
+  }
+
+}

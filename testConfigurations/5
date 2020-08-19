@@ -1,0 +1,29 @@
+include classpath("application")
+
+com.github.julkw.dnsg {
+
+  k = 100
+
+  pre-nndescent-k = 10 
+
+  max-nndescent-iterations = 10 
+
+  max-reverse-neighbors-nsg = 50 
+
+  max-neighbor-candidates = 500 
+
+  candidate-queue-size-knng = 200
+
+  candidate-queue-size-nsg = 100 
+
+  workers = 20
+
+  nodes-expected = 12
+
+  data-redistribution = "fastRedistribution"
+ 
+  data-replication = "allSharedReplication"
+
+  max-message-size = 10000
+
+}
