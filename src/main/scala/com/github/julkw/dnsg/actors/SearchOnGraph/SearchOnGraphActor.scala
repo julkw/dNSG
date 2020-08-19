@@ -238,8 +238,13 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
 
       case AddToGraph(startNode, endNode, sender) =>
         sender ! ReceivedNewEdge
-        val newNeighbors = graph(startNode) :+ endNode
-        searchOnGraph(graph + (startNode -> newNeighbors), data, nodeLocator, neighborQueries, respondTo, lastIdUsed, toSend)
+        if (graph.contains(startNode)) {
+          val newNeighbors = graph(startNode) :+ endNode
+          searchOnGraph(graph + (startNode -> newNeighbors), data, nodeLocator, neighborQueries, respondTo, lastIdUsed, toSend)
+        } else {
+          searchOnGraph(graph, data, nodeLocator, neighborQueries, respondTo, lastIdUsed, toSend)
+        }
+
 
       case CheckedNodesOnSearch(endPoints, startingPoint, neighborsWanted, asker, moreQueries) =>
         ctx.self ! CheckedNodesOnSearch(endPoints, startingPoint, neighborsWanted, asker, moreQueries)

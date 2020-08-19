@@ -99,9 +99,10 @@ class GraphConnectorCoordinator(navigatingNodeIndex: Int,
             assert(latestUnconnectedNodeIndex >= 0)
             assert(neighbors.head != latestUnconnectedNodeIndex)
             ctx.log.info("Add edge to graph to ensure connectivity: {} to {}", neighbors.head, latestUnconnectedNodeIndex)
-            graphNodeLocator.findResponsibleActor(neighbors.head) ! AddToGraph(neighbors.head, latestUnconnectedNodeIndex, ctx.self)
+            // If neighbors.head has been replicated we don't know who all needs to be notified so we notify all
+            graphNodeLocator.allActors.foreach(graphHolder => graphHolder ! AddToGraph(neighbors.head, latestUnconnectedNodeIndex, ctx.self))
             connectorLocator.findResponsibleActor(neighbors.head) ! AddEdgeAndContinue(neighbors.head, latestUnconnectedNodeIndex)
-            connectGraph(connectorLocator, graphConnectors, waitOnNodeAck + 1, latestUnconnectedNodeIndex = -1, allConnected)
+            connectGraph(connectorLocator, graphConnectors, waitOnNodeAck + graphNodeLocator.allActors.size, latestUnconnectedNodeIndex = -1, allConnected)
         }
 
       case ReceivedNewEdge =>
