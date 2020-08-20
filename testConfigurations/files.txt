@@ -6,9 +6,9 @@ com.github.julkw.dnsg {
   query-testing {
     lines = 0
 
-    query-file = "data/sift/sift_query.fvecs"
+    query-file = "data/sift100k/sift_query.fvecs"
 
-    query-result-file = "data/sift/sift_groundtruth.ivecs"
+    query-result-file = "data/sift100k/sift_100k_groundtruth.ivecs"
 
   }
 

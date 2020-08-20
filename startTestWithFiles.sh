@@ -10,6 +10,6 @@ testFile="testConfigurations/${TEST}"
 # get current nodes configuration and combine
 cat $testFile "testConfigurations/files.txt" $NAME > testConfigurations.txt
 #start node
-java -Xmx28g -XX:+UseG1GC -Dconfig.file="testConfigurations.txt" -jar target/scala-2.13/dNSG-assembly-0.1.0-SNAPSHOT.jar
+java -Xmx28g -Dconfig.file="testConfigurations.txt" -jar target/scala-2.13/dNSG-assembly-0.1.0-SNAPSHOT.jar
 # move log
 ./cleanup.sh "$TEST"
