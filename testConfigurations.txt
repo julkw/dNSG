@@ -2,26 +2,46 @@ include classpath("application")
 
 com.github.julkw.dnsg {
 
-  aknng-file = ""
+  k = 100
 
-  nsg-file = ""
+  pre-nndescent-k = 10 
 
-  workers = 4
+  max-nndescent-iterations = 10 
 
-  nodes-expected = 1
+  max-reverse-neighbors-nsg = 50 
 
-  query-testing.lines = 1000
+  max-neighbor-candidates = 500 
 
-} 
+  candidate-queue-size-knng = 200
+
+  candidate-queue-size-nsg = 100 
+
+  workers = 20
+
+  nodes-expected = 12
+
+  data-redistribution = "noRedistribution"
+ 
+  data-replication = "noReplication"
+
+  max-message-size = 10000
+
+}
 com.github.julkw.dnsg {
-  input-file = "data/siftsmall/siftsmall_base.fvecs"
-} 
+
+  query-testing {
+    candidate-queue-increase-by = 20
+
+    candidate-queue-increases = 10
+  }
+
+}
 
 dnsg.network {
-  host = "127.0.0.1"
+  host = "odin01"
   port = 7878
 
   // remote address of leader node
-  leader-host = "127.0.0.1"
+  leader-host = "odin01"
   leader-port = 7878
 }

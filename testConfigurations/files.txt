@@ -1,3 +1,4 @@
+
 com.github.julkw.dnsg {
 
   input-file = "data/sift100k/sift100k_base.fvecs"
