@@ -20,10 +20,12 @@ com.github.julkw.dnsg {
 
   nodes-expected = 1
 
-  data-redistribution = "optimalRedistribution"
+  data-redistribution = "noRedistribution"
  
   data-replication = "noReplication"
 
   max-message-size = 10000
+
+  log-memory-consumption = true
 
 }
