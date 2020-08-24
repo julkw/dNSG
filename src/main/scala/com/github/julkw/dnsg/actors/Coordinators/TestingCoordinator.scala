@@ -56,12 +56,18 @@ class TestingCoordinator(settings: Settings,
     ctx.log.info("Testing {} queries. Perfect answer would be {} correct nearest neighbors found.", testQueries.size, maxCorrectNeighbors)
     val maxQueriesToAskFor = 1 + settings.maxMessageSize / testQueries.head._1.length
     ctx.log.info("Start testing queries with candidateQueueSize {}", currentQueueSize)
+
+    var maxQueriesPerActor = 0
     val newToSend = testQueries.map(_._1).zipWithIndex.groupBy( query => nodeLocator.findResponsibleActor(query._1)).transform { (actor, queries) =>
+      if (queries.length > maxQueriesPerActor) {
+        maxQueriesPerActor = queries.length
+      }
       val queriesToAskForNow = queries.slice(0, maxQueriesToAskFor)
       val queriesToAskForLater = queries.slice(maxQueriesToAskFor, queries.length)
       actor ! FindNearestNeighborsStartingFrom(queriesToAskForNow, navigatingNodeIndex, currentQueueSize, coordinationAdapter, queriesToAskForLater.nonEmpty)
       queriesToAskForLater
     }
+    ctx.log.info("Max Queries per actor: {}", maxQueriesPerActor)
     val queryResults = testQueries.indices.zip(testQueries.map(_._2))
     testNSG(testQueries,
       queryResults.toMap,
