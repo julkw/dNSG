@@ -58,7 +58,14 @@ class TestingCoordinator(settings: Settings,
     ctx.log.info("Start testing queries with candidateQueueSize {}", currentQueueSize)
 
     var maxQueriesPerActor = 0
-    val newToSend = testQueries.map(_._1).zipWithIndex.groupBy( query => nodeLocator.findResponsibleActor(query._1)).transform { (actor, queries) =>
+    // If no DataReplication just assign queries randomly but evenly
+    val toSend = if (settings.dataReplication == "noReplication") {
+      val queriesPerActor = 1 + testQueries.length / nodeLocator.allActors.size
+      nodeLocator.allActors.zip(testQueries.map(_._1).zipWithIndex.grouped(queriesPerActor)).toMap
+    } else {
+      testQueries.map(_._1).zipWithIndex.groupBy( query => nodeLocator.findResponsibleActor(query._1))
+    }
+    val newToSend = toSend.transform { (actor, queries) =>
       if (queries.length > maxQueriesPerActor) {
         maxQueriesPerActor = queries.length
       }
