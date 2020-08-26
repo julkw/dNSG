@@ -26,4 +26,12 @@ com.github.julkw.dnsg {
 
   max-message-size = 10000
 
+  query-testing {
+
+    candidate-queue-increase-by = 0
+
+    candidate-queue-increases = 0
+  }
+
+
 }
