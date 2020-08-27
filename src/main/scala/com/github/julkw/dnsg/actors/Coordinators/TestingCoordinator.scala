@@ -53,18 +53,24 @@ class TestingCoordinator(settings: Settings,
                   candidateQueueSizes: Seq[Int]): Behavior[TestingEvent] = {
     val maxCorrectNeighbors = testQueries.size * testQueries.head._2.length
     val currentQueueSize = candidateQueueSizes.head
+    val queriesWithIds = testQueries.map(_._1).zipWithIndex
+    val queryResults = testQueries.indices.zip(testQueries.map(_._2)).toMap
+
+    // If no redistribution just assign queries randomly but evenly
+    val toSend = if (settings.dataRedistribution == "noRedistribution") {
+      val queriesPerActor = 1 + testQueries.length / nodeLocator.allActors.size
+      nodeLocator.allActors.zip(queriesWithIds.grouped(queriesPerActor)).toMap
+    } else {
+        queriesWithIds.groupBy( query => nodeLocator.findResponsibleActor(query._1))
+    }
+
     ctx.log.info("Testing {} queries. Perfect answer would be {} correct nearest neighbors found.", testQueries.size, maxCorrectNeighbors)
     val maxQueriesToAskFor = 1 + settings.maxMessageSize / testQueries.head._1.length
     ctx.log.info("Start testing queries with candidateQueueSize {}", currentQueueSize)
 
+    // for debugging
     var maxQueriesPerActor = 0
-    // If no DataReplication just assign queries randomly but evenly
-    val toSend = if (settings.dataReplication == "noReplication") {
-      val queriesPerActor = 1 + testQueries.length / nodeLocator.allActors.size
-      nodeLocator.allActors.zip(testQueries.map(_._1).zipWithIndex.grouped(queriesPerActor)).toMap
-    } else {
-      testQueries.map(_._1).zipWithIndex.groupBy( query => nodeLocator.findResponsibleActor(query._1))
-    }
+    // send queries to the responsible actors
     val newToSend = toSend.transform { (actor, queries) =>
       if (queries.length > maxQueriesPerActor) {
         maxQueriesPerActor = queries.length
@@ -75,9 +81,8 @@ class TestingCoordinator(settings: Settings,
       queriesToAskForLater
     }
     ctx.log.info("Max Queries per actor: {}", maxQueriesPerActor)
-    val queryResults = testQueries.indices.zip(testQueries.map(_._2))
     testNSG(testQueries,
-      queryResults.toMap,
+      queryResults,
       newToSend,
       maxQueriesToAskFor,
       sumOfExactNeighborFound = 0,
