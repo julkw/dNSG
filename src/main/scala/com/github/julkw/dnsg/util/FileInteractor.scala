@@ -44,7 +44,7 @@ trait FileInteractor {
     data
   }
 
-  def readGraphFromFile(filename: String): (Map[Int, Seq[Int]], Option[Int]) = {
+  def readNSGFromFile(filename: String): (Map[Int, Seq[Int]], Option[Int]) = {
     val bis = new BufferedInputStream(new FileInputStream(filename))
     val data = LazyList.continually(bis.read).takeWhile(-1 !=).map(_.toByte).grouped(4).map { bytes =>
       byteArrayToLittleEndianInt(bytes.toArray)

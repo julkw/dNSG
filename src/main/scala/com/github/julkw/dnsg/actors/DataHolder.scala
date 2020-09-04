@@ -6,7 +6,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{AverageValue, CoordinationEvent, DataSize, GraphWrittenToFile}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{DataRef, NodeCoordinationEvent}
 import com.github.julkw.dnsg.actors.Coordinators.TestingCoordinator.{TestQueries, TestingEvent}
-import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{SearchOnGraphEvent, SendGraphForFile}
+import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{PartialGraphFromFile, SearchOnGraphEvent, SendGraphForFile}
 import com.github.julkw.dnsg.util.Data.{LocalData, LocalSequentialData, LocalUnorderedData}
 import com.github.julkw.dnsg.util.{FileInteractor, LocalityCheck, NodeLocator, Settings, dNSGSerializable}
 
@@ -46,7 +46,9 @@ object DataHolder {
 
   final case class SaveGraphToFile(filename: String, graphHolders: Set[ActorRef[SearchOnGraphEvent]], graphSize: Int, navigatingNode: Option[Int], replyTo: ActorRef[CoordinationEvent]) extends LoadDataEvent
 
-  final case class GetGraphFromFile(filename: String) extends LoadDataEvent
+  final case class GetGraphFromFile(filename: String, nodeLocator: NodeLocator[SearchOnGraphEvent]) extends LoadDataEvent
+
+  final case class GetMoreGraph(sender: ActorRef[SearchOnGraphEvent]) extends LoadDataEvent
 
   final case class GraphForFile(graph: Seq[(Int, Seq[Int])], sender: ActorRef[SearchOnGraphEvent], moreToSend: Boolean) extends LoadDataEvent
 
@@ -198,10 +200,46 @@ class DataHolder(nodeCoordinator: ActorRef[NodeCoordinationEvent], maxMessageSiz
         prepareGraphFile(filename, navigatingNode)
         saveToFile(filename, graphSize, data, dataHolders, replyTo)
 
-      case GetGraphFromFile(filename) =>
-        readGraphFromFile(filename)
+      case GetGraphFromFile(filename, nodeLocator) =>
+        val graph = readDataInt(filename)
         // TODO distribute Graph (and potentially data?) for further testing
-        holdData(data, dataHolders)
+        val graphMessageSize = maxMessageSize / graph.head.length
+        val toSend = nodeLocator.allActors.map { sogActor =>
+          (sogActor, nodeLocator.nodesOf(sogActor))
+        }.toMap.transform { (actor, stillToSend) =>
+          val sendNow = stillToSend.slice(0, graphMessageSize).map { index =>
+            (index, graph(index))
+          }
+          val sendLater = stillToSend.slice(graphMessageSize, stillToSend.length)
+          actor ! PartialGraphFromFile(sendNow, ctx.self, sendLater.nonEmpty)
+          sendLater
+        }
+        if (toSend.valuesIterator.exists(_.nonEmpty)) {
+          shareGraph(graph.toArray, toSend, graphMessageSize, data, dataHolders)
+        } else {
+          holdData(data, dataHolders)
+        }
+    }
+
+  def shareGraph(graph: Array[Seq[Int]],
+                 toSend: Map[ActorRef[SearchOnGraphEvent], Seq[Int]],
+                 graphMessageSize: Int,
+                 data: LocalData[Float],
+                 dataHolders: Set[ActorRef[LoadDataEvent]]): Behavior[LoadDataEvent] =
+    Behaviors.receiveMessagePartial {
+      case GetMoreGraph(sender) =>
+        val stillToSend = toSend(sender)
+        val sendNow = stillToSend.slice(0, graphMessageSize).map { index =>
+          (index, graph(index))
+        }
+        val sendLater = stillToSend.slice(graphMessageSize, stillToSend.length)
+        sender ! PartialGraphFromFile(sendNow, ctx.self, sendLater.nonEmpty)
+        val updatedToSend = toSend + (sender -> sendLater)
+        if (updatedToSend.valuesIterator.exists(_.nonEmpty)) {
+          shareGraph(graph, updatedToSend, graphMessageSize, data, dataHolders)
+        } else {
+          holdData(data, dataHolders)
+        }
     }
 
   def redistributeData(oldData: LocalData[Float],

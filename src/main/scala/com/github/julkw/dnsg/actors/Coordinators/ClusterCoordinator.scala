@@ -4,7 +4,7 @@ import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{AllSharedReplication, NoReplication, OnlyParentsReplication}
 import com.github.julkw.dnsg.actors.Coordinators.NodeCoordinator.{AllDone, NodeCoordinationEvent, StartDistributingData, StartSearchOnGraph}
-import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, LoadDataEvent, ReadTestQueries, SaveGraphToFile}
+import com.github.julkw.dnsg.actors.DataHolder.{GetAverageValue, GetGraphFromFile, LoadDataEvent, ReadTestQueries, SaveGraphToFile}
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.{AllNodeLocatorHolders, NodeLocationEvent, SendNodeLocatorToNodeCoordinator, ShareNodeLocator}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{FindNearestNeighbors, FindNearestNeighborsStartingFrom, SearchOnGraphEvent}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
@@ -108,7 +108,8 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
         waitOnSearchInitialDistribution(nodeCoordinators, dataHolder, nodeLocatorHolders, waitingOnNodeLocators - 1)
 
       case SearchOnGraphNodeLocator(nodeLocator) =>
-        waitForKnngDataDistribution(nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders, nodeLocatorHolders.size)
+        dataHolder ! GetGraphFromFile(settings.aknngFilePath, nodeLocator)
+        waitOnSearchOnGraphUpdated(nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders, nodeLocator.allActors.size)
 
       case FinishedKnngNodeLocator =>
         ctx.self ! FinishedKnngNodeLocator
@@ -212,14 +213,8 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
       case UpdatedGraph =>
         if (waitingOnGraphUpdates == 1) {
           ctx.log.info("All SearchOnGraph actors now updated to new AKNNG")
-          val aknngFilename = settings.aknngFilePath
-          if (aknngFilename.nonEmpty) {
-            dataHolder ! SaveGraphToFile(aknngFilename, nodeLocator.allActors, nodeLocator.graphSize, None, ctx.self)
-            waitForAKNNGToBeWrittenToFile(nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders)
-          } else {
-            dataHolder ! GetAverageValue(ctx.self)
-            findNavigatingNode(nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders)
-          }
+          dataHolder ! GetAverageValue(ctx.self)
+          findNavigatingNode(nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders)
         } else {
           waitOnSearchOnGraphUpdated(nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders, waitingOnGraphUpdates - 1)
         }

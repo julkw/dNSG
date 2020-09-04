@@ -127,7 +127,8 @@ class NodeLocatorHolder(clusterCoordinator: ActorRef[CoordinationEvent],
         if (sendToCoordinator) {
           clusterCoordinator ! SearchOnGraphNodeLocator(nodeLocator)
         }
-        gatherKNNGDistInfo(otherNodeLocatorHolders.keys.toSet, nodeLocator, Map.empty)
+        //gatherKNNGDistInfo(otherNodeLocatorHolders.keys.toSet, nodeLocator, Map.empty)
+        holdSOGNodeLocator(otherNodeLocatorHolders.keys.toSet, nodeLocator)
 
       case KnngWorkerGotGraphFrom(knngActor, searchOnGraphActor) =>
         ctx.self ! KnngWorkerGotGraphFrom(knngActor, searchOnGraphActor)

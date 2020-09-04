@@ -5,7 +5,7 @@ import akka.actor.typed.{ActorRef, Behavior}
 import com.github.julkw.dnsg.actors.Coordinators.ClusterCoordinator.{CoordinationEvent, GetMoreQueries, NSGonSOG, UpdatedGraph}
 import com.github.julkw.dnsg.actors.Coordinators.GraphConnectorCoordinator.{ConnectionCoordinationEvent, ReceivedNewEdge}
 import com.github.julkw.dnsg.actors.Coordinators.GraphRedistributionCoordinator.{DoneWithRedistribution, RedistributionCoordinationEvent}
-import com.github.julkw.dnsg.actors.DataHolder.{GraphForFile, LoadDataEvent}
+import com.github.julkw.dnsg.actors.DataHolder.{GetMoreGraph, GraphForFile, LoadDataEvent}
 import com.github.julkw.dnsg.actors.GraphConnector
 import com.github.julkw.dnsg.actors.NodeLocatorHolder.{LocalSOGDistributionInfo, NodeLocationEvent}
 import com.github.julkw.dnsg.actors.SearchOnGraph.SOGInfo.{GetLocation, GetNeighbors, Location, Neighbors, SOGEvent}
@@ -67,6 +67,8 @@ object SearchOnGraphActor {
   // safe knng to file
   final case class SendGraphForFile(sender: ActorRef[LoadDataEvent]) extends SearchOnGraphEvent
 
+  final case class PartialGraphFromFile(partialGraph: Seq[(Int, Seq[Int])], sender: ActorRef[LoadDataEvent], moreToSend: Boolean) extends SearchOnGraphEvent
+
   def apply(clusterCoordinator: ActorRef[CoordinationEvent],
             nodeLocatorHolder: ActorRef[NodeLocationEvent]): Behavior[SearchOnGraphEvent] = Behaviors.setup { ctx =>
     val settings = Settings(ctx.system.settings.config)
@@ -96,9 +98,14 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
   def waitForDistributionInfo(graph: Map[Int, Seq[Int]], data: LocalData[Float]): Behavior[SearchOnGraphEvent] =
     Behaviors.receiveMessagePartial{
       case GraphDistribution(nodeLocator) =>
-        ctx.spawn(KnngWorker(data, nodeLocator, ctx.self, clusterCoordinator, nodeLocatorHolder), name = "KnngWorker")
-        val toSend = nodeLocator.allActors.map(worker => worker -> new SOGInfo).toMap
-        searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1, toSend)
+        val createGraph = false
+        if (createGraph) {
+          ctx.spawn(KnngWorker(data, nodeLocator, ctx.self, clusterCoordinator, nodeLocatorHolder), name = "KnngWorker")
+          val toSend = nodeLocator.allActors.map(worker => worker -> new SOGInfo).toMap
+          searchOnGraph(graph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1, toSend)
+        } else {
+          receiveGraph(nodeLocator, Map.empty, data)
+        }
 
       case FindNearestNeighbors(queries, k, asker, sendWithDist, moreQueries) =>
         ctx.self ! FindNearestNeighbors(queries, k, asker, sendWithDist, moreQueries)
@@ -220,7 +227,7 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
             toSend(sender).addMessage(Location(index, data.get(index)))
 
           case Location(index, location) =>
-            waitingOnLocation.received(index).foreach {queryId =>
+            waitingOnLocation.received(index).foreach { queryId =>
               if (updatedNeighborQueries.contains(queryId)) {
                 val queryInfo = updatedNeighborQueries(queryId)
                 queryInfo.waitingOn -= 1
@@ -364,6 +371,23 @@ class SearchOnGraphActor(clusterCoordinator: ActorRef[CoordinationEvent],
       redistributeGraph(toSend, oldGraph, nodeLocator, newGraph, nodesExpected, graphMessageSize, data, dataUpdated, redistributionCoordinator)
     }
   }
+
+  def receiveGraph(nodeLocator: NodeLocator[SearchOnGraphEvent],
+                   newGraph: Map[Int, Seq[Int]],
+                   data: LocalData[Float]): Behavior[SearchOnGraphEvent] =
+    Behaviors.receiveMessagePartial {
+     case PartialGraphFromFile(partialGraph, sender, moreToSend) =>
+        val updatedGraph = newGraph ++ partialGraph
+        if (moreToSend) {
+          // else this was the last piece of graph from this actor
+          sender ! GetMoreGraph(ctx.self)
+          receiveGraph(nodeLocator, updatedGraph, data)
+        } else {
+          clusterCoordinator ! UpdatedGraph
+          val toSend = nodeLocator.allActors.map(worker => worker -> new SOGInfo).toMap
+          searchOnGraph(updatedGraph, data, nodeLocator, Map.empty, Map.empty, lastIdUsed = -1, toSend)
+        }
+    }
 
   def searchOnGraphForNSG(graph: Map[Int, Seq[Int]],
                           data: LocalData[Float],

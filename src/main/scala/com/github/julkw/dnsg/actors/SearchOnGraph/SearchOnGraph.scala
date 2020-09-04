@@ -152,7 +152,6 @@ abstract class SearchOnGraph(waitingOnLocation: WaitingOnLocation[Int],
     val usableCandidate = closeEnough && !currentCandidates.exists(candidate => candidate.index == candidateId)
     if (usableCandidate) {
       // update candidates
-      // TODO instead of sorting find correct place to insert into the list
       val updatedCandidates = (currentCandidates :+ QueryCandidate(candidateId, dist, processed=false, currentlyProcessing = false)).sortBy(candidate => candidate.distance)
       queryInfo.candidates = updatedCandidates
     }
