@@ -93,7 +93,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       }
       val updatedMessages = reverseNeighbors.groupBy { neighborIndex =>
         val gh = nodeLocator.findResponsibleActor(neighborIndex)
-        mergers.find(merger => merger.path.parent == gh.path.parent && merger.path.name.last == gh.path.name.last).get
+        mergers.find(merger => correspondingMerger(merger, gh)).get
       }.transform { (responsibleMerger, neighbors) =>
         val newEdges = neighbors.map(neighborIndex => (neighborIndex, nodeIndex))
         (toSend(responsibleMerger)._1 ++ newEdges, toSend(responsibleMerger)._2)
@@ -167,6 +167,12 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
         sendInfo
       }
     }
+  }
+
+  def correspondingMerger(merger: ActorRef[MergeNSGEvent], gh: ActorRef[SearchOnGraphEvent]): Boolean = {
+    val mergerNumber = merger.path.name.slice(9, merger.path.name.length)
+    val sogNumber = gh.path.name.slice(18, gh.path.name.length)
+    merger.path.parent == gh.path.parent && mergerNumber == sogNumber
   }
 }
 
