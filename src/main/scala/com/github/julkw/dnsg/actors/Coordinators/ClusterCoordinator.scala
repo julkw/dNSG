@@ -292,7 +292,7 @@ class ClusterCoordinator(ctx: ActorContext[ClusterCoordinator.CoordinationEvent]
     Behaviors.receiveMessagePartial{
       case InitialNSGDone(nsgMerger) =>
         val updatedMergers = finishedNsgMergers + nsgMerger
-        if (updatedMergers.size == settings.nodesExpected) {
+        if (updatedMergers.size == settings.nodesExpected * settings.workers) {
           ctx.log.info("Initial NSG seems to be done")
           nodeCoordinators.foreach(nodeCoordinator => nodeCoordinator ! StartSearchOnGraph)
           moveNSGToSog(navigatingNodeIndex, Seq.empty, nodeLocator, nodeCoordinators, dataHolder, nodeLocatorHolders)

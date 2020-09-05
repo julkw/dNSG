@@ -13,7 +13,7 @@ import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor
 import com.github.julkw.dnsg.actors.SearchOnGraph.SearchOnGraphActor.{GetNSGFrom, InitializeGraph, SearchOnGraphEvent, UpdatedLocalData}
 import com.github.julkw.dnsg.actors.createNSG.{NSGMerger, NSGWorker}
 import com.github.julkw.dnsg.actors.createNSG.NSGMerger.MergeNSGEvent
-import com.github.julkw.dnsg.actors.createNSG.NSGWorker.Responsibility
+import com.github.julkw.dnsg.actors.createNSG.NSGWorker.{BuildNSGEvent, Responsibility}
 import com.github.julkw.dnsg.actors.nndescent.KnngWorker.BuildKNNGEvent
 import com.github.julkw.dnsg.util.Data.LocalData
 import com.github.julkw.dnsg.util.{Distance, NodeLocator, Settings, dNSGSerializable}
@@ -128,25 +128,28 @@ class NodeCoordinator(settings: Settings,
                        numberOfNodes: Int,
                        navigatingNode: Int): Behavior[NodeCoordinationEvent] = {
     val responsibilityPerGraphHolder = nodeLocator.actorsResponsibilities()
-    val mergerResponsibility = localGraphHolders.flatMap(graphHolder => responsibilityPerGraphHolder(graphHolder))
-    val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, mergerResponsibility.toSeq, numberOfNodes, settings.maxMessageSize, nodeLocator), name = "NSGMerger")
     var index = 0
-    localGraphHolders.foreach { graphHolder =>
+    val ghMergerMapping = localGraphHolders.map { graphHolder =>
+      val responsibilities = responsibilityPerGraphHolder(graphHolder)
+      val nsgMerger = ctx.spawn(NSGMerger(clusterCoordinator, responsibilities, numberOfNodes * localGraphHolders.size, settings.maxMessageSize, nodeLocator), name = "NSGMerger"+ index.toString)
       val nsgWorker = ctx.spawn(NSGWorker(data, navigatingNode, nodeLocator, nsgMerger), name = "NSGWorker" + index.toString)
       index += 1
       // 1 to 1 mapping from searchOnGraphActors to NSGWorkers
-      val responsibilities = responsibilityPerGraphHolder(graphHolder)
       nsgWorker ! Responsibility(responsibilities)
-    }
-    moveNSGToSearchOnGraph(localGraphHolders, nsgMerger)
+      (graphHolder, nsgMerger)
+    }.toMap
+    moveNSGToSearchOnGraph(localGraphHolders, ghMergerMapping)
   }
 
   // this happens here for mapping to the correct NSGMerger
   def moveNSGToSearchOnGraph(localGraphHolders: Set[ActorRef[SearchOnGraphEvent]],
-                             nsgMerger: ActorRef[MergeNSGEvent]): Behavior[NodeCoordinationEvent] =
+                             nsgMerger: Map[ActorRef[SearchOnGraphEvent], ActorRef[MergeNSGEvent]]): Behavior[NodeCoordinationEvent] =
     Behaviors.receiveMessagePartial{
       case StartSearchOnGraph =>
-        localGraphHolders.foreach(graphHolder => graphHolder ! GetNSGFrom(nsgMerger))
+        localGraphHolders.foreach { gh =>
+          val merger = nsgMerger(gh)
+          gh ! GetNSGFrom(merger)
+        }
         waitForShutdown()
     }
 
