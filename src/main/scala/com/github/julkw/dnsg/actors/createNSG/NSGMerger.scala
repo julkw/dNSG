@@ -85,6 +85,7 @@ class NSGMerger(supervisor: ActorRef[CoordinationEvent],
       buildGraph(graph, waitingOnReverseNeighbors, waitingOnMergers, toSend, listings)
 
     case ReverseNeighbors(nodeIndex, reverseNeighbors) =>
+      ctx.log.info("Still waiting on the reverse neighbors for {} nodes", waitingOnReverseNeighbors - 1)
       if (waitingOnMergers == 0 && waitingOnReverseNeighbors == 1) {
         // while I still have more to send, I do not have any more to receive and am therefore done myself
         ctx.log.info("Local NSGMerger has received everything")
